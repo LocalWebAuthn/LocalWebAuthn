@@ -108,6 +108,14 @@ function normalizeConfig(options) {
   if (!rpName || !rpId || configuredOrigins.length === 0) {
     configurationError("rpName, rpId, and at least one expected origin are required.");
   }
+  try {
+    const url = new URL(`https://${rpId}`);
+    if (url.hostname !== rpId) {
+      configurationError("rpId must be a bare hostname (no protocol, port, or path).");
+    }
+  } catch {
+    configurationError("rpId must be a valid hostname.");
+  }
   const expectedOrigins = configuredOrigins.map((configuredOrigin) => {
     const url = new URL(configuredOrigin);
     const origin = url.origin;
@@ -151,6 +159,7 @@ function normalizeConfig(options) {
 function toWebAuthnCredential(credential) {
   return {
     id: credential.id,
+    // Uint8Array.from narrows ArrayBufferLike to ArrayBuffer for the SimpleWebAuthn types.
     publicKey: Uint8Array.from(credential.publicKey),
     counter: credential.counter,
     transports: credential.transports
@@ -165,6 +174,7 @@ var defaultCeremonies = {
   verifyAuthenticationResponse
 };
 var LocalWebAuthn = class {
+  /** Normalized configuration (see {@link LocalWebAuthnOptions}). */
   config;
   #store;
   #users;
@@ -172,6 +182,7 @@ var LocalWebAuthn = class {
   #randomBytes;
   #ceremonies;
   #onEvent;
+  #logger;
   constructor(options) {
     this.config = normalizeConfig(options);
     this.#store = options.store;
@@ -180,7 +191,19 @@ var LocalWebAuthn = class {
     this.#randomBytes = options.randomBytes ?? defaultRandomBytes;
     this.#ceremonies = options.ceremonies ?? defaultCeremonies;
     this.#onEvent = options.onEvent;
+    this.#logger = options.logger ?? console;
   }
+  /**
+   * Issue a single-use enrollment grant for a user.
+   *
+   * If the user already has a pending (uncompleted) enrollment grant, it is
+   * implicitly revoked and an {@link LocalWebAuthnEvent.enrollment.revoked | `enrollment.revoked`}
+   * audit event is emitted for the prior grant.
+   *
+   * @param userId - The application user ID to enroll.
+   * @param approvedByUserId - Optional ID of the administrator who approved this enrollment.
+   * @returns The enrollment URL (with `#token=` fragment), raw token, and expiry.
+   */
   async issueEnrollment(userId, approvedByUserId) {
     const user = await this.#activeUser(userId);
     if (!user) {
@@ -194,7 +217,7 @@ var LocalWebAuthn = class {
     const grantId = createOpaqueToken(this.#randomBytes);
     const enrollmentToken = createEnrollmentToken(this.#randomBytes);
     const expiresAt = now + this.config.durations.enrollmentGrantMs;
-    await this.#store.replaceEnrollmentGrant({
+    const revokedGrantIds = await this.#store.replaceEnrollmentGrant({
       id: grantId,
       userId,
       tokenHash: await sha256(enrollmentToken),
@@ -202,6 +225,14 @@ var LocalWebAuthn = class {
       approvedByUserId: approvedByUserId ?? null,
       createdAt: now
     });
+    for (const revokedGrantId of revokedGrantIds) {
+      await this.#emit({
+        type: "enrollment.revoked",
+        at: now,
+        userId,
+        grantId: revokedGrantId
+      });
+    }
     const enrollmentUrl = new URL(this.config.enrollmentPath, this.config.publicOrigin);
     enrollmentUrl.hash = `token=${enrollmentToken}`;
     await this.#emit({ type: "enrollment.issued", at: now, userId, grantId });
@@ -212,6 +243,16 @@ var LocalWebAuthn = class {
       expiresAt
     };
   }
+  /**
+   * Exchange a one-time enrollment token for an enrollment session.
+   *
+   * The token is single-use — subsequent exchanges with the same token will fail.
+   * The returned `enrollmentSessionToken` must be stored in an HTTP-only cookie
+   * and passed to {@link registrationOptions} and {@link verifyRegistration}.
+   *
+   * @param enrollmentToken - The raw token from the enrollment URL fragment.
+   * @returns The enrollment session and public user identity.
+   */
   async exchangeEnrollment(enrollmentToken) {
     const token = enrollmentToken.toLowerCase();
     if (!/^[a-z2-7]{52}$/u.test(token)) {
@@ -268,7 +309,7 @@ var LocalWebAuthn = class {
     const now = this.#now();
     const challengeToken = createOpaqueToken(this.#randomBytes);
     const expiresAt = now + this.config.durations.challengeMs;
-    await this.#store.createChallenge({
+    if (!await this.#store.createChallenge({
       idHash: await sha256(challengeToken),
       kind: "registration",
       challenge: options.challenge,
@@ -277,7 +318,13 @@ var LocalWebAuthn = class {
       authorizationSessionHash: authorization.authenticatedSessionHash,
       expiresAt,
       createdAt: now
-    });
+    })) {
+      throw new LocalWebAuthnError(
+        "invalid_ceremony",
+        "A challenge token collision occurred; retry the ceremony.",
+        409
+      );
+    }
     return { options, challengeToken, expiresAt };
   }
   async verifyRegistration(input) {
@@ -391,7 +438,7 @@ var LocalWebAuthn = class {
     const now = this.#now();
     const challengeToken = createOpaqueToken(this.#randomBytes);
     const expiresAt = now + this.config.durations.challengeMs;
-    await this.#store.createChallenge({
+    if (!await this.#store.createChallenge({
       idHash: await sha256(challengeToken),
       kind: "authentication",
       challenge: options.challenge,
@@ -400,7 +447,13 @@ var LocalWebAuthn = class {
       authorizationSessionHash: null,
       expiresAt,
       createdAt: now
-    });
+    })) {
+      throw new LocalWebAuthnError(
+        "invalid_ceremony",
+        "A challenge token collision occurred; retry the ceremony.",
+        409
+      );
+    }
     return { options, challengeToken, expiresAt };
   }
   async verifyAuthentication(input) {
@@ -494,6 +547,15 @@ var LocalWebAuthn = class {
       user: this.#publicUser(user)
     };
   }
+  /**
+   * Resolve a session token to a user and session identity.
+   *
+   * Returns `null` if the session is expired, idle, revoked, the credential was
+   * revoked, or the user is inactive.
+   *
+   * @param sessionToken - The raw opaque session token (from cookie).
+   * @param touch - When `true` (default), update `lastSeenAt` to keep the session alive.
+   */
   async resolveSession(sessionToken, touch = true) {
     const idHash = await sha256(sessionToken);
     const now = this.#now();
@@ -522,6 +584,15 @@ var LocalWebAuthn = class {
   listCredentials(userId, includeRevoked = false) {
     return this.#store.listCredentials(userId, includeRevoked);
   }
+  /**
+   * Revoke a single credential and all its sessions.
+   *
+   * Throws {@link LocalWebAuthnError} with code `"last_credential"` if this is
+   * the user's only remaining active credential. Pass `{ allowLastCredential: true }`
+   * to override this safeguard (e.g., during a recovery flow).
+   *
+   * @returns `true` if the credential was revoked, `false` if it was already revoked.
+   */
   async revokeCredential(userId, credentialId, options = {}) {
     if (!options.allowLastCredential) {
       const credentials = await this.#store.listCredentials(userId);
@@ -622,7 +693,8 @@ var LocalWebAuthn = class {
     }
     try {
       await this.#onEvent(event);
-    } catch {
+    } catch (error) {
+      this.#logger.warn("LocalWebAuthn event handler failed.", { event: event.type, error });
     }
   }
 };

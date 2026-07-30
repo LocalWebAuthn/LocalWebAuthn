@@ -139,6 +139,16 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
       );
     }
 
+    if (clientByEmail(database, email)) {
+      return context.json(
+        {
+          error: 'email_exists',
+          message: 'A client with that email already exists.',
+        },
+        409,
+      );
+    }
+
     const id = randomUUID();
     try {
       database
@@ -164,17 +174,13 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
         },
         201,
       );
-    } catch (error) {
-      const duplicate =
-        error instanceof Error && error.message.includes('UNIQUE constraint failed');
+    } catch {
       return context.json(
         {
-          error: duplicate ? 'email_exists' : 'client_creation_failed',
-          message: duplicate
-            ? 'A client with that email already exists.'
-            : 'The client could not be created.',
+          error: 'client_creation_failed',
+          message: 'The client could not be created.',
         },
-        duplicate ? 409 : 500,
+        500,
       );
     }
   });

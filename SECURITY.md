@@ -36,6 +36,20 @@ The host application must:
 - Require a fresh passkey assertion for recovery and sensitive credential changes.
 - Persist and monitor structured authentication audit events.
 
+## D1 Batch Non-Atomicity
+
+The Cloudflare D1 adapter uses `batch()` to execute multiple statements. Unlike the
+SQLite adapter's explicit transactions, D1 batches are **not atomic** — each statement
+commits independently. A rare concurrent-failure scenario in `completeRegistration` can
+leave an orphaned credential row: the credential INSERT succeeds but the session INSERT
+is never reached because the batch guard detected a mid-batch inconsistency.
+
+Orphaned credentials are harmless (they cannot be used to authenticate without a session
+row) but consume storage. The `cleanup()` method removes credentials that have no session
+rows and were created more than one hour ago.
+
+Applications deployed on D1 should schedule periodic `cleanup()` calls.
+
 ## Stored Secrets
 
 Enrollment tokens, enrollment sessions, challenge tokens, and application sessions contain

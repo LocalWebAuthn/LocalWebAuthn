@@ -319,4 +319,91 @@ describe('LocalWebAuthn lifecycle', () => {
     ).resolves.toBe(true);
     database.close();
   });
+
+  it('revokes all authentication state for a user', async () => {
+    // Enroll and register a passkey to create a credential and session.
+    const issue = await auth.issueEnrollment(user.id);
+    const exchange = await auth.exchangeEnrollment(issue.enrollmentToken);
+    const registration = await auth.registrationOptions({
+      enrollmentSessionToken: exchange.enrollmentSessionToken,
+    });
+    const registered = await auth.verifyRegistration({
+      response: registrationResponse(),
+      challengeToken: registration.challengeToken,
+      enrollmentSessionToken: exchange.enrollmentSessionToken,
+    });
+
+    // Issue a second enrollment grant to ensure pending grants are also revoked.
+    const secondIssue = await auth.issueEnrollment(user.id);
+    const pendingGrantToken = secondIssue.enrollmentToken;
+
+    // Verify pre-conditions: credential exists, session resolves, grant is pending.
+    await expect(auth.listCredentials(user.id)).resolves.toHaveLength(1);
+    await expect(auth.resolveSession(registered.sessionToken)).resolves.not.toBeNull();
+
+    // Exchange the second grant to verify it is still usable before revocation.
+    const secondExchange = await auth.exchangeEnrollment(pendingGrantToken);
+    expect(secondExchange.user.id).toBe(user.id);
+
+    // Revoke all authentication.
+    await auth.revokeUserAuthentication(user.id);
+
+    // Credentials are revoked.
+    await expect(auth.listCredentials(user.id)).resolves.toHaveLength(0);
+    await expect(auth.listCredentials(user.id, true)).resolves.toMatchObject([
+      { revokedAt: expect.any(Number) as number },
+    ]);
+
+    // Sessions are revoked.
+    await expect(auth.resolveSession(registered.sessionToken)).resolves.toBeNull();
+
+    // The second enrollment grant (not yet completed) is also revoked.
+    await expect(auth.exchangeEnrollment(pendingGrantToken)).rejects.toEqual(
+      expect.objectContaining<Partial<LocalWebAuthnError>>({
+        code: 'invalid_enrollment',
+        status: 403,
+      }),
+    );
+
+    // The exchanged enrollment session for the second grant is also invalidated.
+    await expect(
+      auth.registrationOptions({
+        enrollmentSessionToken: secondExchange.enrollmentSessionToken,
+      }),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<LocalWebAuthnError>>({
+        code: 'enrollment_not_authorized',
+        status: 403,
+      }),
+    );
+
+    database.close();
+  });
+
+  it('emits an audit event when a prior enrollment grant is implicitly revoked', async () => {
+    const firstIssue = await auth.issueEnrollment(user.id);
+    events.length = 0;
+
+    // Issuing a second enrollment for the same user implicitly revokes the first.
+    await auth.issueEnrollment(user.id);
+
+    // The first grant should no longer be exchangeable.
+    await expect(auth.exchangeEnrollment(firstIssue.enrollmentToken)).rejects.toEqual(
+      expect.objectContaining<Partial<LocalWebAuthnError>>({
+        code: 'invalid_enrollment',
+        status: 403,
+      }),
+    );
+
+    // An event signaling the implicit revocation should have been emitted.
+    const revocationEvents = events.filter((event) => event.type === 'enrollment.revoked');
+    expect(revocationEvents).toHaveLength(1);
+    expect(revocationEvents[0]).toMatchObject({
+      type: 'enrollment.revoked',
+      userId: user.id,
+      grantId: firstIssue.grantId,
+    });
+
+    database.close();
+  });
 });

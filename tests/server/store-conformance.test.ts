@@ -14,10 +14,13 @@ import {
   D1LocalWebAuthnStore,
   migrateD1,
 } from '../../packages/server/src/d1.js';
+import type { SqliteDatabase } from '../../packages/server/src/sqlite.js';
 import { migrateSqlite, SqliteLocalWebAuthnStore } from '../../packages/server/src/sqlite.js';
 
 type StoreFixture = {
   store: LocalWebAuthnStore;
+  /** Direct database access for test setup (e.g., simulating batch failures). */
+  rawDb: SqliteDatabase | D1DatabaseLike;
   close(): Promise<void>;
 };
 
@@ -54,16 +57,21 @@ function enrollmentChallenge(grantId: string): ChallengeRecord {
   };
 }
 
-async function exchangedGrant(store: LocalWebAuthnStore, id = 'grant-1') {
+async function exchangedGrant(
+  store: LocalWebAuthnStore,
+  id = 'grant-1',
+  tokenByte = 1,
+  sessionByte = 2,
+) {
   await store.replaceEnrollmentGrant({
     id,
     userId: 'user-1',
-    tokenHash: bytes(1),
+    tokenHash: bytes(tokenByte),
     expiresAt: now + 10_000,
     approvedByUserId: 'admin-1',
     createdAt: now,
   });
-  return store.exchangeEnrollment(bytes(1), bytes(2), now + 5_000, now);
+  return store.exchangeEnrollment(bytes(tokenByte), bytes(sessionByte), now + 5_000, now);
 }
 
 function registrationInput(grantId: string): CompleteRegistrationInput {
@@ -96,6 +104,7 @@ async function sqliteFixture(): Promise<StoreFixture> {
   migrateSqlite(database);
   return {
     store: new SqliteLocalWebAuthnStore(database),
+    rawDb: database as unknown as SqliteDatabase,
     close: async () => {
       database.close();
     },
@@ -116,6 +125,7 @@ async function d1Fixture(): Promise<StoreFixture> {
   await migrateD1(database);
   return {
     store: new D1LocalWebAuthnStore(database),
+    rawDb: database,
     close: async () => {
       miniflares.delete(miniflare);
       await miniflare.dispose();
@@ -274,6 +284,64 @@ function storeConformance(name: string, createFixture: () => Promise<StoreFixtur
         await expect(fixture.store.listCredentials('user-1', true)).resolves.toMatchObject([
           { revokedAt: now + 1 },
         ]);
+      } finally {
+        await fixture.close();
+      }
+    });
+
+    it('cleans up orphaned credentials whose sessions have all been expired or revoked', async () => {
+      const fixture = await createFixture();
+      try {
+        // Create a legitimate credential with a non-expired session.
+        await exchangedGrant(fixture.store);
+        expect(await fixture.store.completeRegistration(registrationInput('grant-1'))).toBe(true);
+
+        // Create a second credential whose session has already expired.
+        // The credential must be older than the 1-hour orphan grace period.
+        const grant2 = await exchangedGrant(fixture.store, 'grant-2', 10, 11);
+        if (!grant2) {
+          throw new Error('Second enrollment grant was not created.');
+        }
+        const expiredSessionNow = now - 4_000_000; // well past the 1-hour grace period
+        const secondReg: CompleteRegistrationInput = {
+          challenge: {
+            kind: 'registration',
+            challenge: 'registration-challenge',
+            userId: 'user-1',
+            grantId: 'grant-2',
+            authorizationSessionHash: null,
+          },
+          enrollmentSessionHash: grant2.sessionHash,
+          authenticatedSessionHash: null,
+          credential: {
+            ...credential('credential-2'),
+            createdAt: expiredSessionNow,
+          },
+          session: {
+            idHash: bytes(12),
+            userId: 'user-1',
+            credentialId: 'credential-2',
+            authenticatedAt: expiredSessionNow,
+            expiresAt: expiredSessionNow + 1, // already expired relative to cleanup now
+            lastSeenAt: expiredSessionNow,
+          },
+          now: expiredSessionNow,
+        };
+        expect(await fixture.store.completeRegistration(secondReg)).toBe(true);
+
+        // Both credentials exist.
+        const allBefore = await fixture.store.listCredentials('user-1', true);
+        expect(allBefore).toHaveLength(2);
+
+        // cleanup() with a time well after the expired session: the session is removed,
+        // and the credential (created long ago with no remaining sessions) should also be removed.
+        const cleanupTime = now + 60_000;
+        await fixture.store.cleanup(cleanupTime);
+
+        const allAfter = await fixture.store.listCredentials('user-1', true);
+        // credential-1 has an active session and survives; credential-2 is orphaned.
+        expect(allAfter).toHaveLength(1);
+        expect(allAfter[0].id).toBe('credential-1');
       } finally {
         await fixture.close();
       }
