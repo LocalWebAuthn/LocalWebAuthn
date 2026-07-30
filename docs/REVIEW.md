@@ -1,7 +1,7 @@
 # Review Findings — 0.1.1 → 1.0.0
 
 Comprehensive review of claims, implementation, tests, and documentation.
-Status key: ✅ fixed  ◷ deferred  ✘ not started
+Status key: ✅ fixed ◷ deferred ✘ not started
 
 ## Must Fix Before 1.0
 
@@ -102,13 +102,13 @@ The minimum supported Node version isn't tested in CI.
 
 ## Nice to Have
 
-| Status | Item |
-|--------|------|
-| ✅ | `toWebAuthnCredential` byte copy — investigated; the `Uint8Array.from()` call is **necessary** for narrowing `ArrayBufferLike` to `ArrayBuffer` for SimpleWebAuthn type compatibility. Not a redundant copy. Comment added. |
-| ✅ | `rpId` format validation — validates bare hostname via `new URL('https://' + rpId)` in `config.ts`. |
-| ◷ | Cookie naming gap between SECURITY.md and demo — `__Host-` prefix requires HTTPS; demo is localhost. |
-| ◷ | Concurrent-access tests for WAL-mode SQLite — current in-memory test serialises implicitly. |
-| ◷ | Documented cleanup scheduling recommendations — mention periodic `cleanup()` cadence in SECURITY.md or README. |
+| Status | Item                                                                                                                                                                                                                        |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ✅     | `toWebAuthnCredential` byte copy — investigated; the `Uint8Array.from()` call is **necessary** for narrowing `ArrayBufferLike` to `ArrayBuffer` for SimpleWebAuthn type compatibility. Not a redundant copy. Comment added. |
+| ✅     | `rpId` format validation — validates bare hostname via `new URL('https://' + rpId)` in `config.ts`.                                                                                                                         |
+| ◷      | Cookie naming gap between SECURITY.md and demo — `__Host-` prefix requires HTTPS; demo is localhost.                                                                                                                        |
+| ◷      | Concurrent-access tests for WAL-mode SQLite — current in-memory test serialises implicitly.                                                                                                                                 |
+| ◷      | Documented cleanup scheduling recommendations — mention periodic `cleanup()` cadence in SECURITY.md or README.                                                                                                              |
 
 ## Discovered During Implementation
 
