@@ -165,6 +165,7 @@ var defaultCeremonies = {
   verifyAuthenticationResponse
 };
 var LocalWebAuthn = class {
+  /** Normalized configuration (see {@link LocalWebAuthnOptions}). */
   config;
   #store;
   #users;
@@ -181,6 +182,17 @@ var LocalWebAuthn = class {
     this.#ceremonies = options.ceremonies ?? defaultCeremonies;
     this.#onEvent = options.onEvent;
   }
+  /**
+   * Issue a single-use enrollment grant for a user.
+   *
+   * If the user already has a pending (uncompleted) enrollment grant, it is
+   * implicitly revoked and an {@link LocalWebAuthnEvent.enrollment.revoked | `enrollment.revoked`}
+   * audit event is emitted for the prior grant.
+   *
+   * @param userId - The application user ID to enroll.
+   * @param approvedByUserId - Optional ID of the administrator who approved this enrollment.
+   * @returns The enrollment URL (with `#token=` fragment), raw token, and expiry.
+   */
   async issueEnrollment(userId, approvedByUserId) {
     const user = await this.#activeUser(userId);
     if (!user) {
@@ -220,6 +232,16 @@ var LocalWebAuthn = class {
       expiresAt
     };
   }
+  /**
+   * Exchange a one-time enrollment token for an enrollment session.
+   *
+   * The token is single-use — subsequent exchanges with the same token will fail.
+   * The returned `enrollmentSessionToken` must be stored in an HTTP-only cookie
+   * and passed to {@link registrationOptions} and {@link verifyRegistration}.
+   *
+   * @param enrollmentToken - The raw token from the enrollment URL fragment.
+   * @returns The enrollment session and public user identity.
+   */
   async exchangeEnrollment(enrollmentToken) {
     const token = enrollmentToken.toLowerCase();
     if (!/^[a-z2-7]{52}$/u.test(token)) {
@@ -502,6 +524,15 @@ var LocalWebAuthn = class {
       user: this.#publicUser(user)
     };
   }
+  /**
+   * Resolve a session token to a user and session identity.
+   *
+   * Returns `null` if the session is expired, idle, revoked, the credential was
+   * revoked, or the user is inactive.
+   *
+   * @param sessionToken - The raw opaque session token (from cookie).
+   * @param touch - When `true` (default), update `lastSeenAt` to keep the session alive.
+   */
   async resolveSession(sessionToken, touch = true) {
     const idHash = await sha256(sessionToken);
     const now = this.#now();
@@ -530,6 +561,15 @@ var LocalWebAuthn = class {
   listCredentials(userId, includeRevoked = false) {
     return this.#store.listCredentials(userId, includeRevoked);
   }
+  /**
+   * Revoke a single credential and all its sessions.
+   *
+   * Throws {@link LocalWebAuthnError} with code `"last_credential"` if this is
+   * the user's only remaining active credential. Pass `{ allowLastCredential: true }`
+   * to override this safeguard (e.g., during a recovery flow).
+   *
+   * @returns `true` if the credential was revoked, `false` if it was already revoked.
+   */
   async revokeCredential(userId, credentialId, options = {}) {
     if (!options.allowLastCredential) {
       const credentials = await this.#store.listCredentials(userId);

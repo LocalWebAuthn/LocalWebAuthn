@@ -62,7 +62,30 @@ type RegistrationAuthorization =
       authenticatedSessionHash: Uint8Array;
     };
 
+/**
+ * Framework-neutral passkey authentication lifecycle.
+ *
+ * Owns enrollment grants, registration and authentication challenges,
+ * credential metadata and counters, opaque sessions, and revocation.
+ * Delegates WebAuthn cryptographic ceremonies to `@simplewebauthn/server`
+ * (or a provided {@link CeremonyProvider}).
+ *
+ * The host application retains its own user directory and provides a
+ * {@link UserProvider} for user lookup. It also owns HTTP concerns
+ * (cookies, origins, CSRF, rate limiting) and identity proofing.
+ *
+ * ```ts
+ * const auth = new LocalWebAuthn({
+ *   rpName: 'My App',
+ *   rpId: 'app.example.com',
+ *   expectedOrigins: 'https://app.example.com',
+ *   store: new SqliteLocalWebAuthnStore(database),
+ *   users: { getUser: async (id) => appUsers.get(id) },
+ * });
+ * ```
+ */
 export class LocalWebAuthn {
+  /** Normalized configuration (see {@link LocalWebAuthnOptions}). */
   readonly config;
 
   readonly #store;
@@ -82,6 +105,17 @@ export class LocalWebAuthn {
     this.#onEvent = options.onEvent;
   }
 
+  /**
+   * Issue a single-use enrollment grant for a user.
+   *
+   * If the user already has a pending (uncompleted) enrollment grant, it is
+   * implicitly revoked and an {@link LocalWebAuthnEvent.enrollment.revoked | `enrollment.revoked`}
+   * audit event is emitted for the prior grant.
+   *
+   * @param userId - The application user ID to enroll.
+   * @param approvedByUserId - Optional ID of the administrator who approved this enrollment.
+   * @returns The enrollment URL (with `#token=` fragment), raw token, and expiry.
+   */
   async issueEnrollment(userId: string, approvedByUserId?: string): Promise<EnrollmentIssue> {
     const user = await this.#activeUser(userId);
     if (!user) {
@@ -125,6 +159,16 @@ export class LocalWebAuthn {
     };
   }
 
+  /**
+   * Exchange a one-time enrollment token for an enrollment session.
+   *
+   * The token is single-use — subsequent exchanges with the same token will fail.
+   * The returned `enrollmentSessionToken` must be stored in an HTTP-only cookie
+   * and passed to {@link registrationOptions} and {@link verifyRegistration}.
+   *
+   * @param enrollmentToken - The raw token from the enrollment URL fragment.
+   * @returns The enrollment session and public user identity.
+   */
   async exchangeEnrollment(enrollmentToken: string): Promise<EnrollmentExchange> {
     const token = enrollmentToken.toLowerCase();
     if (!/^[a-z2-7]{52}$/u.test(token)) {
@@ -440,6 +484,15 @@ export class LocalWebAuthn {
     };
   }
 
+  /**
+   * Resolve a session token to a user and session identity.
+   *
+   * Returns `null` if the session is expired, idle, revoked, the credential was
+   * revoked, or the user is inactive.
+   *
+   * @param sessionToken - The raw opaque session token (from cookie).
+   * @param touch - When `true` (default), update `lastSeenAt` to keep the session alive.
+   */
   async resolveSession(
     sessionToken: string,
     touch = true,
@@ -477,6 +530,15 @@ export class LocalWebAuthn {
     return this.#store.listCredentials(userId, includeRevoked);
   }
 
+  /**
+   * Revoke a single credential and all its sessions.
+   *
+   * Throws {@link LocalWebAuthnError} with code `"last_credential"` if this is
+   * the user's only remaining active credential. Pass `{ allowLastCredential: true }`
+   * to override this safeguard (e.g., during a recovery flow).
+   *
+   * @returns `true` if the credential was revoked, `false` if it was already revoked.
+   */
   async revokeCredential(
     userId: string,
     credentialId: string,

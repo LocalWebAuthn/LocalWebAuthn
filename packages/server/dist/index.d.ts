@@ -1,5 +1,5 @@
-import { h as LocalWebAuthnOptions, i as EnrollmentIssue, j as EnrollmentExchange, R as RegistrationOptionsResult, k as RegistrationVerificationInput, l as RegistrationVerificationResult, A as AuthenticationOptionsResult, m as AuthenticationVerificationInput, n as AuthenticationVerificationResult, o as AuthUser, S as SessionIdentity, d as Credential, g as CleanupResult } from './types-BGyJpIth.js';
-export { p as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, q as LocalWebAuthnDurations, r as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, s as NewSession, U as UserProvider } from './types-BGyJpIth.js';
+import { h as LocalWebAuthnOptions, i as EnrollmentIssue, j as EnrollmentExchange, R as RegistrationOptionsResult, k as RegistrationVerificationInput, l as RegistrationVerificationResult, A as AuthenticationOptionsResult, m as AuthenticationVerificationInput, n as AuthenticationVerificationResult, o as AuthUser, S as SessionIdentity, d as Credential, g as CleanupResult } from './types-CtkYtX14.js';
+export { p as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, q as LocalWebAuthnDurations, r as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, s as NewSession, U as UserProvider } from './types-CtkYtX14.js';
 export { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 declare function defaultRandomBytes(length: number): Uint8Array;
@@ -35,11 +35,55 @@ type NormalizedConfig = {
     };
 };
 
+/**
+ * Framework-neutral passkey authentication lifecycle.
+ *
+ * Owns enrollment grants, registration and authentication challenges,
+ * credential metadata and counters, opaque sessions, and revocation.
+ * Delegates WebAuthn cryptographic ceremonies to `@simplewebauthn/server`
+ * (or a provided {@link CeremonyProvider}).
+ *
+ * The host application retains its own user directory and provides a
+ * {@link UserProvider} for user lookup. It also owns HTTP concerns
+ * (cookies, origins, CSRF, rate limiting) and identity proofing.
+ *
+ * ```ts
+ * const auth = new LocalWebAuthn({
+ *   rpName: 'My App',
+ *   rpId: 'app.example.com',
+ *   expectedOrigins: 'https://app.example.com',
+ *   store: new SqliteLocalWebAuthnStore(database),
+ *   users: { getUser: async (id) => appUsers.get(id) },
+ * });
+ * ```
+ */
 declare class LocalWebAuthn {
     #private;
+    /** Normalized configuration (see {@link LocalWebAuthnOptions}). */
     readonly config: NormalizedConfig;
     constructor(options: LocalWebAuthnOptions);
+    /**
+     * Issue a single-use enrollment grant for a user.
+     *
+     * If the user already has a pending (uncompleted) enrollment grant, it is
+     * implicitly revoked and an {@link LocalWebAuthnEvent.enrollment.revoked | `enrollment.revoked`}
+     * audit event is emitted for the prior grant.
+     *
+     * @param userId - The application user ID to enroll.
+     * @param approvedByUserId - Optional ID of the administrator who approved this enrollment.
+     * @returns The enrollment URL (with `#token=` fragment), raw token, and expiry.
+     */
     issueEnrollment(userId: string, approvedByUserId?: string): Promise<EnrollmentIssue>;
+    /**
+     * Exchange a one-time enrollment token for an enrollment session.
+     *
+     * The token is single-use — subsequent exchanges with the same token will fail.
+     * The returned `enrollmentSessionToken` must be stored in an HTTP-only cookie
+     * and passed to {@link registrationOptions} and {@link verifyRegistration}.
+     *
+     * @param enrollmentToken - The raw token from the enrollment URL fragment.
+     * @returns The enrollment session and public user identity.
+     */
     exchangeEnrollment(enrollmentToken: string): Promise<EnrollmentExchange>;
     registrationOptions(input: {
         enrollmentSessionToken?: string;
@@ -48,12 +92,30 @@ declare class LocalWebAuthn {
     verifyRegistration(input: RegistrationVerificationInput): Promise<RegistrationVerificationResult>;
     authenticationOptions(): Promise<AuthenticationOptionsResult>;
     verifyAuthentication(input: AuthenticationVerificationInput): Promise<AuthenticationVerificationResult>;
+    /**
+     * Resolve a session token to a user and session identity.
+     *
+     * Returns `null` if the session is expired, idle, revoked, the credential was
+     * revoked, or the user is inactive.
+     *
+     * @param sessionToken - The raw opaque session token (from cookie).
+     * @param touch - When `true` (default), update `lastSeenAt` to keep the session alive.
+     */
     resolveSession(sessionToken: string, touch?: boolean): Promise<{
         user: AuthUser;
         session: SessionIdentity;
     } | null>;
     revokeSession(sessionToken: string): Promise<boolean>;
     listCredentials(userId: string, includeRevoked?: boolean): Promise<Credential[]>;
+    /**
+     * Revoke a single credential and all its sessions.
+     *
+     * Throws {@link LocalWebAuthnError} with code `"last_credential"` if this is
+     * the user's only remaining active credential. Pass `{ allowLastCredential: true }`
+     * to override this safeguard (e.g., during a recovery flow).
+     *
+     * @returns `true` if the credential was revoked, `false` if it was already revoked.
+     */
     revokeCredential(userId: string, credentialId: string, options?: {
         allowLastCredential?: boolean;
     }): Promise<boolean>;
