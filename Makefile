@@ -33,7 +33,8 @@ check:
 	npm run check
 
 demo:
-	npm run demo
+	@printf 'Preparing demo...\n'
+	@cd examples/demo && ../../node_modules/.bin/vite build --logLevel error && node --import tsx src/server.ts
 
 demo-reset:
 	npm run demo:reset
