@@ -29,13 +29,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/localwebauthn/localwebauthn.git",
+    "url": "git+https://github.com/pjkundert/LocalWebAuthn.git",
     "directory": "packages/browser"
   },
   "bugs": {
-    "url": "https://github.com/localwebauthn/localwebauthn/issues"
+    "url": "https://github.com/pjkundert/LocalWebAuthn/issues"
   },
-  "homepage": "https://github.com/localwebauthn/localwebauthn#readme",
+  "homepage": "https://github.com/pjkundert/LocalWebAuthn#readme",
   "keywords": [
     "passkey",
     "webauthn",
