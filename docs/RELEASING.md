@@ -5,7 +5,7 @@ package version triggers `.github/workflows/publish.yml`.
 
 ## One-Time Bootstrap
 
-1. Create or enable the public `pjkundert/LocalWebAuthn` GitHub repository.
+1. Confirm the public `LocalWebAuthn/LocalWebAuthn` GitHub repository is available.
 2. Create the `localwebauthn` organization on npm.
 3. Enable publishing two-factor authentication on the maintainer npm account.
 4. Run `npm run release:check` from a clean checkout.
@@ -19,7 +19,7 @@ package version triggers `.github/workflows/publish.yml`.
 6. Open each package on npm and configure its Trusted Publisher:
 
    - Provider: GitHub Actions
-   - Organization or user: `pjkundert`
+   - Organization or user: `LocalWebAuthn`
    - Repository: `LocalWebAuthn`
    - Workflow filename: `publish.yml`
    - Environment: `npm`
