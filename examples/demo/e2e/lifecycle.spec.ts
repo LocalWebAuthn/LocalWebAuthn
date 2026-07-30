@@ -1,6 +1,8 @@
 import type { BrowserContext, Page } from '@playwright/test';
 
 import { expect, test } from '@playwright/test';
+import { mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import { createDemoApplication, ensureBootstrapAdministrator } from '../src/application';
 import { openDemoDatabase } from '../src/database';
@@ -41,6 +43,19 @@ async function administratorEnrollmentUrl(): Promise<string> {
   return enrollment.enrollmentUrl;
 }
 
+async function capture(page: Page, name: string): Promise<void> {
+  const screenshotDirectory = process.env.DEMO_SCREENSHOT_DIR;
+  if (!screenshotDirectory) {
+    return;
+  }
+  const directory = resolve(screenshotDirectory);
+  mkdirSync(directory, { recursive: true });
+  await page.screenshot({
+    path: resolve(directory, name),
+    fullPage: true,
+  });
+}
+
 test('runs the bootstrap, client enrollment, and additional-passkey lifecycle', async ({
   browser,
   page,
@@ -49,6 +64,7 @@ test('runs the bootstrap, client enrollment, and additional-passkey lifecycle', 
   await page.goto(await administratorEnrollmentUrl());
   await expect(page.getByRole('heading', { name: 'Create your passkey' })).toBeVisible();
   await expect(page.getByText('Demo Administrator')).toBeVisible();
+  await capture(page, 'demo-enrollment.png');
   await page.getByRole('button', { name: 'Create passkey' }).click();
   await expect(page.getByRole('heading', { name: 'Client access' })).toBeVisible();
 
@@ -62,6 +78,8 @@ test('runs the bootstrap, client enrollment, and additional-passkey lifecycle', 
   expect(enrollmentUrl).toMatch(/^http:\/\/localhost:4173\/enroll#token=[a-z2-7]{52}$/u);
   const row = page.getByRole('row').filter({ hasText: 'ada@example.test' });
   await expect(row.getByText('Pending')).toBeVisible();
+  await page.getByRole('button', { name: 'Dismiss enrollment URL' }).click();
+  await capture(page, 'demo-administration.png');
 
   const clientContext = await browser.newContext();
   const clientPage = await clientContext.newPage();
@@ -80,13 +98,14 @@ test('runs the bootstrap, client enrollment, and additional-passkey lifecycle', 
   await clientPage.getByRole('button', { name: 'Add passkey' }).click();
   await expect(clientPage.getByText('Additional passkey registered.')).toBeVisible();
   await expect(clientPage.locator('.passkey-item')).toHaveCount(2);
+  await clientPage.setViewportSize({ width: 390, height: 844 });
+  await capture(clientPage, 'demo-passkeys-mobile.png');
 
   await clientPage.getByRole('button', { name: 'Sign out' }).click();
   await expect(clientPage.getByRole('heading', { name: 'Sign in' })).toBeVisible();
   await clientPage.getByRole('button', { name: 'Continue with passkey' }).click();
   await expect(clientPage.getByRole('heading', { name: 'Your access' })).toBeVisible();
 
-  await clientPage.setViewportSize({ width: 390, height: 844 });
   await expect(clientPage.getByRole('button', { name: 'Add passkey' })).toBeVisible();
   expect(
     await clientPage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),

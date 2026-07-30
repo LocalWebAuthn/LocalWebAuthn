@@ -20,6 +20,7 @@
     "test:coverage": "vitest run --coverage",
     "demo": "npm run build --workspace @localwebauthn/demo && npm run start --workspace @localwebauthn/demo",
     "demo:reset": "npm run reset --workspace @localwebauthn/demo",
+    "demo:screenshots": "DEMO_SCREENSHOT_DIR=docs/images npm run test:demo:e2e",
     "test:demo:e2e": "playwright test --config examples/demo/playwright.config.ts",
     "check:packages": "npm run build && publint packages/server && publint packages/browser && attw --pack --profile esm-only packages/server && attw --pack --profile esm-only packages/browser",
     "check": "npm run typecheck && npm run lint && npm run format:check && npm run test:coverage && npm run check:packages",
