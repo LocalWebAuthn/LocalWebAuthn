@@ -1,0 +1,40 @@
+{
+  "name": "localwebauthn-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22.14"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "check:packages": "npm run build && publint packages/server && publint packages/browser && attw --pack --profile esm-only packages/server && attw --pack --profile esm-only packages/browser",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run test:coverage && npm run check:packages",
+    "release:check": "npm run check && npm pack --dry-run --workspace @localwebauthn/server && npm pack --dry-run --workspace @localwebauthn/browser"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.2",
+    "@eslint/js": "^10.0.1",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^26.1.2",
+    "@vitest/coverage-v8": "^4.1.10",
+    "better-sqlite3": "^12.11.1",
+    "eslint": "^10.8.0",
+    "miniflare": "^4.20260722.0",
+    "prettier": "^3.9.6",
+    "publint": "^0.3.15",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.65.0",
+    "vitest": "^4.1.10"
+  }
+}

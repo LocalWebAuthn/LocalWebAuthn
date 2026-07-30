@@ -1,0 +1,32 @@
+name: Publish
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: npm ci
+      - name: Verify release versions
+        run: |
+          SERVER_VERSION="$(node -p "require('./packages/server/package.json').version")"
+          BROWSER_VERSION="$(node -p "require('./packages/browser/package.json').version")"
+          test "$SERVER_VERSION" = "$BROWSER_VERSION"
+          test "$GITHUB_REF_NAME" = "v$SERVER_VERSION"
+      - run: npm run check
+      - run: npm publish --workspace @localwebauthn/server
+      - run: npm publish --workspace @localwebauthn/browser

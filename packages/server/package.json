@@ -1,0 +1,67 @@
+{
+  "name": "@localwebauthn/server",
+  "version": "0.1.0",
+  "description": "Self-hosted, invitation-first passkey authentication lifecycle",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "migrations",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./sqlite": {
+      "types": "./dist/sqlite.d.ts",
+      "import": "./dist/sqlite.js"
+    },
+    "./d1": {
+      "types": "./dist/d1.d.ts",
+      "import": "./dist/d1.js"
+    },
+    "./schema": {
+      "types": "./dist/schema.d.ts",
+      "import": "./dist/schema.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts src/sqlite.ts src/d1.ts src/schema.ts --format esm --dts --clean"
+  },
+  "dependencies": {
+    "@simplewebauthn/server": "^13.3.2"
+  },
+  "peerDependencies": {
+    "better-sqlite3": ">=11"
+  },
+  "peerDependenciesMeta": {
+    "better-sqlite3": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/localwebauthn/localwebauthn.git",
+    "directory": "packages/server"
+  },
+  "bugs": {
+    "url": "https://github.com/localwebauthn/localwebauthn/issues"
+  },
+  "homepage": "https://github.com/localwebauthn/localwebauthn#readme",
+  "keywords": [
+    "passkey",
+    "webauthn",
+    "authentication",
+    "sqlite",
+    "cloudflare-d1"
+  ]
+}

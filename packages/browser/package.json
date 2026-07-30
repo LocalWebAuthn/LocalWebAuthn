@@ -1,0 +1,45 @@
+{
+  "name": "@localwebauthn/browser",
+  "version": "0.1.0",
+  "description": "Browser client for the LocalWebAuthn HTTP protocol",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean"
+  },
+  "dependencies": {
+    "@simplewebauthn/browser": "^13.3.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/localwebauthn/localwebauthn.git",
+    "directory": "packages/browser"
+  },
+  "bugs": {
+    "url": "https://github.com/localwebauthn/localwebauthn/issues"
+  },
+  "homepage": "https://github.com/localwebauthn/localwebauthn#readme",
+  "keywords": [
+    "passkey",
+    "webauthn",
+    "authentication",
+    "browser"
+  ]
+}
