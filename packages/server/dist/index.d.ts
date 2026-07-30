@@ -1,6 +1,6 @@
 import { h as LocalWebAuthnOptions, i as EnrollmentIssue, j as EnrollmentExchange, R as RegistrationOptionsResult, k as RegistrationVerificationInput, l as RegistrationVerificationResult, A as AuthenticationOptionsResult, m as AuthenticationVerificationInput, n as AuthenticationVerificationResult, o as AuthUser, S as SessionIdentity, d as Credential, g as CleanupResult } from './types-Cel_fkBK.js';
 export { p as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, q as LocalWebAuthnDurations, r as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, s as NewSession, U as UserProvider } from './types-Cel_fkBK.js';
-import '@simplewebauthn/server';
+export { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 declare function defaultRandomBytes(length: number): Uint8Array;
 declare function sha256(value: string | Uint8Array): Promise<Uint8Array>;

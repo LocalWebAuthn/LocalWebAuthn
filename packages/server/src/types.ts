@@ -257,3 +257,10 @@ export function toWebAuthnCredential(credential: Credential): WebAuthnCredential
     transports: credential.transports,
   };
 }
+
+export type {
+  AuthenticationResponseJSON,
+  PublicKeyCredentialCreationOptionsJSON,
+  PublicKeyCredentialRequestOptionsJSON,
+  RegistrationResponseJSON,
+};

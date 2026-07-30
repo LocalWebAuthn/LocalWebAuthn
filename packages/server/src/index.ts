@@ -11,6 +11,7 @@ export {
 export { isLocalWebAuthnError, LocalWebAuthnError, type LocalWebAuthnErrorCode } from './errors.js';
 export { LocalWebAuthn } from './service.js';
 export type {
+  AuthenticationResponseJSON,
   AuthenticationOptionsResult,
   AuthenticationVerificationInput,
   AuthenticationVerificationResult,
@@ -34,6 +35,7 @@ export type {
   NewCredential,
   NewSession,
   RegistrationOptionsResult,
+  RegistrationResponseJSON,
   RegistrationVerificationInput,
   RegistrationVerificationResult,
   SessionIdentity,
