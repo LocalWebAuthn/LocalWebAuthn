@@ -267,4 +267,6 @@ make demo-test
 
 `make check` runs TypeScript, lint, formatting, unit and adapter conformance tests, package
 builds, `publint`, and `arethetypeswrong`. Releases use npm OIDC Trusted Publishing and do
-not require a long-lived npm write token. See [docs/RELEASING.md](docs/RELEASING.md).
+not require a long-lived npm write token. Publishing is triggered by a versioned GitHub
+Release, not by an ordinary branch push. See [docs/RELEASING.md](docs/RELEASING.md) and
+[CHANGELOG.md](CHANGELOG.md).
