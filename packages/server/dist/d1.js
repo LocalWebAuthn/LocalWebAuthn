@@ -32,25 +32,26 @@ var D1LocalWebAuthnStore = class {
     this.#database = database;
   }
   async replaceEnrollmentGrant(record) {
-    await this.#database.batch([
-      this.#database.prepare(
-        `UPDATE localwebauthn_enrollment_grants
-           SET revoked_at = ?
-           WHERE user_id = ? AND completed_at IS NULL AND revoked_at IS NULL`
-      ).bind(record.createdAt, record.userId),
-      this.#database.prepare(
-        `INSERT INTO localwebauthn_enrollment_grants(
-             id, user_id, token_hash, expires_at, approved_by_user_id, created_at
-           ) VALUES (?, ?, ?, ?, ?, ?)`
-      ).bind(
-        record.id,
-        record.userId,
-        record.tokenHash,
-        record.expiresAt,
-        record.approvedByUserId,
-        record.createdAt
-      )
-    ]);
+    const revokedResult = await this.#database.prepare(
+      `UPDATE localwebauthn_enrollment_grants
+         SET revoked_at = ?
+         WHERE user_id = ? AND completed_at IS NULL AND revoked_at IS NULL
+         RETURNING id`
+    ).bind(record.createdAt, record.userId).run();
+    const revokedIds = revokedResult.results.map((row) => row.id);
+    await this.#database.prepare(
+      `INSERT INTO localwebauthn_enrollment_grants(
+           id, user_id, token_hash, expires_at, approved_by_user_id, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(
+      record.id,
+      record.userId,
+      record.tokenHash,
+      record.expiresAt,
+      record.approvedByUserId,
+      record.createdAt
+    ).run();
+    return revokedIds;
   }
   async exchangeEnrollment(tokenHash, sessionHash, sessionExpiresAt, now) {
     const row = await returningRow(
@@ -305,6 +306,7 @@ var D1LocalWebAuthnStore = class {
     ]);
   }
   async cleanup(now) {
+    const orphanedCredentialCutoff = now - 36e5;
     const results = await this.#database.batch([
       this.#database.prepare(
         `DELETE FROM localwebauthn_enrollment_grants
@@ -320,12 +322,18 @@ var D1LocalWebAuthnStore = class {
       this.#database.prepare(
         `DELETE FROM localwebauthn_sessions
            WHERE expires_at <= ? OR revoked_at IS NOT NULL`
-      ).bind(now)
+      ).bind(now),
+      this.#database.prepare(
+        `DELETE FROM localwebauthn_credentials
+           WHERE id NOT IN (SELECT DISTINCT credential_id FROM localwebauthn_sessions)
+             AND created_at <= ?`
+      ).bind(orphanedCredentialCutoff)
     ]);
     return {
       enrollmentGrants: changes(results[0]),
       challenges: changes(results[1]),
-      sessions: changes(results[2])
+      sessions: changes(results[2]),
+      orphanedCredentials: changes(results[3])
     };
   }
   #guardPreviousChange() {

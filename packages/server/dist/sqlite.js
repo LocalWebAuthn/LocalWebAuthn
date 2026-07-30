@@ -25,12 +25,13 @@ var SqliteLocalWebAuthnStore = class {
     this.#database = database;
   }
   async replaceEnrollmentGrant(record) {
-    this.#database.transaction(() => {
-      this.#database.prepare(
+    return this.#database.transaction(() => {
+      const revoked = this.#database.prepare(
         `UPDATE localwebauthn_enrollment_grants
            SET revoked_at = ?
-           WHERE user_id = ? AND completed_at IS NULL AND revoked_at IS NULL`
-      ).run(record.createdAt, record.userId);
+           WHERE user_id = ? AND completed_at IS NULL AND revoked_at IS NULL
+           RETURNING id`
+      ).all(record.createdAt, record.userId);
       this.#database.prepare(
         `INSERT INTO localwebauthn_enrollment_grants(
              id, user_id, token_hash, expires_at, approved_by_user_id, created_at
@@ -43,6 +44,7 @@ var SqliteLocalWebAuthnStore = class {
         record.approvedByUserId,
         record.createdAt
       );
+      return revoked.map((row) => row.id);
     })();
   }
   async exchangeEnrollment(tokenHash, sessionHash, sessionExpiresAt, now) {
@@ -275,23 +277,33 @@ var SqliteLocalWebAuthnStore = class {
     })();
   }
   async cleanup(now) {
-    return this.#database.transaction(() => ({
-      enrollmentGrants: this.#database.prepare(
-        `DELETE FROM localwebauthn_enrollment_grants
-           WHERE (expires_at <= ? OR completed_at IS NOT NULL OR revoked_at IS NOT NULL)
-             AND id NOT IN (
-               SELECT grant_id FROM localwebauthn_challenges WHERE grant_id IS NOT NULL
-             )`
-      ).run(now).changes,
-      challenges: this.#database.prepare(
-        `DELETE FROM localwebauthn_challenges
-           WHERE expires_at <= ? OR consumed_at IS NOT NULL`
-      ).run(now).changes,
-      sessions: this.#database.prepare(
+    return this.#database.transaction(() => {
+      const sessions = this.#database.prepare(
         `DELETE FROM localwebauthn_sessions
            WHERE expires_at <= ? OR revoked_at IS NOT NULL`
-      ).run(now).changes
-    }))();
+      ).run(now).changes;
+      const orphanedCredentialCutoff = now - 36e5;
+      const orphanedCredentials = this.#database.prepare(
+        `DELETE FROM localwebauthn_credentials
+           WHERE id NOT IN (SELECT DISTINCT credential_id FROM localwebauthn_sessions)
+             AND created_at <= ?`
+      ).run(orphanedCredentialCutoff).changes;
+      return {
+        enrollmentGrants: this.#database.prepare(
+          `DELETE FROM localwebauthn_enrollment_grants
+             WHERE (expires_at <= ? OR completed_at IS NOT NULL OR revoked_at IS NOT NULL)
+               AND id NOT IN (
+                 SELECT grant_id FROM localwebauthn_challenges WHERE grant_id IS NOT NULL
+               )`
+        ).run(now).changes,
+        challenges: this.#database.prepare(
+          `DELETE FROM localwebauthn_challenges
+             WHERE expires_at <= ? OR consumed_at IS NOT NULL`
+        ).run(now).changes,
+        sessions,
+        orphanedCredentials
+      };
+    })();
   }
   #registrationAuthorizationIsValid(input) {
     if (input.challenge.grantId && input.enrollmentSessionHash) {

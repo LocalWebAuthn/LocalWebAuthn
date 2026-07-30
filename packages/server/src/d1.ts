@@ -73,30 +73,34 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
     this.#database = database;
   }
 
-  async replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<void> {
-    await this.#database.batch([
-      this.#database
-        .prepare(
-          `UPDATE localwebauthn_enrollment_grants
-           SET revoked_at = ?
-           WHERE user_id = ? AND completed_at IS NULL AND revoked_at IS NULL`,
-        )
-        .bind(record.createdAt, record.userId),
-      this.#database
-        .prepare(
-          `INSERT INTO localwebauthn_enrollment_grants(
-             id, user_id, token_hash, expires_at, approved_by_user_id, created_at
-           ) VALUES (?, ?, ?, ?, ?, ?)`,
-        )
-        .bind(
-          record.id,
-          record.userId,
-          record.tokenHash,
-          record.expiresAt,
-          record.approvedByUserId,
-          record.createdAt,
-        ),
-    ]);
+  async replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]> {
+    const revokedResult = await this.#database
+      .prepare(
+        `UPDATE localwebauthn_enrollment_grants
+         SET revoked_at = ?
+         WHERE user_id = ? AND completed_at IS NULL AND revoked_at IS NULL
+         RETURNING id`,
+      )
+      .bind(record.createdAt, record.userId)
+      .run<{ id: string }>();
+    const revokedIds: string[] = revokedResult.results.map((row) => row.id);
+
+    await this.#database
+      .prepare(
+        `INSERT INTO localwebauthn_enrollment_grants(
+           id, user_id, token_hash, expires_at, approved_by_user_id, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        record.id,
+        record.userId,
+        record.tokenHash,
+        record.expiresAt,
+        record.approvedByUserId,
+        record.createdAt,
+      )
+      .run();
+    return revokedIds;
   }
 
   async exchangeEnrollment(
@@ -427,6 +431,11 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
   }
 
   async cleanup(now: number): Promise<CleanupResult> {
+    // D1 batches are not atomic. A credential INSERT can succeed while the
+    // subsequent session INSERT is never reached (mid-batch guard failure).
+    // Remove credentials that have no session rows and are old enough to be
+    // certain they are orphans, not in-flight registrations.
+    const orphanedCredentialCutoff = now - 3_600_000; // 1 hour grace period
     const results = await this.#database.batch([
       this.#database
         .prepare(
@@ -449,11 +458,19 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
            WHERE expires_at <= ? OR revoked_at IS NOT NULL`,
         )
         .bind(now),
+      this.#database
+        .prepare(
+          `DELETE FROM localwebauthn_credentials
+           WHERE id NOT IN (SELECT DISTINCT credential_id FROM localwebauthn_sessions)
+             AND created_at <= ?`,
+        )
+        .bind(orphanedCredentialCutoff),
     ]);
     return {
       enrollmentGrants: changes(results[0]),
       challenges: changes(results[1]),
       sessions: changes(results[2]),
+      orphanedCredentials: changes(results[3]),
     };
   }
 

@@ -194,7 +194,7 @@ var LocalWebAuthn = class {
     const grantId = createOpaqueToken(this.#randomBytes);
     const enrollmentToken = createEnrollmentToken(this.#randomBytes);
     const expiresAt = now + this.config.durations.enrollmentGrantMs;
-    await this.#store.replaceEnrollmentGrant({
+    const revokedGrantIds = await this.#store.replaceEnrollmentGrant({
       id: grantId,
       userId,
       tokenHash: await sha256(enrollmentToken),
@@ -202,6 +202,14 @@ var LocalWebAuthn = class {
       approvedByUserId: approvedByUserId ?? null,
       createdAt: now
     });
+    for (const revokedGrantId of revokedGrantIds) {
+      await this.#emit({
+        type: "enrollment.revoked",
+        at: now,
+        userId,
+        grantId: revokedGrantId
+      });
+    }
     const enrollmentUrl = new URL(this.config.enrollmentPath, this.config.publicOrigin);
     enrollmentUrl.hash = `token=${enrollmentToken}`;
     await this.#emit({ type: "enrollment.issued", at: now, userId, grantId });

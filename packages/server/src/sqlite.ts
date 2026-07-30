@@ -59,15 +59,16 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
     this.#database = database;
   }
 
-  async replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<void> {
-    this.#database.transaction(() => {
-      this.#database
+  async replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]> {
+    return this.#database.transaction(() => {
+      const revoked = this.#database
         .prepare(
           `UPDATE localwebauthn_enrollment_grants
            SET revoked_at = ?
-           WHERE user_id = ? AND completed_at IS NULL AND revoked_at IS NULL`,
+           WHERE user_id = ? AND completed_at IS NULL AND revoked_at IS NULL
+           RETURNING id`,
         )
-        .run(record.createdAt, record.userId);
+        .all(record.createdAt, record.userId) as { id: string }[];
       this.#database
         .prepare(
           `INSERT INTO localwebauthn_enrollment_grants(
@@ -82,6 +83,7 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
           record.approvedByUserId,
           record.createdAt,
         );
+      return revoked.map((row) => row.id);
     })();
   }
 
@@ -393,29 +395,49 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
   }
 
   async cleanup(now: number): Promise<CleanupResult> {
-    return this.#database.transaction(() => ({
-      enrollmentGrants: this.#database
-        .prepare(
-          `DELETE FROM localwebauthn_enrollment_grants
-           WHERE (expires_at <= ? OR completed_at IS NOT NULL OR revoked_at IS NOT NULL)
-             AND id NOT IN (
-               SELECT grant_id FROM localwebauthn_challenges WHERE grant_id IS NOT NULL
-             )`,
-        )
-        .run(now).changes,
-      challenges: this.#database
-        .prepare(
-          `DELETE FROM localwebauthn_challenges
-           WHERE expires_at <= ? OR consumed_at IS NOT NULL`,
-        )
-        .run(now).changes,
-      sessions: this.#database
+    return this.#database.transaction(() => {
+      // Expired and revoked sessions are removed first so the subsequent
+      // orphaned-credential pass can detect credentials left with no sessions.
+      const sessions = this.#database
         .prepare(
           `DELETE FROM localwebauthn_sessions
            WHERE expires_at <= ? OR revoked_at IS NOT NULL`,
         )
-        .run(now).changes,
-    }))();
+        .run(now).changes;
+
+      // D1 batches are not atomic. A credential INSERT can succeed while the
+      // subsequent session INSERT is never reached (mid-batch guard failure).
+      // Remove credentials that have no session rows and are old enough to be
+      // certain they are orphans, not in-flight registrations.
+      const orphanedCredentialCutoff = now - 3_600_000; // 1 hour grace period
+      const orphanedCredentials = this.#database
+        .prepare(
+          `DELETE FROM localwebauthn_credentials
+           WHERE id NOT IN (SELECT DISTINCT credential_id FROM localwebauthn_sessions)
+             AND created_at <= ?`,
+        )
+        .run(orphanedCredentialCutoff).changes;
+
+      return {
+        enrollmentGrants: this.#database
+          .prepare(
+            `DELETE FROM localwebauthn_enrollment_grants
+             WHERE (expires_at <= ? OR completed_at IS NOT NULL OR revoked_at IS NOT NULL)
+               AND id NOT IN (
+                 SELECT grant_id FROM localwebauthn_challenges WHERE grant_id IS NOT NULL
+               )`,
+          )
+          .run(now).changes,
+        challenges: this.#database
+          .prepare(
+            `DELETE FROM localwebauthn_challenges
+             WHERE expires_at <= ? OR consumed_at IS NOT NULL`,
+          )
+          .run(now).changes,
+        sessions,
+        orphanedCredentials,
+      };
+    })();
   }
 
   #registrationAuthorizationIsValid(input: CompleteRegistrationInput): boolean {

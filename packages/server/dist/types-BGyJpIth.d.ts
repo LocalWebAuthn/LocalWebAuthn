@@ -85,9 +85,10 @@ type CleanupResult = {
     enrollmentGrants: number;
     challenges: number;
     sessions: number;
+    orphanedCredentials: number;
 };
 type LocalWebAuthnStore = {
-    replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<void>;
+    replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]>;
     exchangeEnrollment(tokenHash: Uint8Array, sessionHash: Uint8Array, sessionExpiresAt: number, now: number): Promise<EnrollmentSession | null>;
     resolveEnrollmentSession(sessionHash: Uint8Array, now: number): Promise<EnrollmentSession | null>;
     createChallenge(record: ChallengeRecord): Promise<void>;
@@ -104,7 +105,7 @@ type LocalWebAuthnStore = {
     cleanup(now: number): Promise<CleanupResult>;
 };
 type LocalWebAuthnEvent = {
-    type: 'enrollment.issued' | 'enrollment.exchanged' | 'enrollment.completed';
+    type: 'enrollment.issued' | 'enrollment.exchanged' | 'enrollment.completed' | 'enrollment.revoked';
     at: number;
     userId: string;
     grantId: string;

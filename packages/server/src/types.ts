@@ -105,10 +105,11 @@ export type CleanupResult = {
   enrollmentGrants: number;
   challenges: number;
   sessions: number;
+  orphanedCredentials: number;
 };
 
 export type LocalWebAuthnStore = {
-  replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<void>;
+  replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]>;
   exchangeEnrollment(
     tokenHash: Uint8Array,
     sessionHash: Uint8Array,
@@ -140,7 +141,11 @@ export type LocalWebAuthnStore = {
 
 export type LocalWebAuthnEvent =
   | {
-      type: 'enrollment.issued' | 'enrollment.exchanged' | 'enrollment.completed';
+      type:
+        | 'enrollment.issued'
+        | 'enrollment.exchanged'
+        | 'enrollment.completed'
+        | 'enrollment.revoked';
       at: number;
       userId: string;
       grantId: string;
