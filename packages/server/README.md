@@ -40,3 +40,7 @@ deploying.
 
 Cloudflare Workers can use `D1LocalWebAuthnStore` and `migrateD1` from
 `@localwebauthn/server/d1`.
+
+The repository's [lifecycle demo](../../examples/demo/README.md) shows the complete SQLite
+integration, HTTP-only cookie adapter, initial bootstrap, client enrollment, additional
+passkeys, and revocation.

@@ -18,3 +18,7 @@ if (token) {
 
 The enrollment fragment is removed from browser history before exchange. Ceremony and session
 tokens remain in host-managed HTTP-only cookies and are never exposed to this package.
+
+See the repository's [lifecycle demo](../../examples/demo/README.md) for initial enrollment,
+passkey sign-in, administrator-issued client links, and authenticated additional-passkey
+registration.

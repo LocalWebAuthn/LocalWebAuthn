@@ -3,3 +3,7 @@ coverage/
 .wrangler/
 *.tgz
 .DS_Store
+**/.data/
+examples/demo/dist/
+playwright-report/
+test-results/

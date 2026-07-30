@@ -36,7 +36,7 @@
             fi
 
             echo ""
-            echo "Commands: make build | make test | make check"
+            echo "Commands: make demo | make build | make test | make check"
           '';
         };
       });

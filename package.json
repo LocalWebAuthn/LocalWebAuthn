@@ -1,10 +1,11 @@
 {
   "name": "localwebauthn-workspace",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "examples/*"
   ],
   "engines": {
     "node": ">=22.14"
@@ -17,6 +18,9 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "demo": "npm run build --workspace @localwebauthn/demo && npm run start --workspace @localwebauthn/demo",
+    "demo:reset": "npm run reset --workspace @localwebauthn/demo",
+    "test:demo:e2e": "playwright test --config examples/demo/playwright.config.ts",
     "check:packages": "npm run build && publint packages/server && publint packages/browser && attw --pack --profile esm-only packages/server && attw --pack --profile esm-only packages/browser",
     "check": "npm run typecheck && npm run lint && npm run format:check && npm run test:coverage && npm run check:packages",
     "release:check": "npm run check && npm pack --dry-run --workspace @localwebauthn/server && npm pack --dry-run --workspace @localwebauthn/browser"
@@ -24,6 +28,7 @@
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.2",
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.62.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.1.2",
     "@vitest/coverage-v8": "^4.1.10",
