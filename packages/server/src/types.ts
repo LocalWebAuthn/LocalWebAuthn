@@ -206,8 +206,12 @@ export type LocalWebAuthnStore = {
   /** Look up an enrollment session by its hashed token. */
   resolveEnrollmentSession(sessionHash: Uint8Array, now: number): Promise<EnrollmentSession | null>;
 
-  /** Insert a challenge record. */
-  createChallenge(record: ChallengeRecord): Promise<void>;
+  /**
+   * Insert a challenge record. Returns `true` if inserted, `false` if a
+   * challenge with the same `idHash` already exists (extremely unlikely with
+   * random 256-bit tokens, but handled defensively).
+   */
+  createChallenge(record: ChallengeRecord): Promise<boolean>;
 
   /**
    * Atomically consume a challenge by its hashed token and kind.
@@ -395,9 +399,15 @@ export type LocalWebAuthnOptions = {
   /**
    * Observability callback. Receives lifecycle events for audit logging.
    * Errors thrown by this callback are silently caught — authentication has
-   * already committed and cannot be rolled back by an observer.
+   * already committed and cannot be rolled back by an observer. The error is
+   * forwarded to {@link logger} so operators are not blind to audit-log failures.
    */
   onEvent?: (event: LocalWebAuthnEvent) => void | Promise<void>;
+  /**
+   * Logger for warnings and errors. Defaults to `console`.
+   * Set to `{ warn: () => {}, error: () => {} }` to suppress logging in tests.
+   */
+  logger?: Pick<typeof console, 'warn' | 'error'>;
 };
 
 export type EnrollmentIssue = {
@@ -456,6 +466,7 @@ export type AuthenticationVerificationInput = {
 export function toWebAuthnCredential(credential: Credential): WebAuthnCredential {
   return {
     id: credential.id,
+    // Uint8Array.from narrows ArrayBufferLike to ArrayBuffer for the SimpleWebAuthn types.
     publicKey: Uint8Array.from(credential.publicKey),
     counter: credential.counter,
     transports: credential.transports,

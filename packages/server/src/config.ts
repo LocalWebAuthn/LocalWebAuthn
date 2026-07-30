@@ -41,6 +41,16 @@ export function normalizeConfig(options: LocalWebAuthnOptions): NormalizedConfig
     configurationError('rpName, rpId, and at least one expected origin are required.');
   }
 
+  // rpId must be a valid bare hostname (no protocol, port, path, or query).
+  try {
+    const url = new URL(`https://${rpId}`);
+    if (url.hostname !== rpId) {
+      configurationError('rpId must be a bare hostname (no protocol, port, or path).');
+    }
+  } catch {
+    configurationError('rpId must be a valid hostname.');
+  }
+
   const expectedOrigins = configuredOrigins.map((configuredOrigin) => {
     const url = new URL(configuredOrigin);
     const origin = url.origin;

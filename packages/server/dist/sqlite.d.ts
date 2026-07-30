@@ -1,4 +1,4 @@
-import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, g as CleanupResult } from './types-CtkYtX14.js';
+import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, g as CleanupResult } from './types-TH3Ore5_.js';
 import '@simplewebauthn/server';
 
 type SqliteRunResult = {
@@ -21,7 +21,7 @@ declare class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
     replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]>;
     exchangeEnrollment(tokenHash: Uint8Array, sessionHash: Uint8Array, sessionExpiresAt: number, now: number): Promise<EnrollmentSession | null>;
     resolveEnrollmentSession(sessionHash: Uint8Array, now: number): Promise<EnrollmentSession | null>;
-    createChallenge(record: ChallengeRecord): Promise<void>;
+    createChallenge(record: ChallengeRecord): Promise<boolean>;
     consumeChallenge(idHash: Uint8Array, kind: ChallengeKind, now: number): Promise<ConsumedChallenge | null>;
     listCredentials(userId: string, includeRevoked?: boolean): Promise<Credential[]>;
     getCredential(credentialId: string): Promise<Credential | null>;

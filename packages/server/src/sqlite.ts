@@ -143,24 +143,26 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
     return row ? enrollmentSessionFromRow(row) : null;
   }
 
-  async createChallenge(record: ChallengeRecord): Promise<void> {
-    this.#database
-      .prepare(
-        `INSERT INTO localwebauthn_challenges(
-           id_hash, kind, challenge, user_id, grant_id,
-           authorization_session_hash, expires_at, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        record.idHash,
-        record.kind,
-        record.challenge,
-        record.userId,
-        record.grantId,
-        record.authorizationSessionHash,
-        record.expiresAt,
-        record.createdAt,
-      );
+  async createChallenge(record: ChallengeRecord): Promise<boolean> {
+    return (
+      this.#database
+        .prepare(
+          `INSERT OR IGNORE INTO localwebauthn_challenges(
+             id_hash, kind, challenge, user_id, grant_id,
+             authorization_session_hash, expires_at, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          record.idHash,
+          record.kind,
+          record.challenge,
+          record.userId,
+          record.grantId,
+          record.authorizationSessionHash,
+          record.expiresAt,
+          record.createdAt,
+        ).changes === 1
+    );
   }
 
   async consumeChallenge(

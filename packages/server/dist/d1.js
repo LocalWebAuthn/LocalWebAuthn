@@ -80,8 +80,8 @@ var D1LocalWebAuthnStore = class {
     return row ? enrollmentSessionFromRow(row) : null;
   }
   async createChallenge(record) {
-    await this.#database.prepare(
-      `INSERT INTO localwebauthn_challenges(
+    const result = await this.#database.prepare(
+      `INSERT OR IGNORE INTO localwebauthn_challenges(
            id_hash, kind, challenge, user_id, grant_id,
            authorization_session_hash, expires_at, created_at
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
@@ -95,6 +95,7 @@ var D1LocalWebAuthnStore = class {
       record.expiresAt,
       record.createdAt
     ).run();
+    return changes(result) === 1;
   }
   async consumeChallenge(idHash, kind, now) {
     const row = await returningRow(
@@ -132,66 +133,94 @@ var D1LocalWebAuthnStore = class {
     return row ? credentialFromRow(row) : null;
   }
   async completeRegistration(input) {
-    const credential = input.credential;
-    const grantId = input.challenge.grantId;
-    const grantSessionHash = input.enrollmentSessionHash;
-    const authenticatedSessionHash = input.authenticatedSessionHash;
-    const statements = [
-      this.#database.prepare(
-        `INSERT INTO localwebauthn_credentials(
-             id, user_id, public_key, counter, transports_json,
-             device_type, backed_up, label, created_at
+    const { credential, challenge, enrollmentSessionHash, authenticatedSessionHash, session, now } = input;
+    const grantId = challenge.grantId;
+    const userId = credential.userId;
+    const transportsJson = JSON.stringify(credential.transports);
+    const backedUpInt = credential.backedUp ? 1 : 0;
+    const credentialInsert = this.#database.prepare(
+      `INSERT INTO localwebauthn_credentials(
+           id, user_id, public_key, counter, transports_json,
+           device_type, backed_up, label, created_at
+         )
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+         WHERE (
+           ? IS NOT NULL
+           AND EXISTS (
+             SELECT 1 FROM localwebauthn_enrollment_grants
+             WHERE id = ?
+               AND user_id = ?
+               AND session_hash = ?
+               AND session_expires_at > ?
+               AND completed_at IS NULL
+               AND revoked_at IS NULL
            )
-           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
-           WHERE (
-             ? IS NOT NULL
-             AND EXISTS (
-               SELECT 1 FROM localwebauthn_enrollment_grants
-               WHERE id = ?
-                 AND user_id = ?
-                 AND session_hash = ?
-                 AND session_expires_at > ?
-                 AND completed_at IS NULL
-                 AND revoked_at IS NULL
-             )
-           ) OR (
-             ? IS NULL
-             AND ? IS NOT NULL
-             AND EXISTS (
-               SELECT 1
-               FROM localwebauthn_sessions AS sessions
-               JOIN localwebauthn_credentials AS credentials
-                 ON credentials.id = sessions.credential_id
-               WHERE sessions.id_hash = ?
-                 AND sessions.user_id = ?
-                 AND sessions.expires_at > ?
-                 AND sessions.revoked_at IS NULL
-                 AND credentials.revoked_at IS NULL
-             )
-           )`
-      ).bind(
-        credential.id,
-        credential.userId,
-        credential.publicKey,
-        credential.counter,
-        JSON.stringify(credential.transports),
-        credential.deviceType,
-        credential.backedUp ? 1 : 0,
-        credential.label,
-        credential.createdAt,
-        grantId,
-        grantId,
-        credential.userId,
-        grantSessionHash,
-        input.now,
-        grantId,
-        authenticatedSessionHash,
-        authenticatedSessionHash,
-        credential.userId,
-        input.now
-      ),
-      this.#guardPreviousChange()
-    ];
+         ) OR (
+           ? IS NULL
+           AND ? IS NOT NULL
+           AND EXISTS (
+             SELECT 1
+             FROM localwebauthn_sessions AS sessions
+             JOIN localwebauthn_credentials AS credentials
+               ON credentials.id = sessions.credential_id
+             WHERE sessions.id_hash = ?
+               AND sessions.user_id = ?
+               AND sessions.expires_at > ?
+               AND sessions.revoked_at IS NULL
+               AND credentials.revoked_at IS NULL
+           )
+         )`
+    ).bind(
+      /*  1 */
+      credential.id,
+      /*  2 */
+      userId,
+      /*  3 */
+      credential.publicKey,
+      /*  4 */
+      credential.counter,
+      /*  5 */
+      transportsJson,
+      /*  6 */
+      credential.deviceType,
+      /*  7 */
+      backedUpInt,
+      /*  8 */
+      credential.label,
+      /*  9 */
+      credential.createdAt,
+      /* 10 */
+      grantId,
+      // also used as the "IS NOT NULL" condition for the grant path
+      /* 11 */
+      grantId,
+      // sub-query: enrollment grant id match
+      /* 12 */
+      userId,
+      // sub-query: user match
+      /* 13 */
+      enrollmentSessionHash,
+      // sub-query: session hash match
+      /* 14 */
+      now,
+      // sub-query: session not expired
+      /* 15 */
+      grantId,
+      // also used as the "IS NULL" condition for the session path
+      /* 16 */
+      authenticatedSessionHash,
+      // also used as the "IS NOT NULL" condition
+      /* 17 */
+      authenticatedSessionHash,
+      // sub-query: session id_hash match
+      /* 18 */
+      userId,
+      // sub-query: user match
+      /* 19 */
+      now
+      // sub-query: session not expired
+    );
+    const statements = [credentialInsert, this.#guardPreviousChange()];
     if (grantId) {
       statements.push(
         this.#database.prepare(
@@ -202,12 +231,22 @@ var D1LocalWebAuthnStore = class {
                AND session_expires_at > ?
                AND completed_at IS NULL
                AND revoked_at IS NULL`
-        ).bind(input.now, grantId, grantSessionHash, input.now),
+        ).bind(
+          /* 1 */
+          now,
+          /* 2 */
+          grantId,
+          /* 3 */
+          enrollmentSessionHash,
+          /* 4 */
+          now
+          // session still valid
+        ),
         this.#guardPreviousChange()
       );
     }
     statements.push(
-      this.#insertSessionStatement(input.session),
+      this.#insertSessionStatement(session),
       this.#guardPreviousChange(),
       this.#database.prepare("DELETE FROM localwebauthn_transaction_guard")
     );

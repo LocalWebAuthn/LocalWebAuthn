@@ -94,6 +94,7 @@ export class LocalWebAuthn {
   readonly #randomBytes;
   readonly #ceremonies;
   readonly #onEvent;
+  readonly #logger;
 
   constructor(options: LocalWebAuthnOptions) {
     this.config = normalizeConfig(options);
@@ -103,6 +104,7 @@ export class LocalWebAuthn {
     this.#randomBytes = options.randomBytes ?? defaultRandomBytes;
     this.#ceremonies = options.ceremonies ?? defaultCeremonies;
     this.#onEvent = options.onEvent;
+    this.#logger = options.logger ?? console;
   }
 
   /**
@@ -232,16 +234,24 @@ export class LocalWebAuthn {
     const now = this.#now();
     const challengeToken = createOpaqueToken(this.#randomBytes);
     const expiresAt = now + this.config.durations.challengeMs;
-    await this.#store.createChallenge({
-      idHash: await sha256(challengeToken),
-      kind: 'registration',
-      challenge: options.challenge,
-      userId: authorization.user.id,
-      grantId: authorization.grantId,
-      authorizationSessionHash: authorization.authenticatedSessionHash,
-      expiresAt,
-      createdAt: now,
-    });
+    if (
+      !(await this.#store.createChallenge({
+        idHash: await sha256(challengeToken),
+        kind: 'registration',
+        challenge: options.challenge,
+        userId: authorization.user.id,
+        grantId: authorization.grantId,
+        authorizationSessionHash: authorization.authenticatedSessionHash,
+        expiresAt,
+        createdAt: now,
+      }))
+    ) {
+      throw new LocalWebAuthnError(
+        'invalid_ceremony',
+        'A challenge token collision occurred; retry the ceremony.',
+        409,
+      );
+    }
     return { options, challengeToken, expiresAt };
   }
 
@@ -364,16 +374,24 @@ export class LocalWebAuthn {
     const now = this.#now();
     const challengeToken = createOpaqueToken(this.#randomBytes);
     const expiresAt = now + this.config.durations.challengeMs;
-    await this.#store.createChallenge({
-      idHash: await sha256(challengeToken),
-      kind: 'authentication',
-      challenge: options.challenge,
-      userId: null,
-      grantId: null,
-      authorizationSessionHash: null,
-      expiresAt,
-      createdAt: now,
-    });
+    if (
+      !(await this.#store.createChallenge({
+        idHash: await sha256(challengeToken),
+        kind: 'authentication',
+        challenge: options.challenge,
+        userId: null,
+        grantId: null,
+        authorizationSessionHash: null,
+        expiresAt,
+        createdAt: now,
+      }))
+    ) {
+      throw new LocalWebAuthnError(
+        'invalid_ceremony',
+        'A challenge token collision occurred; retry the ceremony.',
+        409,
+      );
+    }
     return { options, challengeToken, expiresAt };
   }
 
@@ -671,8 +689,9 @@ export class LocalWebAuthn {
     }
     try {
       await this.#onEvent(event);
-    } catch {
+    } catch (error) {
       // Authentication has already committed; observational hooks cannot roll it back.
+      this.#logger.warn('LocalWebAuthn event handler failed.', { event: event.type, error });
     }
   }
 }

@@ -86,11 +86,11 @@ var SqliteLocalWebAuthnStore = class {
     return row ? enrollmentSessionFromRow(row) : null;
   }
   async createChallenge(record) {
-    this.#database.prepare(
-      `INSERT INTO localwebauthn_challenges(
-           id_hash, kind, challenge, user_id, grant_id,
-           authorization_session_hash, expires_at, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    return this.#database.prepare(
+      `INSERT OR IGNORE INTO localwebauthn_challenges(
+             id_hash, kind, challenge, user_id, grant_id,
+             authorization_session_hash, expires_at, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       record.idHash,
       record.kind,
@@ -100,7 +100,7 @@ var SqliteLocalWebAuthnStore = class {
       record.authorizationSessionHash,
       record.expiresAt,
       record.createdAt
-    );
+    ).changes === 1;
   }
   async consumeChallenge(idHash, kind, now) {
     return this.#database.transaction(() => {

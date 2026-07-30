@@ -108,6 +108,14 @@ function normalizeConfig(options) {
   if (!rpName || !rpId || configuredOrigins.length === 0) {
     configurationError("rpName, rpId, and at least one expected origin are required.");
   }
+  try {
+    const url = new URL(`https://${rpId}`);
+    if (url.hostname !== rpId) {
+      configurationError("rpId must be a bare hostname (no protocol, port, or path).");
+    }
+  } catch {
+    configurationError("rpId must be a valid hostname.");
+  }
   const expectedOrigins = configuredOrigins.map((configuredOrigin) => {
     const url = new URL(configuredOrigin);
     const origin = url.origin;
@@ -151,6 +159,7 @@ function normalizeConfig(options) {
 function toWebAuthnCredential(credential) {
   return {
     id: credential.id,
+    // Uint8Array.from narrows ArrayBufferLike to ArrayBuffer for the SimpleWebAuthn types.
     publicKey: Uint8Array.from(credential.publicKey),
     counter: credential.counter,
     transports: credential.transports
@@ -173,6 +182,7 @@ var LocalWebAuthn = class {
   #randomBytes;
   #ceremonies;
   #onEvent;
+  #logger;
   constructor(options) {
     this.config = normalizeConfig(options);
     this.#store = options.store;
@@ -181,6 +191,7 @@ var LocalWebAuthn = class {
     this.#randomBytes = options.randomBytes ?? defaultRandomBytes;
     this.#ceremonies = options.ceremonies ?? defaultCeremonies;
     this.#onEvent = options.onEvent;
+    this.#logger = options.logger ?? console;
   }
   /**
    * Issue a single-use enrollment grant for a user.
@@ -298,7 +309,7 @@ var LocalWebAuthn = class {
     const now = this.#now();
     const challengeToken = createOpaqueToken(this.#randomBytes);
     const expiresAt = now + this.config.durations.challengeMs;
-    await this.#store.createChallenge({
+    if (!await this.#store.createChallenge({
       idHash: await sha256(challengeToken),
       kind: "registration",
       challenge: options.challenge,
@@ -307,7 +318,13 @@ var LocalWebAuthn = class {
       authorizationSessionHash: authorization.authenticatedSessionHash,
       expiresAt,
       createdAt: now
-    });
+    })) {
+      throw new LocalWebAuthnError(
+        "invalid_ceremony",
+        "A challenge token collision occurred; retry the ceremony.",
+        409
+      );
+    }
     return { options, challengeToken, expiresAt };
   }
   async verifyRegistration(input) {
@@ -421,7 +438,7 @@ var LocalWebAuthn = class {
     const now = this.#now();
     const challengeToken = createOpaqueToken(this.#randomBytes);
     const expiresAt = now + this.config.durations.challengeMs;
-    await this.#store.createChallenge({
+    if (!await this.#store.createChallenge({
       idHash: await sha256(challengeToken),
       kind: "authentication",
       challenge: options.challenge,
@@ -430,7 +447,13 @@ var LocalWebAuthn = class {
       authorizationSessionHash: null,
       expiresAt,
       createdAt: now
-    });
+    })) {
+      throw new LocalWebAuthnError(
+        "invalid_ceremony",
+        "A challenge token collision occurred; retry the ceremony.",
+        409
+      );
+    }
     return { options, challengeToken, expiresAt };
   }
   async verifyAuthentication(input) {
@@ -670,7 +693,8 @@ var LocalWebAuthn = class {
     }
     try {
       await this.#onEvent(event);
-    } catch {
+    } catch (error) {
+      this.#logger.warn("LocalWebAuthn event handler failed.", { event: event.type, error });
     }
   }
 };
