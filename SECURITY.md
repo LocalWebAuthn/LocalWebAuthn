@@ -2,17 +2,27 @@
 
 ## Supported Versions
 
-LocalWebAuthn is experimental while its version is below `1.0.0`. Security fixes are applied
-to the most recent minor release only.
+Security fixes are applied to the most recent minor release of the current major version.
+LocalWebAuthn follows SemVer: the service API, store interface, and database schema change
+only in a new major version.
+
+`1.0.0` means the interface is stable, not that the code has years of production exposure.
+The project is young and has a small user base. It is also small on purpose — under 3,000
+lines of TypeScript across the service, both storage adapters, and the browser client —
+so that a reviewer can read the whole authentication path rather than trust it. Please do
+read it, and report anything that looks wrong.
 
 ## Reporting
 
-Do not open a public issue for a suspected vulnerability. Before publication, report
-vulnerabilities privately to the repository owner. A dedicated security contact and GitHub
-private vulnerability reporting must be configured before the first npm release.
+Do not open a public issue for a suspected vulnerability. Report it privately to the
+repository owner.
 
 Include the affected version, deployment assumptions, reproduction steps, and likely impact.
 Do not include real enrollment links, session tokens, credential material, or user data.
+
+Maintainer note: GitHub private vulnerability reporting is not yet enabled on this
+repository. Enabling it under Settings → Code security gives reporters an authenticated
+private channel and should be done before the project attracts wider use.
 
 ## Security Boundary
 
@@ -63,8 +73,15 @@ secrets, but they are authentication data and require normal database access con
 ## Enrollment Invariant
 
 Every registration challenge is bound to an immutable enrollment grant ID and the exchanged
-enrollment session. Replacing an enrollment grant revokes the prior grant. Credential
-creation, exact-grant completion, and session creation commit atomically.
+enrollment session. Replacing an enrollment grant revokes the prior grant and emits an
+`enrollment.revoked` event.
+
+Credential creation, exact-grant completion, and session creation are committed as one
+transaction by the SQLite adapter. The D1 adapter cannot open a transaction and instead
+guards each step on the preceding statement's row count; see
+[D1 Batch Non-Atomicity](#d1-batch-non-atomicity) above for what that does and does not
+guarantee. In both adapters, a registration that loses its authorization mid-flight
+produces no usable credential.
 
 ## Non-Goals
 

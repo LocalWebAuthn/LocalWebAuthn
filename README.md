@@ -16,8 +16,14 @@ Your application keeps its users and authorization. It does not keep passwords, 
 hashes, password reset tokens, TOTP seeds, or recovery codes. It stores public keys and
 hashed opaque tokens instead, and no database value can be replayed as a passkey.
 
-LocalWebAuthn is `0.x` software. Its APIs and schemas may change. Review
-[SECURITY.md](SECURITY.md) before a production deployment.
+LocalWebAuthn is `1.0.0`. The service API, store interface, and database schema follow
+SemVer from here: breaking changes arrive only in a new major version, with upgrade notes
+in [docs/MIGRATING.md](docs/MIGRATING.md).
+
+A stable API is not a long production track record. This is young software with a small
+user base, and it sits on the authentication path. Both packages together are under 3,000
+lines of TypeScript, deliberately kept small enough to read — do that, and read
+[SECURITY.md](SECURITY.md), before you depend on it.
 
 ## See The Whole Lifecycle
 
