@@ -48,11 +48,14 @@ than "email me a new secret." An organization that cannot operate that bar
 should choose a multi-method framework or IdP instead — see
 [Designing Recovery](../README.md#designing-recovery).
 
-**"Anyone who wants passkeys" is too broad.** The fit is invitation-first
-populations you enroll deliberately — staff, onboarded customers, admin
-surfaces — on passkey-capable clients. Open self-serve consumer signup that
-treats an email address as identity is a different design, and a different
-product.
+**"Anyone who wants passkeys" is too broad, but the limit is not "self-serve".**
+The fit is populations you enroll deliberately, on passkey-capable clients.
+"Deliberately" means the enrollment capability is explicit, single-use, and
+bound to one user — not that a human administrator has to issue it. An automated
+signup that proves control of a channel and then calls `issueEnrollment()` fits
+exactly as well as an administrator clicking a button; see
+[Automated self-serve enrollment](#automated-self-serve-enrollment). What does
+not fit is treating a mailbox as a standing credential.
 
 ### Who is in the audience
 
@@ -71,14 +74,60 @@ product.
 
 - Teams that need **OAuth/OIDC, SAML, or enterprise directory** integration as
   the primary login.
-- Consumer apps whose signup is **self-serve email** and whose recovery is
-  "click the link we emailed."
+- Applications where **email or SMS is a standing way in** — "click the link we
+  emailed" available at any time, to any account, forever. That makes every
+  account only as strong as its mailbox, which is the thing passkeys were
+  supposed to fix. Using those channels _once_ to bootstrap a passkey is a
+  different matter and is well supported.
 - Applications that must keep **passwords or magic links** as permanent
   fallbacks for the same accounts.
 - Organizations that will not run or review **their own** auth path and prefer
   a mature hosted IdP.
 - Populations whose devices or accessibility needs make **mandatory passkeys**
   inappropriate.
+
+### Automated self-serve enrollment
+
+Nothing about LocalWebAuthn requires a human in the loop. `issueEnrollment()`
+takes an optional approver, not a mandatory one, and the grant it returns is
+single-use, expiring, hashed at rest, and bound to exactly one user — which is
+precisely the primitive an automated signup wants.
+
+A self-serve flow that proves control of two independent channels before
+enrolling is a good fit:
+
+1. The visitor submits an email address and a phone number.
+2. Your application verifies both — a DKIM-signed message with a one-time code
+   or link, and an SMS or voice code — and only then creates the user row.
+3. Call `issueEnrollment(userId)` and deliver the link over the channel you just
+   verified.
+4. The browser exchanges it and creates a passkey.
+5. **From then on, sign-in is passkey-only.** Email and SMS are not login
+   methods; they were bootstrap proofing.
+
+Recovery re-runs the same proof, then `revokeUserAuthentication()` followed by a
+fresh `issueEnrollment()`.
+
+The caveats are about your proofing, not about the package:
+
+- **Enrollment is only as strong as the weakest channel you accept.** One
+  channel means account security equals mailbox security. Two channels are much
+  stronger — provided they are genuinely independent. If the phone number is the
+  recovery method for the email account, they collapse into one factor.
+- **A phone number is weaker than it feels.** Numbers get ported and SIM swaps
+  are cheap and targeted. Treat "controls the number today" as evidence, not
+  proof.
+- **Self-serve means abuse handling is yours.** Rate limiting, disposable-domain
+  policy, and bot defense are host concerns in any design; this package does not
+  provide them.
+- **It costs you the clean runtime story at enrollment time.** Login still needs
+  only the user, your service, and HTTPS — but onboarding now depends on a mail
+  provider and an SMS provider. That is a one-time dependency rather than a
+  standing one, and worth stating plainly to yourself when you claim "no third
+  parties."
+
+[Designing Recovery](../README.md#designing-recovery) covers the same two-channel
+pattern in more depth, including why the proofing bar has to be high.
 
 ### What "up" means for availability
 
@@ -407,30 +456,32 @@ app; overkill for a single internal tool with a dozen users.
 **LocalWebAuthn stance:** Stay in-process. One app, one user table, one HTTPS
 origin.
 
-### Pattern D — Invitation-first passkey lifecycle (LocalWebAuthn)
+### Pattern D — Grant-based passkey lifecycle (LocalWebAuthn)
 
 **Good when:** You are replacing a password _system_ for a population you can
-enroll by invitation, keep auth in-process with your app, and accept that
-recovery is proofing + re-enrollment rather than emailing a new secret. Matches
-the [target audience](#target-audience).
+enroll deliberately — by administrator invitation or by automated proofing at
+signup — keep auth in-process with your app, and accept that recovery is
+proofing + re-enrollment rather than emailing a new secret. Matches the
+[target audience](#target-audience).
 
-**Failure mode:** Self-serve consumer signup with email-as-identity; mandatory
-passkeys for unvalidated device/accessibility populations; treating "no third
-parties" as "zero npm packages" or "users cannot use iCloud/Google passkey
-sync." Young codebase: interface stability is not a long production track record.
+**Failure mode:** Keeping email or SMS as a standing way into any account, which
+puts the mailbox back in front of the passkey; mandatory passkeys for unvalidated
+device/accessibility populations; treating "no third parties" as "zero npm
+packages" or "users cannot use iCloud/Google passkey sync." Young codebase:
+interface stability is not a long production track record.
 
 ---
 
 ## Choosing among them
 
-| If you need…                                                           | Prefer                                                     |
-| ---------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Correct WebAuthn crypto only                                           | SimpleWebAuthn (or passwordless-id for minimalism)         |
-| Next.js SaaS with OAuth + optional passkeys                            | Better Auth (or SuperTokens / Auth.js if already invested) |
-| Passkey-forward product with email fallbacks and a managed option      | Hanko or a commercial passkey vendor                       |
-| Enterprise SSO, SAML, many apps                                        | Keycloak, Zitadel, Authentik, commercial IdP               |
-| Passkey-only login, no auth IdP, invitation enrollment, own users + DB | **LocalWebAuthn**                                          |
-| "Sign up with email, add passkey later" or permanent password fallback | Not LocalWebAuthn's sweet spot                             |
+| If you need…                                                                                 | Prefer                                                     |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Correct WebAuthn crypto only                                                                 | SimpleWebAuthn (or passwordless-id for minimalism)         |
+| Next.js SaaS with OAuth + optional passkeys                                                  | Better Auth (or SuperTokens / Auth.js if already invested) |
+| Passkey-forward product with email fallbacks and a managed option                            | Hanko or a commercial passkey vendor                       |
+| Enterprise SSO, SAML, many apps                                                              | Keycloak, Zitadel, Authentik, commercial IdP               |
+| Passkey-only login, no auth IdP, own users + DB, enrollment by invitation or verified signup | **LocalWebAuthn**                                          |
+| Email or SMS kept as a standing way into any account, or a permanent password fallback       | Not LocalWebAuthn's sweet spot                             |
 
 ---
 
@@ -466,8 +517,9 @@ LocalWebAuthn does not compete on breadth. It targets the audience above:
 
 > Replace the password _system_ with passkeys only; keep authentication in your
 > TypeScript app and database; depend at runtime on the user, your service, and
-> HTTPS — not on a third-party identity provider — and accept invitation
-> enrollment plus explicit recovery instead of email-reset.
+> HTTPS — not on a third-party identity provider — and enroll through explicit
+> one-time grants, by invitation or verified signup, with recovery as proofing
+> and re-enrollment rather than an email reset.
 
 If that is your product shape, LocalWebAuthn is closer to the right abstraction
 than a ceremony library alone or a multi-method IdP. If it is not, use the

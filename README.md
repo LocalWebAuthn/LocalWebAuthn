@@ -496,15 +496,21 @@ boundary. See [docs/DEMO.md](docs/DEMO.md) to reproduce the recording and screen
 ## Good Fit
 
 **You are in the target audience if** you want to replace a password system with
-passkeys only, keep authentication in your TypeScript app and database, enroll people by
-invitation (not open email self-signup), and design recovery as identity proofing plus
+passkeys only, keep authentication in your TypeScript app and database, enroll each person
+through an explicit one-time grant, and design recovery as identity proofing plus
 re-enrollment — so that day-to-day sign-in depends on the user, your service, and HTTPS,
 not on Auth0/Clerk/an OIDC broker or a mail provider as the authenticator.
 
+That grant can come from an administrator or from an automated signup that first verifies
+something about the person — a DKIM-signed email plus an SMS code, say. Either way the
+link is single-use, expiring, and bound to one user, and once the passkey exists those
+channels are no longer a way in. What does not fit is keeping email or SMS as a standing
+route into any account, which puts the mailbox back in front of the passkey.
+
 That usually includes internal tools, admin surfaces, B2B apps with deliberate onboarding,
-prototypes meant to become real systems, and small production apps whose clients are
-passkey-capable. A longer audience evaluation, and how peers differ, is in
-[docs/COMPARISON.md](docs/COMPARISON.md).
+consumer products that verify contact details at signup, prototypes meant to become real
+systems, and small production apps whose clients are passkey-capable. A longer audience
+evaluation, and how peers differ, is in [docs/COMPARISON.md](docs/COMPARISON.md).
 
 "Self-hosted" describes the relying-party application and its authentication data. It does
 **not** mean zero dependencies or zero infrastructure:
