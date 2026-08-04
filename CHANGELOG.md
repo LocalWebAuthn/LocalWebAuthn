@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **HTTP adapter helpers** on `@localwebauthn/server`: `authCookieNames`,
+  `cookieAttributes`, `isExactOrigin`, `parseCookieHeader`, `serializeCookie`,
+  and related utilities so host apps share one Secure / `__Host-` / origin
+  implementation.
+- **Signup phase helpers**: `signupPhase`, `nextSignupStep`,
+  `describeSignupPhase`, and `SELF_SERVE_SIGNUP_STEPS` for host-owned enrollment
+  sequencing without inventing ad-hoc pending flags.
+- **Hono starter** at `examples/starter-hono` (six routes + invite + session
+  probe). Lifecycle demo uses the same cookie/origin helpers.
+- **COMPARISON.md**: JS developer friction section and starter-kit roadmap
+  (including dual-channel email+SMS as the next high-value kit).
+
 ## 2.1.0 - 2026-08-05
 
 ### Added

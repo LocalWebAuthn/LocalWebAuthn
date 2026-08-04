@@ -9,6 +9,28 @@ export {
   sha256,
 } from './crypto.js';
 export { isLocalWebAuthnError, LocalWebAuthnError, type LocalWebAuthnErrorCode } from './errors.js';
+export {
+  authCookieNames,
+  cookieAttributes,
+  isExactOrigin,
+  isHttpsPublicOrigin,
+  parseCookieHeader,
+  serializeClearedCookie,
+  serializeCookie,
+  type AuthCookieKind,
+  type AuthCookieNames,
+  type CookieAttributes,
+  type CookieAttributesOptions,
+} from './http.js';
+export {
+  describeSignupPhase,
+  nextSignupStep,
+  SELF_SERVE_SIGNUP_STEPS,
+  signupPhase,
+  type SignupFacts,
+  type SignupNextStep,
+  type SignupPhase,
+} from './signup.js';
 export { LocalWebAuthn } from './service.js';
 export type {
   AuthenticationResponseJSON,

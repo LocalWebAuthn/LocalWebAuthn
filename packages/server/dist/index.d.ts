@@ -20,6 +20,154 @@ declare class LocalWebAuthnError extends Error {
 }
 declare function isLocalWebAuthnError(value: unknown): value is LocalWebAuthnError;
 
+/**
+ * Framework-neutral HTTP helpers for host adapters.
+ *
+ * LocalWebAuthn does not set cookies or read `Origin` itself. These helpers
+ * encode the cookie attributes and exact-origin checks described in SECURITY.md
+ * so every starter (and the demo) shares one correct implementation.
+ */
+type AuthCookieKind = 'challenge' | 'enrollment' | 'session';
+type AuthCookieNames = {
+    challenge: string;
+    enrollment: string;
+    session: string;
+};
+/**
+ * Attributes for an opaque auth cookie (challenge, enrollment, or session).
+ *
+ * Compatible with `hono/cookie` `setCookie` options and with manual
+ * `Set-Cookie` construction. `__Host-` names are chosen by
+ * {@link authCookieNames} when the public origin is HTTPS; those names require
+ * `secure: true`, `path: '/'`, and no `Domain` attribute.
+ */
+type CookieAttributes = {
+    httpOnly: true;
+    path: '/';
+    sameSite: 'Strict';
+    secure: boolean;
+    /** Seconds until expiry; omit when clearing a cookie. */
+    maxAge?: number;
+};
+type CookieAttributesOptions = {
+    /** Exact public origin of the app (`https://app.example.com` or local HTTP). */
+    publicOrigin: string;
+    /** Absolute expiry as a Unix millisecond timestamp (from LocalWebAuthn APIs). */
+    expiresAt?: number;
+    /** Override the clock (tests). */
+    now?: () => number;
+};
+/**
+ * Whether `publicOrigin` is HTTPS (so cookies may use the `__Host-` prefix).
+ */
+declare function isHttpsPublicOrigin(publicOrigin: string): boolean;
+/**
+ * Cookie names for the three opaque tokens.
+ *
+ * On HTTPS origins, names use the `__Host-` prefix (Secure, Path=/, no Domain).
+ * On local HTTP (`http://localhost`, `http://127.0.0.1`), plain names are used
+ * because browsers reject `__Host-` without `Secure`.
+ *
+ * @param namespace - Short prefix, default `lwa`. Demo uses `lwa_demo`.
+ */
+declare function authCookieNames(publicOrigin: string, namespace?: string): AuthCookieNames;
+/**
+ * Cookie attributes for setting or clearing an opaque auth token.
+ *
+ * When `expiresAt` is provided, `maxAge` is derived in whole seconds (minimum 1).
+ * When omitted, no `maxAge` is set (suitable for delete/clear).
+ */
+declare function cookieAttributes(options: CookieAttributesOptions): CookieAttributes;
+/**
+ * Exact-origin check for state-changing requests.
+ *
+ * Pass the `Origin` header value (or `null` if absent). Returns true only when
+ * it exactly equals `expectedOrigin` (scheme + host + port, no path).
+ */
+declare function isExactOrigin(requestOrigin: string | null | undefined, expectedOrigin: string): boolean;
+/**
+ * Parse a `Cookie` header into a name → value map (first value wins).
+ */
+declare function parseCookieHeader(header: string | null | undefined): Record<string, string>;
+/**
+ * Build a single `Set-Cookie` header value (for plain Node or undici adapters).
+ */
+declare function serializeCookie(name: string, value: string, attributes: CookieAttributes): string;
+/**
+ * `Set-Cookie` value that clears a cookie (empty value, maxAge 0).
+ */
+declare function serializeClearedCookie(name: string, publicOrigin: string): string;
+
+/**
+ * Host-owned passkey signup / enrollment sequencing.
+ *
+ * LocalWebAuthn stores grants, credentials, and sessions — not application
+ * users. This module does not write to the database. It names the phases a
+ * host app moves through so signup UIs and APIs share one vocabulary and do
+ * not invent ad-hoc “pending” flags that drift from the store.
+ *
+ * Typical happy path:
+ *
+ * 1. Host creates a user row with {@link createUserHandle} (phase `created`).
+ * 2. Host proves channels / admin approval as product policy.
+ * 3. Host calls `issueEnrollment` (phase `enrollment_issued`).
+ * 4. Browser opens the fragment, `exchangeEnrollment` (phase `enrollment_exchanged`).
+ * 5. `verifyRegistration` creates a credential (phase `enrolled`).
+ *
+ * Recovery returns to `enrollment_issued` after `revokeUserAuthentication`
+ * plus a new `issueEnrollment` (see demo **Re-enroll**).
+ */
+type SignupPhase = 'created' | 'enrollment_issued' | 'enrollment_exchanged' | 'enrolled';
+/**
+ * Observable facts the host can load without guessing.
+ *
+ * - `hasActiveCredential` — `listCredentials(userId).length > 0`
+ * - `hasPendingEnrollmentGrant` — host tracks issued grants, or treats a
+ *   non-null enrollment session / product “pending invite” flag as true
+ * - `hasEnrollmentSession` — browser has a valid enrollment cookie (host may
+ *   only know this on register routes)
+ */
+type SignupFacts = {
+    hasActiveCredential: boolean;
+    hasPendingEnrollmentGrant: boolean;
+    hasEnrollmentSession: boolean;
+};
+/**
+ * Derive the current signup phase from store/session facts.
+ *
+ * Credentials win: once a passkey exists, the user is `enrolled` even if an
+ * old grant row still exists until cleanup.
+ */
+declare function signupPhase(facts: SignupFacts): SignupPhase;
+type SignupNextStep = {
+    action: 'issue_enrollment';
+    reason: string;
+} | {
+    action: 'deliver_enrollment_url';
+    reason: string;
+} | {
+    action: 'register_passkey';
+    reason: string;
+} | {
+    action: 'done';
+    reason: string;
+};
+/**
+ * Human-oriented next step for admin UIs and automated signup workers.
+ */
+declare function nextSignupStep(phase: SignupPhase): SignupNextStep;
+/**
+ * Short description for logs and admin tables.
+ */
+declare function describeSignupPhase(phase: SignupPhase): string;
+/**
+ * Recommended host steps for automated self-serve signup (no standing email login).
+ *
+ * Implementations prove channels first, then call LocalWebAuthn — this list is
+ * the contract, not executable I/O.
+ */
+declare const SELF_SERVE_SIGNUP_STEPS: readonly ["Collect identifiers (e.g. email and phone) and rate-limit the form", "Verify control of two independent channels before creating durable access", "Insert application user with createUserHandle(); do not store a password", "Call issueEnrollment(userId); store only the URL for delivery, never log the raw token long-term", "Deliver the enrollment URL on a bound channel (not an attacker-supplied address)", "User opens fragment → exchangeEnrollment → registerPasskey", "Optionally prompt for a second passkey while the session is fresh"];
+
 type NormalizedConfig = {
     rpName: string;
     rpId: string;
@@ -225,4 +373,4 @@ declare class LocalWebAuthn {
     cleanup(): Promise<CleanupResult>;
 }
 
-export { AuthUser, AuthenticationOptionsResult, AuthenticationVerificationInput, AuthenticationVerificationResult, CleanupResult, Credential, EnrollmentExchange, EnrollmentIssue, LocalWebAuthn, LocalWebAuthnError, type LocalWebAuthnErrorCode, LocalWebAuthnOptions, RegistrationOptionsResult, RegistrationVerificationInput, RegistrationVerificationResult, SessionIdentity, createEnrollmentToken, createOpaqueToken, createUserHandle, decodeBase64Url, encodeBase32, encodeBase64Url, equalBytes, isLocalWebAuthnError, sha256 };
+export { type AuthCookieKind, type AuthCookieNames, AuthUser, AuthenticationOptionsResult, AuthenticationVerificationInput, AuthenticationVerificationResult, CleanupResult, type CookieAttributes, type CookieAttributesOptions, Credential, EnrollmentExchange, EnrollmentIssue, LocalWebAuthn, LocalWebAuthnError, type LocalWebAuthnErrorCode, LocalWebAuthnOptions, RegistrationOptionsResult, RegistrationVerificationInput, RegistrationVerificationResult, SELF_SERVE_SIGNUP_STEPS, SessionIdentity, type SignupFacts, type SignupNextStep, type SignupPhase, authCookieNames, cookieAttributes, createEnrollmentToken, createOpaqueToken, createUserHandle, decodeBase64Url, describeSignupPhase, encodeBase32, encodeBase64Url, equalBytes, isExactOrigin, isHttpsPublicOrigin, isLocalWebAuthnError, nextSignupStep, parseCookieHeader, serializeClearedCookie, serializeCookie, sha256, signupPhase };

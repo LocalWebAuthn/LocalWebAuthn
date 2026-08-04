@@ -57,7 +57,8 @@ async function authenticatedClient(
     .run(await sha256(sessionToken), id, credentialId, now, now + 60_000, now);
   return {
     id,
-    cookie: `localwebauthn_demo_session=${sessionToken}`,
+    // Matches authCookieNames(publicOrigin, 'lwa_demo') on local HTTP.
+    cookie: `lwa_demo_session=${sessionToken}`,
   };
 }
 
@@ -112,7 +113,7 @@ describe('LocalWebAuthn demo application', () => {
       name: 'admin@example.test',
       displayName: 'Demo Administrator',
     });
-    expect(exchanged.headers.get('set-cookie')).toContain('localwebauthn_demo_enrollment=');
+    expect(exchanged.headers.get('set-cookie')).toContain('lwa_demo_enrollment=');
 
     const replay = await app.request('/api/auth/enrollment/exchange', {
       method: 'POST',
@@ -174,7 +175,7 @@ describe('LocalWebAuthn demo application', () => {
     };
     expect(optionsPayload.rp).toEqual({ id: 'localhost', name: 'LocalWebAuthn Test' });
     expect(typeof optionsPayload.user.id).toBe('string');
-    expect(options.headers.get('set-cookie')).toContain('localwebauthn_demo_challenge=');
+    expect(options.headers.get('set-cookie')).toContain('lwa_demo_challenge=');
   });
 
   it('keeps client creation restricted to administrators', async () => {

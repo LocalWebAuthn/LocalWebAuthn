@@ -346,10 +346,22 @@ app.use('/api/*', async (c, next) => {
 Throw a `LocalWebAuthnError` into your error mapper and it carries a `code` and an HTTP
 `status`, so failures become JSON responses without leaking why a ceremony failed.
 
-The [Hono demo adapter](examples/demo/src/auth.ts) implements all six routes, plus
-exact-origin enforcement and the enrollment flow. Your route layer owns origin checks,
-CSRF defenses, and rate limits. Production WebAuthn requires HTTPS, with a
-browser-defined exception for localhost development.
+Use package helpers so cookies and origins stay consistent across apps:
+
+```ts
+import {
+  authCookieNames,
+  cookieAttributes,
+  isExactOrigin,
+  signupPhase,
+} from '@localwebauthn/server';
+```
+
+The [Hono demo adapter](examples/demo/src/auth.ts) and the minimal
+[Hono starter](examples/starter-hono) implement all six routes with those helpers. Your route
+layer still owns CSRF defenses and rate limits. Production WebAuthn requires HTTPS, with a
+browser-defined exception for localhost development. Starter-kit roadmap:
+[docs/COMPARISON.md](docs/COMPARISON.md#starter-kit-roadmap).
 
 ## What LocalWebAuthn Owns
 

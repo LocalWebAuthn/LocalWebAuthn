@@ -1,5 +1,10 @@
 import type { EnrollmentIssue } from '@localwebauthn/server';
-import { createUserHandle, isLocalWebAuthnError } from '@localwebauthn/server';
+import {
+  createUserHandle,
+  describeSignupPhase,
+  isLocalWebAuthnError,
+  signupPhase,
+} from '@localwebauthn/server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
@@ -24,6 +29,9 @@ export type DemoApplicationOptions = {
 
 type ClientPayload = DemoClient & {
   passkeyCount: number;
+  /** Host-facing signup phase from `@localwebauthn/server` signupPhase(). */
+  signupPhase: ReturnType<typeof signupPhase>;
+  signupPhaseLabel: string;
 };
 
 function validEmail(email: string): boolean {
@@ -34,9 +42,18 @@ async function clientPayload(
   client: DemoClient,
   authentication: DemoAuthentication,
 ): Promise<ClientPayload> {
+  const passkeyCount = (await authentication.listCredentials(client.id)).length;
+  const phase = signupPhase({
+    hasActiveCredential: passkeyCount > 0,
+    // Demo treats "no passkeys yet" as an outstanding invite for admin tables.
+    hasPendingEnrollmentGrant: passkeyCount === 0,
+    hasEnrollmentSession: false,
+  });
   return {
     ...client,
-    passkeyCount: (await authentication.listCredentials(client.id)).length,
+    passkeyCount,
+    signupPhase: phase,
+    signupPhaseLabel: describeSignupPhase(phase),
   };
 }
 
@@ -83,7 +100,7 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
   app.use('/api/*', requireExpectedOrigin(options.auth));
   mountAuthenticationRoutes(app, authentication, options.auth);
 
-  const authenticated = requireAuthentication(authentication);
+  const authenticated = requireAuthentication(authentication, options.auth);
   const administrator: MiddlewareHandler<DemoEnvironment> = async (context, next) => {
     const current = clientById(database, context.get('authenticatedUser').id);
     if (current?.role !== 'administrator') {

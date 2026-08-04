@@ -493,7 +493,8 @@ interface stability is not a long production track record.
 2. **No multi-method story.** Peers win when passkeys must coexist with
    passwords or social login.
 3. **Host must build HTTP correctly.** Cookies, exact origin, rate limits remain
-   yours. Frameworks paper over more of that.
+   yours. Frameworks paper over more of that — mitigated over time by the
+   [starter kit](#starter-kit-roadmap) below.
 4. **No hosted control plane.** No dashboard SaaS, no multi-tenant admin UI out
    of the box (the demo is an example, not a product).
 5. **Ceremony is not differentiated.** Crypto quality tracks SimpleWebAuthn; do
@@ -502,6 +503,112 @@ interface stability is not a long production track record.
    preferred when available.
 7. **Recovery is operational, not automatic.** Replacing passwords removes the
    familiar reset email; someone must still prove identity out of band.
+
+---
+
+## JS developer friction (why teams still ship passwords)
+
+LocalWebAuthn solves the hard **ceremony + lifecycle middle**. A typical JS web
+app developer (Vite/Next + Hono/Express/Fastify, used to Auth.js, Better Auth,
+Clerk, or “bcrypt + cookie”) does **not** abandon passkeys because option
+generation is hard. They abandon them when the **rest of a shippable product**
+is still empty — and password ecosystems have decades of copy-paste defaults
+for that rest.
+
+### What is already easy
+
+If the problem is “I don’t want raw WebAuthn,” LocalWebAuthn is already ahead
+of SimpleWebAuthn alone: grants, hashed tokens, challenge consume, counters,
+sessions, multi-passkey, revocation, SQLite/Postgres/D1, and a readable HTTP
+adapter pattern. The bounce is not crypto; it is product and ops.
+
+### Ranked friction
+
+| #   | Friction                              | Password / multi-method stack         | LocalWebAuthn today                                                    |
+| --- | ------------------------------------- | ------------------------------------- | ---------------------------------------------------------------------- |
+| 1   | **Recovery product**                  | “Forgot password” is a form + email   | Host designs proofing + re-enrollment; correct, but no default widget  |
+| 2   | **Framework drop-in**                 | `getServerSession()`, providers       | Six routes, cookies, origin checks are host code                       |
+| 3   | **Cookie / origin details**           | Often framework defaults              | Easy to get wrong once (`__Host-`, Secure, preview URLs)               |
+| 4   | **Signup state machine**              | Email + password + session            | Create user → prove channels → `issueEnrollment` → exchange → register |
+| 5   | **Cross-device / lockout fear**       | Form works anywhere                   | Multi-passkey + recovery playbook required                             |
+| 6   | **Ops** (rate limits, audit, cleanup) | Tutorials often skip; vendors include | SECURITY.md assigns them to the host (honest, more perceived work)     |
+| 7   | **OAuth / growth**                    | Plugins everywhere                    | Out of scope by design — path of least resistance becomes Better Auth  |
+| 8   | **Maturity / blame**                  | Familiar stack to point at            | Young package on the auth path                                         |
+
+**Complexity map**
+
+```text
+  Easy path (password ecosystem)          LocalWebAuthn path
+  ----------------------------            ------------------
+  npm i auth-framework                    npm i @localwebauthn/*
+  enable EmailProvider                    design enrollment delivery
+  enable Credentials                      write 6 routes + cookies + origin
+  copy LoginForm                          map users + createUserHandle
+  "Forgot password" included              design recovery ops
+  OAuth button                            (out of scope — leave)
+  ship                                    rate limits, audit, multi-passkey UX
+```
+
+The crypto column is easier with LocalWebAuthn. The “ship login this sprint”
+column is still heavier than mediocre password auth unless starter kits close
+the gap.
+
+### Decision tree (when not to force passkey-only)
+
+- Need Google/GitHub login or SAML soon → multi-method framework or IdP.
+- Cannot operate identity proofing for lost phones → do not go passkey-only.
+- Population’s devices/accessibility unvalidated → do not mandate passkeys.
+- Will keep email/SMS as a standing way into every account forever → that
+  undoes the passkey bet; use a different product shape.
+- Want passkey-only, own users + DB, enrollment by grant → LocalWebAuthn.
+
+### Starter kit roadmap
+
+Ordered by impact for JS developers (not by cryptographic purity). Status is
+tracked here as the kits land.
+
+| Priority | Kit                           | Intent                                                                                                   | Status                                                                                                                         |
+| -------- | ----------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| **1**    | **Framework starters**        | Hono/Node (and later Next App Router) with the six routes, session guard, and origin check already wired | **Done** — `examples/starter-hono`; full UI remains `examples/demo`                                                            |
+| **2**    | **Recovery starter kits**     | Admin re-enroll (revoke then issue) as a first-class action; dual-channel self-serve as runnable code    | Partial — demo **Re-enroll**; delivery worker in `examples/channels-cf-worker` (SMS + DKIM email); full OTP signup still open |
+| **3**    | **Cookie + origin helpers**   | One place for Secure / HttpOnly / SameSite / `__Host-` names and exact-origin checks                     | **Done** — `@localwebauthn/server` (`authCookieNames`, `cookieAttributes`, `isExactOrigin`, …)                                 |
+| **4**    | **Signup state machine**      | Host-owned phases: user created → enrollment issued → exchanged → enrolled; next-step helper             | **Done** — `signupPhase` / `describeSignupPhase` on `@localwebauthn/server`                                                    |
+| **5**    | **Post-enroll UX kit**        | Prompt for a second passkey; clear lockout / last-credential messaging                                   | Partial — demo copy; no shared package yet                                                                                     |
+| **6**    | **Ops snippets**              | Rate-limit examples, `onEvent` → log/table, `cleanup()` scheduler                                        | Not started                                                                                                                    |
+| **7**    | **Browser / support matrix**  | Platform vs security key vs synced passkey; common failure modes                                         | Not started (docs)                                                                                                             |
+| **8**    | **“Don’t use us if…” wizard** | Up-front decision tree in README / COMPARISON                                                            | Partial — this section + target audience                                                                                       |
+
+#### Dual-channel (email + phone) delivery kit
+
+The largest product gap after HTTP helpers and starters is **delivering** proof
+and enrollment messages without making email/SMS a standing authenticator:
+
+1. Prove email (OTP or signed link) — host policy.
+2. Prove phone (SMS OTP) — host policy.
+3. Create app user + `createUserHandle()`.
+4. `issueEnrollment()` and deliver the fragment URL on a **bound** channel.
+5. User registers a passkey; email/SMS are **not** kept as login methods.
+
+**Shipped (minimal):** `examples/channels-cf-worker` — a Cloudflare Worker that
+sends **Twilio SMS** and **Resend email** (DKIM when the domain is verified in
+Resend). Testable with Vitest + Miniflare; outbound APIs are injectable /
+mockable so CI never needs real credentials.
+
+**Still open:** end-to-end OTP verify → `issueEnrollment` glue (compose the
+worker with `starter-hono` or the demo). LocalWebAuthn core stays free of
+Twilio/Resend SDKs.
+
+That kit closes friction **#1** and **#4** delivery for self-serve without
+reintroducing password reset. Prefer it over adding passwords to the core
+package.
+
+### Bottom line for JS developers
+
+- LocalWebAuthn is **not** missing WebAuthn.
+- It was missing the **product shell** password ecosystems normalize: recovery
+  defaults, framework glue, cookie helpers, signup sequencing, ops snippets.
+- Helpers and starters shrink that shell; dual-channel examples shrink recovery
+  and signup fear. OAuth and multi-method growth remain deliberately elsewhere.
 
 ---
 

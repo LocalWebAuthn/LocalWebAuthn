@@ -70,6 +70,31 @@ grants, finished challenges, and dead sessions. Credentials are not part of clea
 The SQLite adapter enables `PRAGMA foreign_keys = ON` on the connection it is given and uses
 `UPDATE ... RETURNING` (SQLite 3.35 or newer).
 
-The repository's [lifecycle demo](../../examples/demo/README.md) shows the complete SQLite
-integration, HTTP-only cookie adapter, initial bootstrap, client enrollment, additional
-passkeys, and revocation.
+### HTTP and signup helpers
+
+Host adapters should not re-invent cookie flags or origin checks:
+
+```ts
+import {
+  authCookieNames,
+  cookieAttributes,
+  isExactOrigin,
+  signupPhase,
+} from '@localwebauthn/server';
+
+const names = authCookieNames('https://app.example.com'); // __Host-lwa_* on HTTPS
+const attrs = cookieAttributes({ publicOrigin, expiresAt });
+if (!isExactOrigin(request.headers.get('Origin'), publicOrigin)) {
+  /* 403 */
+}
+const phase = signupPhase({
+  hasActiveCredential: credentials.length > 0,
+  hasPendingEnrollmentGrant: pending,
+  hasEnrollmentSession: Boolean(enrollmentCookie),
+});
+```
+
+The repository [lifecycle demo](../../examples/demo/README.md) and
+[Hono starter](../../examples/starter-hono/README.md) use these helpers. See
+[docs/COMPARISON.md](../../docs/COMPARISON.md#starter-kit-roadmap) for the broader starter-kit
+roadmap (recovery, dual-channel signup, Next.js, ops snippets).
