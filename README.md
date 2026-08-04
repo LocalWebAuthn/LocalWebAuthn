@@ -138,7 +138,8 @@ rate limit the route instead.
 The trade you are accepting is recovery. There is no "email me a reset link" that a
 password system gives you for free, because there is no shared secret to reset. Recovery
 means issuing a fresh enrollment link, which is an act of identity proofing your
-application must define. Plan that before you ship, not after a user loses their phone.
+application must define — see [Designing Recovery](#designing-recovery). Plan it before
+you ship, not after a user loses their phone.
 
 ## From User Row To Session
 
@@ -347,6 +348,111 @@ to each application:
 This boundary is intentional. Authentication lifecycle is reusable; identity proofing and
 business authorization are application policy. See [Why LocalWebAuthn](docs/RATIONALE.md)
 for the detailed rationale and non-goals.
+
+## Designing Recovery
+
+A user will lose their phone. What you do next is the single most important security
+decision in a passkey deployment, and it is the one this package deliberately does not
+make for you.
+
+### Why the bar has to be high
+
+**Your account security is the weaker of the passkey and the recovery path.** A passkey is
+origin-bound, unphishable, and useless to anyone who steals your database. An attacker who
+looks at that will not try to break it. They will call your support address and say they
+got a new phone. Every hour of phishing resistance you gained is refunded the moment
+recovery is easier than the front door. Well-defended accounts are overwhelmingly lost to
+help-desk social engineering and SIM swaps, not to broken cryptography.
+
+**Recovery must be at least as strong as your original enrollment.** If a new employee only
+gets an enrollment link after their manager confirms them in person, then recovery that
+needs a matching email address is not recovery — it is a bypass of your onboarding
+process, available to anyone who can read that mailbox.
+
+**Recovery is rare, so it is allowed to be slow.** Sign-in happens constantly and has to be
+frictionless. Recovery happens perhaps once per user every few years. That asymmetry is a
+gift: you can afford a human in the loop, a callback, a 24-hour delay, a video call. Almost
+nowhere else in your product can you buy that much security for that little aggregate
+friction. Do not reflexively automate it.
+
+**The enrollment link is a bearer capability.** Whoever opens it first gets a working
+passkey for that account. So identity-proofing the requester is only half the job; the
+other half is the delivery channel. A perfect identity check followed by an email to an
+attacker-controlled inbox is an account takeover.
+
+### Pattern: administrator-initiated
+
+Best whenever a human can vouch for the person — companies, internal tools, anything with
+an operator. The strongest version ships **no self-service recovery endpoint at all**.
+
+1. The user contacts an administrator out-of-band.
+2. The administrator confirms who they are through a channel that proves personhood, not
+   account control: a video call where they recognise the face, an in-person visit, or a
+   manager vouching. Note that a caller who knows the employee's manager, start date, and
+   desk number has only proven they did some research.
+3. The administrator revokes, then issues, then delivers the link over a channel bound to
+   the person rather than the account — an existing session on a managed device, or hand
+   to hand.
+
+```ts
+// Order matters. revokeUserAuthentication() revokes pending enrollment grants,
+// so issuing first and revoking second would destroy the link you just made.
+await auth.revokeUserAuthentication(user.id);
+const { enrollmentUrl } = await auth.issueEnrollment(user.id, administrator.id);
+```
+
+The second argument is stored on the grant as `approved_by_user_id`, so every recovery has
+a named person accountable for it. That record is worth more than it looks: a recovery no
+one signed off on is exactly the shape a social-engineering attack leaves behind.
+
+### Pattern: multiple independent channels
+
+For consumer systems with no administrator, require proof of control over two channels the
+user registered _before_ the loss — typically a verified email address and a verified phone
+number. Verify both **before** issuing anything, and send the link only to the address
+already on file, never to one supplied in the request.
+
+Three failure modes to design against:
+
+- **The channels must be genuinely independent.** If the phone number is the reset method
+  for the email account, they are one factor wearing two hats, and one compromise takes
+  both.
+- **A phone number is a weaker signal than it feels like.** Numbers get ported, and SIM
+  swaps are cheap and targeted. Treat "controls the number today" as one piece of evidence,
+  not as proof of identity — which is awkward precisely in the case you are designing for,
+  where the legitimate user genuinely does have a new phone and possibly a new SIM.
+- **Never let the request choose the destination.** The address and number come from the
+  user record, not the recovery form.
+
+### Whichever pattern you choose
+
+- **Revoke before you issue.** `revokeUserAuthentication()` kills existing credentials,
+  sessions, pending grants, and unconsumed challenges. If the device was stolen rather than
+  lost, this is what evicts whoever has it.
+- **Shorten the window.** Drop `durations.enrollmentGrantMs` well below the 30-minute
+  default for recovery links; they should be used within minutes of a live conversation.
+- **Tell the user, on every channel you have.** Notify on both initiation and completion. A
+  legitimate user who did not ask for this is your best intrusion detector, and a cool-off
+  period before the link works gives them time to object.
+- **Keep the audit trail.** `onEvent` emits `enrollment.issued`, `enrollment.revoked`, and
+  `enrollment.completed` with a `grantId` you can join against the grant's
+  `approved_by_user_id`. Persist these; recovery is the flow you will most want to
+  reconstruct later.
+- **Rate limit it.** Recovery is low-volume by nature, so a tight limit costs real users
+  nothing and makes attempts expensive and visible.
+
+### The cheapest recovery is the one you never run
+
+If the user still has one working passkey, this is not recovery at all. An authenticated
+session can add another credential with no link and no identity proofing:
+
+```ts
+await auth.registerPasskey('Backup security key');
+```
+
+Prompt for a second passkey during initial enrollment — a hardware key in a drawer, or a
+second device — and most of the recovery flow above stays unused. Encouraging that at
+enrollment is far cheaper than operating a high-assurance recovery desk.
 
 ## Run The Demo
 
