@@ -10,7 +10,7 @@ store contract for correctness (see [docs/MIGRATING.md](docs/MIGRATING.md)).
 
 A `1.x` version means the interface is stable, not that the code has years of production
 exposure. The project is young and has a small user base. It is also small on purpose —
-about 3,300 lines of TypeScript across the service, all three storage adapters, and the
+about 3,500 lines of TypeScript across the service, all three storage adapters, and the
 browser client — so that a reviewer can read the whole authentication path rather than
 trust it. Every SQL statement the package executes is collected in one module,
 `packages/server/src/queries.ts`, to make that review tractable. Please do read it, and

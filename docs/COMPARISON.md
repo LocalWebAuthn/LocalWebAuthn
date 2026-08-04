@@ -1,0 +1,479 @@
+# LocalWebAuthn vs the Passkey Ecosystem
+
+How LocalWebAuthn fits among existing JavaScript / TypeScript options for
+passkey (WebAuthn) authentication, what those projects actually provide, and
+where this one stands relative to current practice.
+
+This is a product and architecture comparison, not a cryptographic audit of
+peers. Capabilities change; treat version claims as approximate as of mid-2026
+and verify against each project's docs before choosing.
+
+## Target audience
+
+### The short version
+
+LocalWebAuthn is for teams who want to **stop running a password system** and
+**authenticate only with passkeys**, while keeping authentication **inside their
+own application** — so that a working login depends on the user (browser +
+authenticator), the target service, and whatever terminates HTTPS for that
+service (the app's own certificates, or a reverse proxy / CDN such as
+Cloudflare). It is **not** for teams whose auth plan still requires a hosted
+identity provider, social login, or email/SMS as a standing authentication or
+reset channel.
+
+### What that framing does and does not mean
+
+Four parts of it are easy to over-read.
+
+**"Replace passwords" means replacing the shared-secret pipeline, not the word.**
+A password field commits you to hashing, policy, reset tokens, stuffing
+defenses, and usually a second factor; passkeys remove the reusable server-side
+secret entirely. But magic links and OTP recovery rebuild the same weak front
+door under a different name. Swapping a password box for an emailed code is not
+the change this package is about.
+
+**"No third parties" is about the runtime trust model, not the dependency
+tree.** Completing a ceremony needs no Auth0, Clerk, Hanko Cloud, OIDC redirect,
+or mail provider. Three things it does not claim: npm still supplies ceremony
+code (`@simplewebauthn/*`) and optional database drivers; TLS may be terminated
+by a reverse proxy or CDN, which is transport rather than an identity provider;
+and a user may sync passkeys through Apple, Google, or a password manager, which
+is _their_ authenticator choice — LocalWebAuthn never sees the private key and
+does not treat that vendor as the application's IdP.
+
+**Passwords being unfixable does not make recovery disappear.** You cannot tune
+bcrypt out of phishing and credential stuffing, so the front door genuinely
+improves. Recovery, though, becomes identity proofing plus re-enrollment rather
+than "email me a new secret." An organization that cannot operate that bar
+should choose a multi-method framework or IdP instead — see
+[Designing Recovery](../README.md#designing-recovery).
+
+**"Anyone who wants passkeys" is too broad.** The fit is invitation-first
+populations you enroll deliberately — staff, onboarded customers, admin
+surfaces — on passkey-capable clients. Open self-serve consumer signup that
+treats an email address as identity is a different design, and a different
+product.
+
+### Who is in the audience
+
+- TypeScript applications that **own the user table** and HTTP surface.
+- Products that can require **passkey-capable** browsers/devices (or accept
+  that unsupported clients are out of scope).
+- Deployments that want auth data in **their** SQLite, PostgreSQL, or D1 — not
+  in a vendor's user directory.
+- Teams willing to design **enrollment delivery** and **recovery proofing** as
+  first-class policy (see
+  [Designing Recovery](../README.md#designing-recovery)).
+- Operators who care that the authentication path is **small enough to read**
+  (~3,500 lines of lifecycle code on top of SimpleWebAuthn).
+
+### Who is not
+
+- Teams that need **OAuth/OIDC, SAML, or enterprise directory** integration as
+  the primary login.
+- Consumer apps whose signup is **self-serve email** and whose recovery is
+  "click the link we emailed."
+- Applications that must keep **passwords or magic links** as permanent
+  fallbacks for the same accounts.
+- Organizations that will not run or review **their own** auth path and prefer
+  a mature hosted IdP.
+- Populations whose devices or accessibility needs make **mandatory passkeys**
+  inappropriate.
+
+### What "up" means for availability
+
+For a user to sign in, these must work:
+
+1. The user's device and authenticator (and, if they use a synced passkey, that
+   sync provider — chosen by the user, not by your app's auth architecture).
+2. Your relying-party application and its database.
+3. HTTPS to that application (self-terminated or via a reverse proxy / CDN).
+
+These need **not** work for login itself: a third-party IdP control plane, an
+email or SMS provider, or a separate auth microservice (unless you deliberately
+deploy one). Enrollment _delivery_ may still use email or chat as a
+**one-time human channel**; that is not the same as "email is the authenticator."
+
+---
+
+## The problem looks simple until it is not
+
+A passkey login feels minimal from the outside: the browser holds a private key,
+the site stores a public key, HTTPS binds the origin. In practice a relying party
+must still implement a stack of decisions that WebAuthn itself does not specify:
+
+| Layer                  | What it is                                                      | Who usually owns it              |
+| ---------------------- | --------------------------------------------------------------- | -------------------------------- |
+| Ceremony               | Challenge generation, attestation/assertion parse and verify    | WebAuthn library                 |
+| Credential store       | Public keys, counters, transports, revocation                   | Application or auth framework    |
+| Challenge store        | Short-lived, single-use, origin-bound challenges                | Application or auth framework    |
+| Bootstrap / enrollment | How the _first_ passkey is bound to a real person               | Application policy               |
+| Sessions               | Opaque tokens, idle/absolute expiry, logout, credential binding | Application or auth framework    |
+| Recovery               | Replacing lost authenticators without weakening the front door  | Application policy               |
+| HTTP surface           | Cookies, CSRF/origin checks, rate limits, routes                | Application or framework adapter |
+
+Most "passkey libraries" stop at the first row. Most "auth frameworks" cover
+several rows but still assume passwords, email magic links, OAuth, or a separate
+auth service. LocalWebAuthn deliberately occupies the middle: a **passkey-only
+lifecycle library** that sits on top of a ceremony library and under your app's
+users, HTTP, and identity-proofing policy.
+
+**Dependencies vs identity providers.** LocalWebAuthn is not "zero npm
+packages": ceremony crypto is delegated to
+[`@simplewebauthn/server`](https://simplewebauthn.dev/) and
+[`@simplewebauthn/browser`](https://simplewebauthn.dev/). The intentional
+non-dependency is an **external identity provider** — no Auth0/Clerk/Hanko Cloud
+account, no OIDC redirect, no required email/SMS _authentication_ pipeline.
+See [Target audience](#target-audience) for how HTTPS terminators and user-chosen
+passkey sync fit that model.
+
+## Map of the landscape
+
+```text
+                    Hosted IdPs / commercial passkey APIs
+                    (Auth0, Clerk, Corbado, Passage, ...)
+                                      |
+         Self-hosted auth *services*  |  (Hanko, SuperTokens core, Keycloak, ...)
+                                      |
+         Full app auth *frameworks*   |  (Better Auth, Auth.js/NextAuth, ...)
+                                      |
+         Lifecycle *libraries*        |  (LocalWebAuthn, devise-passkeys-style wrappers)
+                                      |
+         Ceremony *libraries*         |  (SimpleWebAuthn, @passwordless-id/webauthn)
+                                      |
+                              WebAuthn / FIDO2 platform APIs
+```
+
+[passkeys.dev](https://passkeys.dev/docs/tools-libraries/libraries/) lists
+TypeScript ceremony libraries as **SimpleWebAuthn** and
+**@passwordless-id/webauthn**. Everything above that layer is either application
+code, a framework plugin, or a multi-tenant auth product.
+
+---
+
+## Ceremony libraries (primitives)
+
+These make WebAuthn usable. They do **not** own users, enrollment grants,
+sessions, or recovery.
+
+### SimpleWebAuthn
+
+- **What it is:** The de facto TypeScript WebAuthn toolkit
+  (`@simplewebauthn/server` + `@simplewebauthn/browser`). Full-stack coverage,
+  strong docs, widely used as the engine under other products (including Better
+  Auth's passkey plugin and Auth.js's experimental provider).
+- **Approach:** Export `generate*Options` / `verify*Response`. You persist
+  challenges and credentials yourself. Multi-origin / multi-RP-ID support is
+  first-class on the server package.
+- **Strengths:** Spec fidelity, maintenance, ecosystem mindshare, browser +
+  server pair, conformance posture.
+- **Gaps vs LocalWebAuthn:** No invitation enrollment, no hashed bearer tokens,
+  no session model, no store adapters, no audit events, no recovery guidance.
+  Every production app rebuilds that layer.
+- **Relation:** LocalWebAuthn **uses** SimpleWebAuthn as its default
+  `CeremonyProvider`. It does not reimplement attestation/assertion crypto.
+
+### @passwordless-id/webauthn
+
+- **What it is:** Minimal, dependency-free, opinionated client + server helpers
+  around WebAuthn. Documented for Node 19+, Cloudflare Workers, and other
+  WebCrypto environments. Associated with the free public IdP
+  [Passwordless.ID](https://passwordless.id) but the library is usable standalone.
+- **Approach:** High-level `client.register` / `client.authenticate` and
+  `server.verifyRegistration` / `server.verifyAuthentication`. Defaults favor
+  convenience (e.g. user verification `preferred` in v2).
+- **Strengths:** Very small surface, no heavy dependency tree, plain demos,
+  good for learning and thin stacks.
+- **Gaps:** Still ceremony-only. Persistence, sessions, multi-device enrollment
+  policy, and bootstrap are your problem. Defaults are less strict than
+  LocalWebAuthn's `userVerification: 'required'` / discoverable-credential
+  posture.
+- **Relation:** Alternative ceremony backend. LocalWebAuthn could theoretically
+  wrap a different provider via `ceremonies`, but ships SimpleWebAuthn.
+
+**Takeaway:** If you only need "call WebAuthn correctly," these are the state of
+the art. If you need "ship passkey-only auth without inventing grants and
+sessions," you still have a project left.
+
+---
+
+## Full application auth frameworks (plugins)
+
+These own much more of the auth story for a typical SaaS or Next.js app.
+Passkeys are usually one sign-in method among several.
+
+### Better Auth
+
+- **What it is:** Self-hosted TypeScript auth framework (sessions, OAuth, 2FA,
+  orgs, admin, …) with a first-class
+  [passkey plugin](https://better-auth.com/docs/plugins/passkey) powered by
+  SimpleWebAuthn.
+- **Approach:** Plugin API: `addPasskey`, `signIn.passkey`, list/update/delete
+  passkeys, cookie sessions, schema adapters (Drizzle, Prisma, …). Passkeys
+  attach to a broader identity model that usually includes other factors.
+- **Strengths:** Integrated product surface, active ecosystem, "self-hosted
+  Clerk" ambition, less ceremony plumbing than raw SimpleWebAuthn.
+- **Gaps vs LocalWebAuthn:** Not passkey-_only_ by design; invitation-first
+  bootstrap and recovery-as-policy are not the core product story. Heavier
+  dependency and conceptual surface. You adopt an auth framework, not a small
+  lifecycle module you can read end-to-end.
+- **When to prefer it:** Multi-method auth, Next.js/SaaS defaults, org/RBAC
+  plugins, willingness to take a full framework.
+
+### Auth.js (NextAuth) Passkey provider
+
+- **What it is:** Experimental WebAuthn/passkey provider for Auth.js, also
+  SimpleWebAuthn-based, requiring a database adapter and an `Authenticator`
+  table. Auth.js development has been moving under the Better Auth umbrella.
+- **Approach:** Provider + experimental flag; custom pages use
+  `signIn("passkey")` for register and authenticate.
+- **Strengths:** Familiar if you already live in Auth.js; OAuth + sessions in
+  one place.
+- **Gaps:** Docs explicitly mark passkeys **experimental / not recommended for
+  production**. Lifecycle opinions are thin compared with LocalWebAuthn's grant
+  model. Future direction is tied to framework consolidation.
+- **When to prefer it:** Existing Auth.js app exploring passkeys, not a greenfield
+  passkey-only system.
+
+### SuperTokens
+
+- **What it is:** Open-source auth product (core service + SDKs) with passkey /
+  WebAuthn recipes alongside passwordless, social, and session management.
+- **Approach:** Recipe-driven flows, frontend SDKs, self-hosted or managed core.
+  Passkeys are one recipe in a multi-method stack with fallbacks (OTP, magic
+  link, password).
+- **Strengths:** Production-oriented sessions, multi-language SDKs, operational
+  story for teams that want an auth _service_.
+- **Gaps vs LocalWebAuthn:** Separate process / operational surface; not a
+  ~few-thousand-line in-process library. Enrollment and recovery still product
+  policy, but shaped by SuperTokens' multi-factor model rather than invitation-
+  only passkeys.
+- **When to prefer it:** You want a dedicated auth service with SDKs, not a
+  library inside the app process.
+
+---
+
+## Self-hosted auth platforms (passkey-forward)
+
+### Hanko
+
+- **What it is:** Open-source auth and user management API (Go backend + JS
+  SDKs), passkey-first with passwords, passcodes, OAuth, SSO as configurable
+  companions. Cloud and self-hosted.
+- **Approach:** External auth API; your app validates sessions/JWTs. FIDO-oriented
+  positioning ("auth for the passkey era").
+- **Strengths:** Productized UX, multi-method fallbacks, mobile paths, managed
+  option.
+- **Gaps vs LocalWebAuthn:** Another service to run or pay for; user directory
+  often lives in Hanko; not "embed a store in my SQLite file." Invitation-only
+  internal tools can use it, but the architecture is IdP-shaped.
+- **When to prefer it:** Passkey-forward product with fallbacks, willingness to
+  run or buy an auth service.
+
+### Other platforms (brief)
+
+| Project                                    | Shape       | Passkeys                   | Notes                                       |
+| ------------------------------------------ | ----------- | -------------------------- | ------------------------------------------- |
+| **Keycloak** / **Authentik** / **Zitadel** | Full IdP    | Via WebAuthn plugins / MFA | Federation, realms, ops-heavy               |
+| **FusionAuth**                             | Auth server | First-class WebAuthn       | Commercial + free tier; not a TS library    |
+| **Corbado** / **Passage** / **Clerk**      | Hosted      | Product feature            | Fastest path; external trust and data plane |
+
+These solve "we need authentication as a product," not "we need a readable
+passkey lifecycle inside our TypeScript monolith."
+
+---
+
+## LocalWebAuthn's approach
+
+LocalWebAuthn is an **opinionated lifecycle around SimpleWebAuthn**:
+
+1. Host creates users (with a stable 32-byte WebAuthn user handle).
+2. Host issues a one-time **enrollment grant** (hashed at rest; URL fragment
+   delivery).
+3. Browser exchanges the grant for a short enrollment session cookie.
+4. Registration challenge is bound to that grant (or to an already-authenticated
+   session for additional passkeys).
+5. Verify registration atomically stores credential + completes grant + opens
+   session (SQLite/Postgres transactions; D1 batch with documented limits).
+6. Sign-in is discoverable-credential authentication with
+   `userVerification: 'required'`; challenges are single-use; counters
+   compare-and-swap.
+7. Sessions are opaque hashed tokens with idle and absolute expiry.
+8. Recovery is **not** automated: host identity-proofs, then
+   `revokeUserAuthentication` + `issueEnrollment`.
+
+Explicit non-goals (see [RATIONALE.md](RATIONALE.md)): email delivery, OAuth,
+passwords, tenant RBAC, cookie framework glue, rate limiting, attestation
+policy.
+
+### What is deliberately different
+
+| Dimension           | Typical framework / IdP             | LocalWebAuthn                                                  |
+| ------------------- | ----------------------------------- | -------------------------------------------------------------- |
+| Primary factor      | Password + optional passkey / OAuth | Passkey only                                                   |
+| First credential    | Self-serve signup or email link     | Invitation / bootstrap grant                                   |
+| User table          | Often owned by the auth product     | Owned by the host app                                          |
+| Ceremony crypto     | Various                             | SimpleWebAuthn (swappable)                                     |
+| Persistence         | ORM schemas or remote service       | Official SQLite / PostgreSQL / D1 stores + store interface     |
+| Sessions            | Framework cookies / JWTs            | Opaque hashed tokens; host sets cookies                        |
+| Recovery            | Email reset, SMS, support tools     | Host policy + re-enrollment; documented social-engineering bar |
+| Size / auditability | Large surface                       | ~3,500 lines of lifecycle code, shared SQL module              |
+| HTTP framework      | Often Next.js-shaped                | Framework-neutral service + thin browser client                |
+| Maturity            | Varies; some battle-tested          | Young (`2.x`) with a small user base, and says so              |
+
+### What is _not_ unique (and should not be sold as unique)
+
+- **Passkeys themselves.** Phishing resistance and origin binding come from
+  WebAuthn and the platform authenticator, not from this package.
+- **Using SimpleWebAuthn.** Better Auth, Auth.js, and many tutorials do too.
+- **Self-hosting.** Better Auth, SuperTokens, Hanko, and Keycloak all can.
+- **"No third parties" in the npm sense.** Ceremony libraries and peer DB
+  drivers remain.
+
+### Distinctive claims that hold up under comparison
+
+1. **Invitation-first as the default security model**, not an afterthought
+   plugin. Enrollment grants are single-use, expiring, hashed, grant-generation
+   bound, and replaceable with audit events.
+2. **Passkey-only without a password or magic-link safety net baked in.**
+   Frameworks usually keep fallbacks; LocalWebAuthn forces the recovery
+   conversation into the open (see
+   [Designing Recovery](../README.md#designing-recovery)).
+3. **Lifecycle + multi-engine store contract** (SQLite / Postgres / D1) with
+   shared SQL and conformance tests — not only ceremony helpers, not a remote
+   IdP.
+4. **Host-owned users and authorization.** Auth is a module; it is not your
+   product database.
+5. **Small enough to review** as a security dependency on the authentication
+   path, with an explicit youth disclaimer.
+
+---
+
+## Feature comparison (JS/TS-focused)
+
+| Capability                          | SimpleWebAuthn | passwordless-id | Better Auth + passkey |   Auth.js passkey    |   SuperTokens    |      Hanko       |   **LocalWebAuthn**   |
+| ----------------------------------- | :------------: | :-------------: | :-------------------: | :------------------: | :--------------: | :--------------: | :-------------------: |
+| Ceremony generate/verify            |      Yes       |       Yes       |  Via SimpleWebAuthn   |  Via SimpleWebAuthn  |       Yes        |       Yes        |  Via SimpleWebAuthn   |
+| Browser helper                      |      Yes       |       Yes       |          Yes          |         Yes          |       Yes        |       Yes        | Yes (protocol client) |
+| Passkey-only mode                   |      N/A       |       N/A       |       Possible        |       Possible       |   Configurable   |   Configurable   |  **Default / only**   |
+| Invitation enrollment grants        |       No       |       No        |       App-built       |      App-built       |  App / product   |  Product flows   |        **Yes**        |
+| Hashed challenge + session tokens   |       No       |       No        |  Framework sessions   |  Framework sessions  | Service sessions | Service sessions |        **Yes**        |
+| Atomic challenge consume            |      App       |       App       |       Framework       |      Framework       |     Service      |     Service      |    **Yes (store)**    |
+| Additional passkey via session      |      App       |       App       |          Yes          |         Yes          |       Yes        |       Yes        |        **Yes**        |
+| Credential counter CAS              |      App       |       App       |     Plugin/store      |       Adapter        |     Service      |     Service      |        **Yes**        |
+| Official SQLite / PG / D1           |       No       |       No        |    Adapters (ORM)     |       Adapters       |    Own stack     |    Own stack     |        **Yes**        |
+| In-process library (no auth daemon) |      Yes       |       Yes       |          Yes          |         Yes          |    No (core)     |        No        |        **Yes**        |
+| OAuth / password / email OTP        |       No       |       No        |          Yes          |         Yes          |       Yes        |       Yes        |        **No**         |
+| Production maturity                 |      High      |     Medium      |     Growing fast      | Passkey experimental |       High       |   Medium–high    |    **Low (young)**    |
+| Federation / enterprise IdP         |       No       |       No        |        Limited        |     OAuth focus      |       Yes        |       Yes        |        **No**         |
+
+"App" means you implement it. "Product flows" means the platform's UX, not a
+small typed API in your process.
+
+---
+
+## Approach review: design patterns in the wild
+
+### Pattern A — Ceremony only (SimpleWebAuthn, passwordless-id)
+
+**Good when:** You already have sessions and identity, or you are learning
+WebAuthn.
+
+**Failure mode:** Every team reimplements challenge TTL, replay, credential
+counters, and bootstrap; subtle TOCTOU bugs are common.
+
+**LocalWebAuthn stance:** Stand on Pattern A for crypto; formalize the rest.
+
+### Pattern B — Multi-method auth framework (Better Auth, Auth.js, SuperTokens)
+
+**Good when:** You need OAuth, passwords, or email for real users and want
+passkeys as an upgrade path.
+
+**Failure mode:** Passkeys become a secondary factor UX; recovery still goes
+through the weakest method; the framework grows far beyond a small admin tool's
+needs.
+
+**LocalWebAuthn stance:** Reject multi-method defaults. If you need OAuth, use
+Pattern B or C instead of bolting federation onto this package.
+
+### Pattern C — Auth service / IdP (Hanko, Keycloak, hosted vendors)
+
+**Good when:** Multiple apps, compliance, org SSO, or you want auth out of the
+app process.
+
+**Failure mode:** Ops and coupling; user data and auth policy live outside the
+app; overkill for a single internal tool with a dozen users.
+
+**LocalWebAuthn stance:** Stay in-process. One app, one user table, one HTTPS
+origin.
+
+### Pattern D — Invitation-first passkey lifecycle (LocalWebAuthn)
+
+**Good when:** You are replacing a password _system_ for a population you can
+enroll by invitation, keep auth in-process with your app, and accept that
+recovery is proofing + re-enrollment rather than emailing a new secret. Matches
+the [target audience](#target-audience).
+
+**Failure mode:** Self-serve consumer signup with email-as-identity; mandatory
+passkeys for unvalidated device/accessibility populations; treating "no third
+parties" as "zero npm packages" or "users cannot use iCloud/Google passkey
+sync." Young codebase: interface stability is not a long production track record.
+
+---
+
+## Choosing among them
+
+| If you need…                                                           | Prefer                                                     |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Correct WebAuthn crypto only                                           | SimpleWebAuthn (or passwordless-id for minimalism)         |
+| Next.js SaaS with OAuth + optional passkeys                            | Better Auth (or SuperTokens / Auth.js if already invested) |
+| Passkey-forward product with email fallbacks and a managed option      | Hanko or a commercial passkey vendor                       |
+| Enterprise SSO, SAML, many apps                                        | Keycloak, Zitadel, Authentik, commercial IdP               |
+| Passkey-only login, no auth IdP, invitation enrollment, own users + DB | **LocalWebAuthn**                                          |
+| "Sign up with email, add passkey later" or permanent password fallback | Not LocalWebAuthn's sweet spot                             |
+
+---
+
+## Honest weaknesses relative to state of the art
+
+1. **Maturity and adoption.** SimpleWebAuthn, SuperTokens, and major IdPs have
+   far more production hours. LocalWebAuthn documents this in README and
+   SECURITY.md; treat it as young software on the auth path.
+2. **No multi-method story.** Peers win when passkeys must coexist with
+   passwords or social login.
+3. **Host must build HTTP correctly.** Cookies, exact origin, rate limits remain
+   yours. Frameworks paper over more of that.
+4. **No hosted control plane.** No dashboard SaaS, no multi-tenant admin UI out
+   of the box (the demo is an example, not a product).
+5. **Ceremony is not differentiated.** Crypto quality tracks SimpleWebAuthn; do
+   not pick LocalWebAuthn _because_ of novel cryptography.
+6. **D1 non-atomicity** is a real adapter limit (documented); SQLite/Postgres are
+   preferred when available.
+7. **Recovery is operational, not automatic.** Replacing passwords removes the
+   familiar reset email; someone must still prove identity out of band.
+
+---
+
+## Summary
+
+The state of the art for **TypeScript WebAuthn ceremonies** is SimpleWebAuthn
+(with passwordless-id as a minimal alternative). The state of the art for
+**full-stack application auth with a passkey checkbox** is moving toward
+frameworks like Better Auth and service products like SuperTokens and Hanko.
+Hosted IdPs remain the default for teams that do not want to own auth.
+
+LocalWebAuthn does not compete on breadth. It targets the audience above:
+
+> Replace the password _system_ with passkeys only; keep authentication in your
+> TypeScript app and database; depend at runtime on the user, your service, and
+> HTTPS — not on a third-party identity provider — and accept invitation
+> enrollment plus explicit recovery instead of email-reset.
+
+If that is your product shape, LocalWebAuthn is closer to the right abstraction
+than a ceremony library alone or a multi-method IdP. If it is not, use the
+ceremony library under a framework or service that matches your constraints —
+and still read their recovery path as carefully as their signup path.
+
+For project-local design intent, see [RATIONALE.md](RATIONALE.md). For security
+boundaries and host duties, see [SECURITY.md](../SECURITY.md). For a worked
+HTTP integration, see the demo under `examples/demo/`.

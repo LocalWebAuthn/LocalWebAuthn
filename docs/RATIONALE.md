@@ -47,15 +47,18 @@ an external administrative plane, dependency, outage boundary, and user-data rep
 
 LocalWebAuthn targets applications that deliberately want:
 
-- Passkey-only human authentication.
+- Passkey-only human authentication (replacing a password _system_, not bolting
+  passkeys onto passwords).
 - A local user directory controlled by the application.
-- No password database or password recovery flow.
-- No required hosted identity or email service.
+- No password database or password-reset flow; recovery is proofing + re-enrollment.
+- No required hosted identity provider; sign-in needs the user, this service, and HTTPS
+  (optional reverse proxy / CDN for TLS is fine).
 - SQLite for a single-node deployment, PostgreSQL for a multi-process deployment,
   or D1 for a Cloudflare deployment.
 
 It is not an identity-proofing service. The host still decides who a user is, who may approve
-an enrollment, and how the bearer enrollment link reaches that person.
+an enrollment, and how the bearer enrollment link reaches that person. For how this
+compares to ceremony libraries, auth frameworks, and IdPs, see [COMPARISON.md](COMPARISON.md).
 
 ## Boilerplate Reduction
 
