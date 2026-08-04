@@ -13,6 +13,31 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     environment: npm
+
+    # `npm run check` is coverage-gated and the store conformance suite covers
+    # PostgreSQL, so the publish gate needs the same database CI has. Without it
+    # the PostgreSQL suite skips, coverage drops below threshold, and the release
+    # fails at the gate.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: localwebauthn_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      LOCALWEBAUTHN_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/localwebauthn_test
+      # Never publish a build whose PostgreSQL conformance suite silently skipped.
+      LOCALWEBAUTHN_REQUIRE_POSTGRES: '1'
+
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
