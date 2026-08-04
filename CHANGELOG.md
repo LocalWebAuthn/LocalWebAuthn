@@ -1,5 +1,60 @@
 # Changelog
 
+## 2.0.0 - 2026-08-04
+
+Major release. Upgrading from 1.0.0 or 1.1.0 is strongly recommended: those
+versions delete passkeys during routine maintenance.
+
+### Security
+
+- **No credential cleanup.** 1.0.0–1.1.0 deleted credentials that had no session
+  rows after one hour — the normal idle state after logout or session expiry.
+  Deployments that scheduled `cleanup()` as documented could wipe idle users'
+  passkeys. `cleanup()` now only reaps expired grants, finished challenges, and
+  dead sessions. **BREAKING:** `CleanupResult.orphanedCredentials` is removed;
+  there is no orphan-credential sweep.
+- **Last-credential protection is now race-free on PostgreSQL.** The conditional
+  `UPDATE` introduced with the store-side check is atomic on SQLite and D1,
+  which serialize writers, but PostgreSQL's READ COMMITTED isolation let two
+  concurrent revokes of different credentials each read the other as still
+  active and both succeed, leaving the account with no passkeys. The PostgreSQL
+  adapter now takes a row lock on the user's active credentials before
+  evaluating the predicate.
+
+### Changed
+
+- **BREAKING (custom stores):** `revokeSession` returns
+  `{ userId, credentialId } | null` instead of `boolean`, so audit events can
+  carry session identity.
+- **BREAKING (custom stores):** `revokeCredential` accepts
+  `{ allowLastCredential?: boolean }` and returns
+  `'revoked' | 'not_found' | 'last_credential'`. Last-credential protection is
+  enforced in the store (atomic with the revoke on SQLite/PostgreSQL).
+- Host applications using only the official adapters and `LocalWebAuthn` service
+  API need no integration changes for the store signature updates.
+- `session.revoked` audit events now include `userId` and `credentialId`.
+- `revokeUserAuthentication` emits `user.authentication_revoked`.
+- Signature counter advances reject non-increasing non-zero values at both the
+  service and store layers (0→0 remains allowed).
+- SQLite `migrateSqlite` and `SqliteLocalWebAuthnStore` enable
+  `PRAGMA foreign_keys = ON` on the given connection.
+
+### Documentation
+
+- SECURITY.md and package README describe durable credentials vs ephemeral
+  cleanup, and correct the prior claim that “orphaned” credentials could not
+  authenticate.
+- `docs/MIGRATING.md` covers 1.1.x → 2.0.0 store contract changes.
+- Review notes: `docs/REVIEW-20260804.md`.
+
+### Note on versioning
+
+These store-contract changes are breaking, so this is a major release. An
+earlier draft shipped them as `1.2.0` alongside a narrowed SemVer promise that
+excluded the store interface; that promise has been restored to its original
+form — the service API, store interface, and database schema all follow SemVer,
+and breaking changes arrive only in a major version.
+
 ## 1.1.0 - 2026-08-04
 
 No breaking changes. Custom `LocalWebAuthnStore` implementations written against

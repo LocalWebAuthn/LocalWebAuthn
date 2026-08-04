@@ -38,6 +38,8 @@ export type {
   RegistrationResponseJSON,
   RegistrationVerificationInput,
   RegistrationVerificationResult,
+  RevokeCredentialResult,
+  RevokedSession,
   SessionIdentity,
   UserProvider,
 } from './types.js';

@@ -1,12 +1,12 @@
 import {
-  ORPHANED_CREDENTIAL_GRACE_MS,
+  POSTGRES_SQL,
   SQL,
   challengeFromRow,
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow,
   toPositionalPlaceholders
-} from "./chunk-IFRZR4MT.js";
+} from "./chunk-CNGBEFAA.js";
 import {
   LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL,
   LOCALWEBAUTHN_SCHEMA_VERSION
@@ -15,6 +15,9 @@ import {
 // src/postgres.ts
 var PG = Object.fromEntries(
   Object.entries(SQL).map(([name, sql]) => [name, toPositionalPlaceholders(sql)])
+);
+var PG_ONLY = Object.fromEntries(
+  Object.entries(POSTGRES_SQL).map(([name, sql]) => [name, toPositionalPlaceholders(sql)])
 );
 var Rollback = class extends Error {
 };
@@ -151,7 +154,9 @@ var PostgresLocalWebAuthnStore = class {
           input.newCounter,
           input.now,
           input.credentialId,
-          input.previousCounter
+          input.previousCounter,
+          input.newCounter,
+          input.newCounter
         ]);
         if (advanced.rowCount !== 1) {
           throw new Rollback();
@@ -177,17 +182,41 @@ var PostgresLocalWebAuthnStore = class {
     return result.rowCount === 1;
   }
   async revokeSession(idHash, now) {
-    const result = await this.#pool.query(PG.revokeSession, [now, idHash]);
-    return result.rowCount === 1;
+    const result = await this.#pool.query(
+      PG.revokeSession,
+      [now, idHash]
+    );
+    const row = result.rows.at(0);
+    return row ? { userId: row.user_id, credentialId: row.credential_id } : null;
   }
-  async revokeCredential(userId, credentialId, now) {
+  async revokeCredential(userId, credentialId, now, options = {}) {
     return this.#transaction(async (tx) => {
-      const revoked = await tx.query(PG.revokeCredential, [now, credentialId, userId]);
-      if (revoked.rowCount !== 1) {
-        return false;
+      await tx.query(PG_ONLY.lockUserCredentials, [userId]);
+      const allowLast = options.allowLastCredential ? 1 : 0;
+      const revoked = await tx.query(PG.revokeCredential, [
+        now,
+        credentialId,
+        userId,
+        allowLast,
+        userId,
+        credentialId
+      ]);
+      if (revoked.rowCount === 1) {
+        await tx.query(PG.revokeSessionsForCredential, [now, credentialId]);
+        return "revoked";
       }
-      await tx.query(PG.revokeSessionsForCredential, [now, credentialId]);
-      return true;
+      if (!options.allowLastCredential) {
+        const last = await tx.query(PG.isLastActiveCredential, [
+          credentialId,
+          userId,
+          userId,
+          credentialId
+        ]);
+        if (last.rows.length > 0) {
+          return "last_credential";
+        }
+      }
+      return "not_found";
     });
   }
   async revokeUserAuthentication(userId, now) {
@@ -201,14 +230,10 @@ var PostgresLocalWebAuthnStore = class {
   async cleanup(now) {
     return this.#transaction(async (tx) => {
       const sessions = await tx.query(PG.deleteExpiredSessions, [now]);
-      const orphanedCredentials = await tx.query(PG.deleteOrphanedCredentials, [
-        now - ORPHANED_CREDENTIAL_GRACE_MS
-      ]);
       const enrollmentGrants = await tx.query(PG.deleteFinishedGrants, [now]);
       const challenges = await tx.query(PG.deleteFinishedChallenges, [now]);
       return {
         sessions: sessions.rowCount ?? 0,
-        orphanedCredentials: orphanedCredentials.rowCount ?? 0,
         enrollmentGrants: enrollmentGrants.rowCount ?? 0,
         challenges: challenges.rowCount ?? 0
       };

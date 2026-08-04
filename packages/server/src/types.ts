@@ -47,8 +47,10 @@ export type UserProvider = {
  * A stored passkey credential.
  *
  * `publicKey` is the credential's public key in COSE format. `counter` is the
- * signature counter — each successful authentication increments it, and the
- * store rejects counter values that do not advance, preventing signature replay.
+ * signature counter. Successful authentication compare-and-swaps it forward;
+ * the store rejects a non-increasing value when either the stored or reported
+ * counter is non-zero (WebAuthn clone detection). A 0→0 update is allowed for
+ * authenticators that do not implement counters.
  *
  * `deviceType` and `backedUp` come from the authenticator during registration.
  * `transports` hint at how the authenticator communicates (e.g. `"internal"`,
@@ -156,11 +158,26 @@ export type CompleteAuthenticationInput = {
   now: number;
 };
 
+/**
+ * Rows removed by {@link LocalWebAuthnStore.cleanup}.
+ *
+ * Cleanup reaps ephemeral rows only (expired grants, finished challenges, dead
+ * sessions). Credentials are not part of cleanup — they are durable
+ * authenticators managed only by registration and revocation.
+ */
 export type CleanupResult = {
   enrollmentGrants: number;
   challenges: number;
   sessions: number;
-  orphanedCredentials: number;
+};
+
+/** Outcome of {@link LocalWebAuthnStore.revokeCredential}. */
+export type RevokeCredentialResult = 'revoked' | 'not_found' | 'last_credential';
+
+/** Identity returned when a session is newly revoked. */
+export type RevokedSession = {
+  userId: string;
+  credentialId: string;
 };
 
 /**
@@ -178,8 +195,8 @@ export type CleanupResult = {
  *
  * **Session management:** {@link resolveSession} → {@link touchSession} → {@link revokeSession}.
  *
- * **Maintenance:** {@link cleanup} removes expired grants, challenges, sessions,
- * and orphaned credentials.
+ * **Maintenance:** {@link cleanup} removes expired grants, challenges, and
+ * sessions.
  */
 export type LocalWebAuthnStore = {
   /**
@@ -248,8 +265,9 @@ export type LocalWebAuthnStore = {
    * Atomically advance the credential counter (compare-and-swap) and create a
    * new session.
    *
-   * Must reject if the counter has advanced since the challenge was issued.
-   * Returns `true` on success, `false` on counter mismatch or credential revocation.
+   * Must reject when the stored counter no longer equals `previousCounter`,
+   * the credential is revoked, or the new counter is not a valid WebAuthn
+   * advance (strict increase, or 0→0). Returns `true` on success.
    */
   completeAuthentication(input: CompleteAuthenticationInput): Promise<boolean>;
 
@@ -269,14 +287,27 @@ export type LocalWebAuthnStore = {
    */
   touchSession(idHash: Uint8Array, now: number): Promise<boolean>;
 
-  /** Mark a session as revoked. Idempotent — returns `false` if already revoked. */
-  revokeSession(idHash: Uint8Array, now: number): Promise<boolean>;
+  /**
+   * Mark a session as revoked. Returns the session identity when a row was
+   * newly revoked, or `null` if the token was unknown or already revoked.
+   */
+  revokeSession(idHash: Uint8Array, now: number): Promise<RevokedSession | null>;
 
   /**
-   * Revoke a single credential and all its sessions. Returns `false` if the
-   * credential was already revoked or does not belong to `userId`.
+   * Revoke a single credential and all its sessions.
+   *
+   * When `allowLastCredential` is false (the default), the store must refuse
+   * to revoke the user's only remaining active credential and return
+   * `"last_credential"`. That check must be atomic with the revoke on engines
+   * that support transactions (SQLite, PostgreSQL); D1 uses a single
+   * conditional `UPDATE` for the same predicate.
    */
-  revokeCredential(userId: string, credentialId: string, now: number): Promise<boolean>;
+  revokeCredential(
+    userId: string,
+    credentialId: string,
+    now: number,
+    options?: { allowLastCredential?: boolean },
+  ): Promise<RevokeCredentialResult>;
 
   /**
    * Revoke all credentials and sessions for a user, and invalidate pending
@@ -285,10 +316,10 @@ export type LocalWebAuthnStore = {
   revokeUserAuthentication(userId: string, now: number): Promise<void>;
 
   /**
-   * Remove expired enrollment grants, challenges, sessions, and orphaned
-   * credentials (those with no session rows, created more than one hour ago).
+   * Remove expired enrollment grants, finished challenges, and dead sessions.
    *
-   * Call periodically (e.g., every few minutes) to reclaim storage.
+   * Call periodically (e.g. every few minutes) to reclaim storage. Does not
+   * touch credentials.
    */
   cleanup(now: number): Promise<CleanupResult>;
 };
@@ -315,6 +346,12 @@ export type LocalWebAuthnEvent =
       at: number;
       userId?: string;
       credentialId?: string;
+    }
+  | {
+      /** Bulk recovery revoke: credentials, sessions, grants, and challenges. */
+      type: 'user.authentication_revoked';
+      at: number;
+      userId: string;
     };
 
 export type LocalWebAuthnDurations = {

@@ -1,12 +1,11 @@
 import {
   D1_SQL,
-  ORPHANED_CREDENTIAL_GRACE_MS,
   SQL,
   challengeFromRow,
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-IFRZR4MT.js";
+} from "./chunk-CNGBEFAA.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnSchemaStatements
@@ -124,7 +123,14 @@ var D1LocalWebAuthnStore = class {
   async completeAuthentication(input) {
     try {
       await this.#database.batch([
-        this.#database.prepare(SQL.advanceCredentialCounter).bind(input.newCounter, input.now, input.credentialId, input.previousCounter),
+        this.#database.prepare(SQL.advanceCredentialCounter).bind(
+          input.newCounter,
+          input.now,
+          input.credentialId,
+          input.previousCounter,
+          input.newCounter,
+          input.newCounter
+        ),
         this.#guard(),
         this.#insertSessionStatement(input.session),
         this.#guard(),
@@ -144,15 +150,27 @@ var D1LocalWebAuthnStore = class {
     return changes(result) === 1;
   }
   async revokeSession(idHash, now) {
-    const result = await this.#database.prepare(SQL.revokeSession).bind(now, idHash).run();
-    return changes(result) === 1;
+    const row = await returningRow(
+      this.#database.prepare(SQL.revokeSession).bind(now, idHash)
+    );
+    return row ? { userId: row.user_id, credentialId: row.credential_id } : null;
   }
-  async revokeCredential(userId, credentialId, now) {
+  async revokeCredential(userId, credentialId, now, options = {}) {
+    const allowLast = options.allowLastCredential ? 1 : 0;
     const results = await this.#database.batch([
-      this.#database.prepare(SQL.revokeCredential).bind(now, credentialId, userId),
+      this.#database.prepare(SQL.revokeCredential).bind(now, credentialId, userId, allowLast, userId, credentialId),
       this.#database.prepare(SQL.revokeSessionsForCredential).bind(now, credentialId)
     ]);
-    return changes(results[0]) === 1;
+    if (changes(results[0]) === 1) {
+      return "revoked";
+    }
+    if (!options.allowLastCredential) {
+      const last = await this.#database.prepare(SQL.isLastActiveCredential).bind(credentialId, userId, userId, credentialId).first();
+      if (last) {
+        return "last_credential";
+      }
+    }
+    return "not_found";
   }
   async revokeUserAuthentication(userId, now) {
     await this.#database.batch([
@@ -165,15 +183,13 @@ var D1LocalWebAuthnStore = class {
   async cleanup(now) {
     const results = await this.#database.batch([
       this.#database.prepare(SQL.deleteExpiredSessions).bind(now),
-      this.#database.prepare(SQL.deleteOrphanedCredentials).bind(now - ORPHANED_CREDENTIAL_GRACE_MS),
       this.#database.prepare(SQL.deleteFinishedGrants).bind(now),
       this.#database.prepare(SQL.deleteFinishedChallenges).bind(now)
     ]);
     return {
       sessions: changes(results[0]),
-      orphanedCredentials: changes(results[1]),
-      enrollmentGrants: changes(results[2]),
-      challenges: changes(results[3])
+      enrollmentGrants: changes(results[1]),
+      challenges: changes(results[2])
     };
   }
   /** The nine `localwebauthn_credentials` column values, in schema order. */

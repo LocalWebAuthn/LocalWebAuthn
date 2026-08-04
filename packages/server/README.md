@@ -62,9 +62,13 @@ Pass a `pg.Pool` rather than a single client so transactions get their own conne
 
 SQLite and PostgreSQL wrap multi-statement operations in real transactions. D1 cannot, and
 guards each step on the preceding row count instead; see the D1 section of the repository
-security policy, and schedule periodic `cleanup()` there.
+security policy.
 
-The SQLite adapter uses `UPDATE ... RETURNING`, which requires SQLite 3.35 or newer.
+Schedule periodic `cleanup()` on any adapter (every few minutes is fine). It reaps expired
+grants, finished challenges, and dead sessions. Credentials are not part of cleanup.
+
+The SQLite adapter enables `PRAGMA foreign_keys = ON` on the connection it is given and uses
+`UPDATE ... RETURNING` (SQLite 3.35 or newer).
 
 The repository's [lifecycle demo](../../examples/demo/README.md) shows the complete SQLite
 integration, HTTP-only cookie adapter, initial bootstrap, client enrollment, additional

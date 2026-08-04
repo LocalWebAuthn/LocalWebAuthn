@@ -108,16 +108,61 @@ export const SQL = {
       device_type, backed_up, label, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 
-  /** Compare-and-swap the signature counter; zero rows means a replay. */
+  /**
+   * Compare-and-swap the signature counter.
+   *
+   * Zero rows means replay, concurrent auth, revocation, or a non-increasing
+   * non-zero counter. WebAuthn allows 0→0 (authenticators without counters);
+   * any other non-increase is rejected here as defense in depth.
+   *
+   * Binds: newCounter, now, credentialId, previousCounter, newCounter, newCounter.
+   */
   advanceCredentialCounter: `
     UPDATE localwebauthn_credentials
     SET counter = ?, last_used_at = ?
-    WHERE id = ? AND counter = ? AND revoked_at IS NULL`,
+    WHERE id = ?
+      AND counter = ?
+      AND revoked_at IS NULL
+      AND (? > counter OR (counter = 0 AND ? = 0))`,
 
+  /**
+   * Revoke one credential. When `allow_last` is 0, the row is updated only if
+   * another active credential for the same user still exists — so the last
+   * active passkey cannot be removed without an explicit recovery override.
+   *
+   * Binds: now, credentialId, userId, allowLast (1 or 0), userId, credentialId.
+   */
   revokeCredential: `
     UPDATE localwebauthn_credentials
     SET revoked_at = ?
-    WHERE id = ? AND user_id = ? AND revoked_at IS NULL`,
+    WHERE id = ?
+      AND user_id = ?
+      AND revoked_at IS NULL
+      AND (
+        ? = 1
+        OR EXISTS (
+          SELECT 1
+          FROM localwebauthn_credentials AS other
+          WHERE other.user_id = ?
+            AND other.id <> ?
+            AND other.revoked_at IS NULL
+        )
+      )`,
+
+  /** True when the credential is active and is the user's only active passkey. */
+  isLastActiveCredential: `
+    SELECT 1 AS ok
+    FROM localwebauthn_credentials
+    WHERE id = ?
+      AND user_id = ?
+      AND revoked_at IS NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM localwebauthn_credentials AS other
+        WHERE other.user_id = ?
+          AND other.id <> ?
+          AND other.revoked_at IS NULL
+      )`,
 
   revokeUserCredentials: `
     UPDATE localwebauthn_credentials
@@ -178,10 +223,12 @@ export const SQL = {
     SET last_seen_at = ?
     WHERE id_hash = ? AND revoked_at IS NULL AND expires_at > ?`,
 
+  /** Revoke a session and return its identity for audit events. */
   revokeSession: `
     UPDATE localwebauthn_sessions
     SET revoked_at = ?
-    WHERE id_hash = ? AND revoked_at IS NULL`,
+    WHERE id_hash = ? AND revoked_at IS NULL
+    RETURNING user_id, credential_id`,
 
   revokeSessionsForCredential: `
     UPDATE localwebauthn_sessions
@@ -206,23 +253,11 @@ export const SQL = {
 
   // -- Cleanup --------------------------------------------------------------
   //
-  // Order matters: sessions are deleted first so the orphaned-credential pass
-  // can see credentials whose last session just went away.
+  // Ephemeral rows only. Credentials are never listed here.
 
   deleteExpiredSessions: `
     DELETE FROM localwebauthn_sessions
     WHERE expires_at <= ? OR revoked_at IS NOT NULL`,
-
-  /**
-   * Remove credentials left with no session rows. A D1 batch that fails partway
-   * through registration can commit a credential without its session; a
-   * credential older than the caller-supplied cutoff with no sessions is such
-   * an orphan rather than an in-flight registration.
-   */
-  deleteOrphanedCredentials: `
-    DELETE FROM localwebauthn_credentials
-    WHERE id NOT IN (SELECT DISTINCT credential_id FROM localwebauthn_sessions)
-      AND created_at <= ?`,
 
   deleteFinishedGrants: `
     DELETE FROM localwebauthn_enrollment_grants
@@ -302,10 +337,30 @@ export const D1_SQL = {
 } as const;
 
 /**
- * How long a credential with no sessions must exist before {@link SQL.deleteOrphanedCredentials}
- * treats it as an orphan rather than an in-flight registration.
+ * SQL used only by the PostgreSQL adapter.
+ *
+ * SQLite and D1 serialize writers, so a conditional `UPDATE` whose predicate
+ * counts the user's other active credentials is atomic there. PostgreSQL is
+ * MVCC: under the default READ COMMITTED isolation, an `EXISTS` sub-select does
+ * not block on another transaction's uncommitted `UPDATE` of a *different* row.
+ * Two concurrent revokes of two different credentials would therefore each see
+ * the other as still active and both succeed, emptying the account.
  */
-export const ORPHANED_CREDENTIAL_GRACE_MS = 3_600_000;
+export const POSTGRES_SQL = {
+  /**
+   * Take a row lock on the user's active credentials before evaluating the
+   * last-credential predicate. The second concurrent revoke blocks here until
+   * the first commits, then sees the true remaining set.
+   *
+   * `ORDER BY id` makes the lock acquisition order deterministic so two
+   * transactions locking the same user cannot deadlock against each other.
+   */
+  lockUserCredentials: `
+    SELECT id FROM localwebauthn_credentials
+    WHERE user_id = ? AND revoked_at IS NULL
+    ORDER BY id
+    FOR UPDATE`,
+} as const;
 
 /**
  * Rewrite `?` placeholders as PostgreSQL's `$1`, `$2`, … positional form.

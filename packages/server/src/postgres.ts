@@ -10,10 +10,12 @@ import type {
   EnrollmentSession,
   LocalWebAuthnStore,
   NewSession,
+  RevokeCredentialResult,
+  RevokedSession,
   SessionIdentity,
 } from './types.js';
 
-import { ORPHANED_CREDENTIAL_GRACE_MS, SQL, toPositionalPlaceholders } from './queries.js';
+import { POSTGRES_SQL, SQL, toPositionalPlaceholders } from './queries.js';
 import {
   type ChallengeRow,
   challengeFromRow,
@@ -30,6 +32,11 @@ import { LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL, LOCALWEBAUTHN_SCHEMA_VERSION } from 
 const PG: { [Name in keyof typeof SQL]: string } = Object.fromEntries(
   Object.entries(SQL).map(([name, sql]) => [name, toPositionalPlaceholders(sql)]),
 ) as { [Name in keyof typeof SQL]: string };
+
+/** PostgreSQL-only statements, converted the same way. */
+const PG_ONLY: { [Name in keyof typeof POSTGRES_SQL]: string } = Object.fromEntries(
+  Object.entries(POSTGRES_SQL).map(([name, sql]) => [name, toPositionalPlaceholders(sql)]),
+) as { [Name in keyof typeof POSTGRES_SQL]: string };
 
 export type PostgresQueryResult<Row> = {
   rows: Row[];
@@ -244,6 +251,8 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
           input.now,
           input.credentialId,
           input.previousCounter,
+          input.newCounter,
+          input.newCounter,
         ]);
         if (advanced.rowCount !== 1) {
           throw new Rollback();
@@ -275,19 +284,53 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
     return result.rowCount === 1;
   }
 
-  async revokeSession(idHash: Uint8Array, now: number): Promise<boolean> {
-    const result = await this.#pool.query(PG.revokeSession, [now, idHash]);
-    return result.rowCount === 1;
+  async revokeSession(idHash: Uint8Array, now: number): Promise<RevokedSession | null> {
+    const result = await this.#pool.query<{ user_id: string; credential_id: string }>(
+      PG.revokeSession,
+      [now, idHash],
+    );
+    const row = result.rows.at(0);
+    return row ? { userId: row.user_id, credentialId: row.credential_id } : null;
   }
 
-  async revokeCredential(userId: string, credentialId: string, now: number): Promise<boolean> {
+  async revokeCredential(
+    userId: string,
+    credentialId: string,
+    now: number,
+    options: { allowLastCredential?: boolean } = {},
+  ): Promise<RevokeCredentialResult> {
     return this.#transaction(async (tx) => {
-      const revoked = await tx.query(PG.revokeCredential, [now, credentialId, userId]);
-      if (revoked.rowCount !== 1) {
-        return false;
+      // Serialize concurrent revokes for this user. Without this lock the
+      // last-credential predicate below is subject to a READ COMMITTED race in
+      // which two revokes of different credentials both succeed. See
+      // POSTGRES_SQL.lockUserCredentials.
+      await tx.query(PG_ONLY.lockUserCredentials, [userId]);
+
+      const allowLast = options.allowLastCredential ? 1 : 0;
+      const revoked = await tx.query(PG.revokeCredential, [
+        now,
+        credentialId,
+        userId,
+        allowLast,
+        userId,
+        credentialId,
+      ]);
+      if (revoked.rowCount === 1) {
+        await tx.query(PG.revokeSessionsForCredential, [now, credentialId]);
+        return 'revoked';
       }
-      await tx.query(PG.revokeSessionsForCredential, [now, credentialId]);
-      return true;
+      if (!options.allowLastCredential) {
+        const last = await tx.query(PG.isLastActiveCredential, [
+          credentialId,
+          userId,
+          userId,
+          credentialId,
+        ]);
+        if (last.rows.length > 0) {
+          return 'last_credential';
+        }
+      }
+      return 'not_found';
     });
   }
 
@@ -303,14 +346,10 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
   async cleanup(now: number): Promise<CleanupResult> {
     return this.#transaction(async (tx) => {
       const sessions = await tx.query(PG.deleteExpiredSessions, [now]);
-      const orphanedCredentials = await tx.query(PG.deleteOrphanedCredentials, [
-        now - ORPHANED_CREDENTIAL_GRACE_MS,
-      ]);
       const enrollmentGrants = await tx.query(PG.deleteFinishedGrants, [now]);
       const challenges = await tx.query(PG.deleteFinishedChallenges, [now]);
       return {
         sessions: sessions.rowCount ?? 0,
-        orphanedCredentials: orphanedCredentials.rowCount ?? 0,
         enrollmentGrants: enrollmentGrants.rowCount ?? 0,
         challenges: challenges.rowCount ?? 0,
       };

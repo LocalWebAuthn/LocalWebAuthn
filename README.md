@@ -12,16 +12,26 @@ for TypeScript applications. It gives a small application the parts normally mis
 between WebAuthn ceremonies and an authenticated session: enrollment, credentials,
 challenges, sessions, revocation, and SQLite, PostgreSQL, or Cloudflare D1 persistence.
 
+It is aimed at teams replacing a password _system_ with passkeys while keeping login
+inside their own app: the user (browser + authenticator), the target service, and HTTPS
+(self-terminated or via a reverse proxy such as Cloudflare) are enough for sign-in — not
+a third-party identity provider, and not email or SMS as a standing login or reset
+channel. How that compares to ceremony libraries, full auth frameworks, and hosted IdPs
+is in [docs/COMPARISON.md](docs/COMPARISON.md).
+
 Your application keeps its users and authorization. It does not keep passwords, password
 hashes, password reset tokens, TOTP seeds, or recovery codes. It stores public keys and
 hashed opaque tokens instead, and no database value can be replayed as a passkey.
 
-LocalWebAuthn is `1.1.0`. The service API, store interface, and database schema follow
+LocalWebAuthn is `2.0.0`. The service API, store interface, and database schema follow
 SemVer: breaking changes arrive only in a new major version, with upgrade notes in
 [docs/MIGRATING.md](docs/MIGRATING.md).
 
+**If you are on 1.0.0 or 1.1.0, upgrade.** Those releases delete passkeys during routine
+maintenance; see [the 2.0.0 migration notes](docs/MIGRATING.md).
+
 A stable API is not a long production track record. This is young software with a small
-user base, and it sits on the authentication path. Both packages together are about 3,300
+user base, and it sits on the authentication path. Both packages together are about 3,500
 lines of TypeScript, deliberately kept small enough to read — do that, and read
 [SECURITY.md](SECURITY.md), before you depend on it.
 
@@ -94,6 +104,10 @@ passkey signature or recover the high-entropy bearer tokens, but database write 
 a full server compromise can still subvert authentication. Recovery and identity proofing
 remain product policy. The narrower claim is the important one: **your server never
 receives or stores a reusable user authentication secret.**
+
+Ceremony libraries (SimpleWebAuthn and others) stop at verifying WebAuthn. Auth frameworks
+and IdPs usually keep passwords, OAuth, or email fallbacks. LocalWebAuthn is the lifecycle
+layer for the passkey-only, self-hosted case — see [docs/COMPARISON.md](docs/COMPARISON.md).
 
 ## Coming From Password Authentication
 
@@ -481,21 +495,40 @@ boundary. See [docs/DEMO.md](docs/DEMO.md) to reproduce the recording and screen
 
 ## Good Fit
 
-LocalWebAuthn fits applications that can require passkey-capable clients and want to own
-their user records without running a password system or external identity provider. This
-includes internal tools, admin surfaces, prototypes intended to become real systems, and
-small production applications with a deliberate enrollment and recovery policy.
+**You are in the target audience if** you want to replace a password system with
+passkeys only, keep authentication in your TypeScript app and database, enroll each person
+through an explicit one-time grant, and design recovery as identity proofing plus
+re-enrollment — so that day-to-day sign-in depends on the user, your service, and HTTPS,
+not on Auth0/Clerk/an OIDC broker or a mail provider as the authenticator.
 
-"Self-hosted" describes the relying-party application and its authentication data. A user
-may choose an operating system, password manager, or hardware security key to hold the
-private key, and a passkey provider may sync it between that user's devices. That provider
-is not an identity provider for the application; LocalWebAuthn never receives the private
-key.
+That grant can come from an administrator or from an automated signup that first verifies
+something about the person — a DKIM-signed email plus an SMS code, say. Either way the
+link is single-use, expiring, and bound to one user, and once the passkey exists those
+channels are no longer a way in. What does not fit is keeping email or SMS as a standing
+route into any account, which puts the mailbox back in front of the passkey.
 
-Choose a mature identity provider instead when you need federation, enterprise directory
-integration, regulated identity assurance, high-volume abuse operations, or account
-recovery that your team cannot safely operate. Do not make passkey-only access mandatory
-for a population whose devices or accessibility needs you have not validated.
+That usually includes internal tools, admin surfaces, B2B apps with deliberate onboarding,
+consumer products that verify contact details at signup, prototypes meant to become real
+systems, and small production apps whose clients are passkey-capable. A longer audience
+evaluation, and how peers differ, is in [docs/COMPARISON.md](docs/COMPARISON.md).
+
+"Self-hosted" describes the relying-party application and its authentication data. It does
+**not** mean zero dependencies or zero infrastructure:
+
+- Ceremony verification uses `@simplewebauthn/*` (library code in your process, not a login
+  vendor).
+- HTTPS may be terminated by a reverse proxy or CDN; that is transport, not identity.
+- A user may store or sync passkeys with their OS or password manager. That provider is
+  **not** an identity provider for your application; LocalWebAuthn never receives the
+  private key.
+
+Choose a mature identity provider or multi-method framework instead when you need
+federation, enterprise directory integration, regulated identity assurance, high-volume
+abuse operations, permanent password/OAuth/email fallbacks, or account recovery that your
+team cannot safely operate. Do not make passkey-only access mandatory for a population
+whose devices or accessibility needs you have not validated.
+
+Also see [docs/RATIONALE.md](docs/RATIONALE.md) for non-goals and design boundaries.
 
 ## Packages
 

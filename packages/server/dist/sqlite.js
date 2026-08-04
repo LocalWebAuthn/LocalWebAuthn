@@ -1,11 +1,10 @@
 import {
-  ORPHANED_CREDENTIAL_GRACE_MS,
   SQL,
   challengeFromRow,
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-IFRZR4MT.js";
+} from "./chunk-CNGBEFAA.js";
 import {
   LOCALWEBAUTHN_SCHEMA_SQL,
   LOCALWEBAUTHN_SCHEMA_VERSION
@@ -13,6 +12,7 @@ import {
 
 // src/sqlite.ts
 function migrateSqlite(database, now = Date.now()) {
+  database.exec("PRAGMA foreign_keys = ON");
   database.transaction(() => {
     database.exec(LOCALWEBAUTHN_SCHEMA_SQL);
     database.prepare(SQL.insertMigration).run(LOCALWEBAUTHN_SCHEMA_VERSION, now);
@@ -22,6 +22,7 @@ var SqliteLocalWebAuthnStore = class {
   #database;
   constructor(database) {
     this.#database = database;
+    database.exec("PRAGMA foreign_keys = ON");
   }
   async replaceEnrollmentGrant(record) {
     return this.#database.transaction(() => {
@@ -103,7 +104,14 @@ var SqliteLocalWebAuthnStore = class {
   async completeAuthentication(input) {
     try {
       return this.#database.transaction(() => {
-        const advanced = this.#database.prepare(SQL.advanceCredentialCounter).run(input.newCounter, input.now, input.credentialId, input.previousCounter);
+        const advanced = this.#database.prepare(SQL.advanceCredentialCounter).run(
+          input.newCounter,
+          input.now,
+          input.credentialId,
+          input.previousCounter,
+          input.newCounter,
+          input.newCounter
+        );
         if (advanced.changes !== 1) {
           return false;
         }
@@ -122,16 +130,21 @@ var SqliteLocalWebAuthnStore = class {
     return this.#database.prepare(SQL.touchSession).run(now, idHash, now).changes === 1;
   }
   async revokeSession(idHash, now) {
-    return this.#database.prepare(SQL.revokeSession).run(now, idHash).changes === 1;
+    const row = this.#database.prepare(SQL.revokeSession).get(now, idHash);
+    return row ? { userId: row.user_id, credentialId: row.credential_id } : null;
   }
-  async revokeCredential(userId, credentialId, now) {
+  async revokeCredential(userId, credentialId, now, options = {}) {
     return this.#database.transaction(() => {
-      const revoked = this.#database.prepare(SQL.revokeCredential).run(now, credentialId, userId);
-      if (revoked.changes !== 1) {
-        return false;
+      const allowLast = options.allowLastCredential ? 1 : 0;
+      const revoked = this.#database.prepare(SQL.revokeCredential).run(now, credentialId, userId, allowLast, userId, credentialId);
+      if (revoked.changes === 1) {
+        this.#database.prepare(SQL.revokeSessionsForCredential).run(now, credentialId);
+        return "revoked";
       }
-      this.#database.prepare(SQL.revokeSessionsForCredential).run(now, credentialId);
-      return true;
+      if (!options.allowLastCredential && this.#database.prepare(SQL.isLastActiveCredential).get(credentialId, userId, userId, credentialId)) {
+        return "last_credential";
+      }
+      return "not_found";
     })();
   }
   async revokeUserAuthentication(userId, now) {
@@ -145,10 +158,9 @@ var SqliteLocalWebAuthnStore = class {
   async cleanup(now) {
     return this.#database.transaction(() => {
       const sessions = this.#database.prepare(SQL.deleteExpiredSessions).run(now).changes;
-      const orphanedCredentials = this.#database.prepare(SQL.deleteOrphanedCredentials).run(now - ORPHANED_CREDENTIAL_GRACE_MS).changes;
       const enrollmentGrants = this.#database.prepare(SQL.deleteFinishedGrants).run(now).changes;
       const challenges = this.#database.prepare(SQL.deleteFinishedChallenges).run(now).changes;
-      return { enrollmentGrants, challenges, sessions, orphanedCredentials };
+      return { enrollmentGrants, challenges, sessions };
     })();
   }
   /** Re-check the authorizing grant or session at commit time. */

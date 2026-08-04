@@ -1,4 +1,4 @@
-import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, g as CleanupResult } from './types-TH3Ore5_.js';
+import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, g as RevokeCredentialResult, h as CleanupResult } from './types-sZ3WVqGy.js';
 import '@simplewebauthn/server';
 
 type D1ResultLike<Row = Record<string, unknown>> = {
@@ -31,8 +31,9 @@ declare function migrateD1(database: D1DatabaseLike, now?: number): Promise<void
  * every step that must affect exactly one row is followed by a guard statement
  * that fails the batch otherwise. This stops an unauthorized write from
  * completing, but — unlike a transaction — it cannot roll back statements that
- * already committed. See the D1 section of `SECURITY.md`, and schedule
- * {@link D1LocalWebAuthnStore.cleanup} to reap any orphaned credential rows.
+ * already committed. See the D1 section of `SECURITY.md`. Schedule
+ * {@link D1LocalWebAuthnStore.cleanup} to reap expired grants, challenges, and
+ * sessions.
  */
 declare class D1LocalWebAuthnStore implements LocalWebAuthnStore {
     #private;
@@ -48,8 +49,10 @@ declare class D1LocalWebAuthnStore implements LocalWebAuthnStore {
     completeAuthentication(input: CompleteAuthenticationInput): Promise<boolean>;
     resolveSession(idHash: Uint8Array, now: number, idleExpiresBefore: number): Promise<SessionIdentity | null>;
     touchSession(idHash: Uint8Array, now: number): Promise<boolean>;
-    revokeSession(idHash: Uint8Array, now: number): Promise<boolean>;
-    revokeCredential(userId: string, credentialId: string, now: number): Promise<boolean>;
+    revokeSession(idHash: Uint8Array, now: number): Promise<RevokedSession | null>;
+    revokeCredential(userId: string, credentialId: string, now: number, options?: {
+        allowLastCredential?: boolean;
+    }): Promise<RevokeCredentialResult>;
     revokeUserAuthentication(userId: string, now: number): Promise<void>;
     cleanup(now: number): Promise<CleanupResult>;
 }

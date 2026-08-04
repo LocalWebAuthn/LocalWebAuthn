@@ -457,12 +457,23 @@ export class LocalWebAuthn {
       );
     }
 
+    const previousCounter = credential.counter;
+    const newCounter = verification.authenticationInfo.newCounter;
+    // WebAuthn: non-zero counters must strictly increase; 0→0 is allowed.
+    if ((previousCounter > 0 || newCounter > 0) && newCounter <= previousCounter) {
+      throw new LocalWebAuthnError(
+        'authentication_failed',
+        'The passkey could not be verified.',
+        401,
+      );
+    }
+
     const sessionToken = createOpaqueToken(this.#randomBytes);
     const expiresAt = now + this.config.durations.sessionAbsoluteMs;
     const completed = await this.#store.completeAuthentication({
       credentialId: credential.id,
-      previousCounter: credential.counter,
-      newCounter: verification.authenticationInfo.newCounter,
+      previousCounter,
+      newCounter,
       session: {
         idHash: await sha256(sessionToken),
         userId: user.id,
@@ -539,9 +550,14 @@ export class LocalWebAuthn {
     const now = this.#now();
     const revoked = await this.#store.revokeSession(await sha256(sessionToken), now);
     if (revoked) {
-      await this.#emit({ type: 'session.revoked', at: now });
+      await this.#emit({
+        type: 'session.revoked',
+        at: now,
+        userId: revoked.userId,
+        credentialId: revoked.credentialId,
+      });
     }
-    return revoked;
+    return revoked !== null;
   }
 
   listCredentials(userId: string, includeRevoked = false): Promise<Credential[]> {
@@ -562,32 +578,34 @@ export class LocalWebAuthn {
     credentialId: string,
     options: { allowLastCredential?: boolean } = {},
   ): Promise<boolean> {
-    if (!options.allowLastCredential) {
-      const credentials = await this.#store.listCredentials(userId);
-      if (credentials.length <= 1 && credentials.some(({ id }) => id === credentialId)) {
-        throw new LocalWebAuthnError(
-          'last_credential',
-          'The final active credential cannot be revoked without a recovery flow.',
-          409,
-        );
-      }
-    }
-
     const now = this.#now();
-    const revoked = await this.#store.revokeCredential(userId, credentialId, now);
-    if (revoked) {
+    // Last-credential protection is enforced atomically inside the store so two
+    // concurrent revokes cannot both observe "more than one active" and empty
+    // the account.
+    const result = await this.#store.revokeCredential(userId, credentialId, now, options);
+    if (result === 'last_credential') {
+      throw new LocalWebAuthnError(
+        'last_credential',
+        'The final active credential cannot be revoked without a recovery flow.',
+        409,
+      );
+    }
+    if (result === 'revoked') {
       await this.#emit({
         type: 'credential.revoked',
         at: now,
         userId,
         credentialId,
       });
+      return true;
     }
-    return revoked;
+    return false;
   }
 
-  revokeUserAuthentication(userId: string): Promise<void> {
-    return this.#store.revokeUserAuthentication(userId, this.#now());
+  async revokeUserAuthentication(userId: string): Promise<void> {
+    const now = this.#now();
+    await this.#store.revokeUserAuthentication(userId, now);
+    await this.#emit({ type: 'user.authentication_revoked', at: now, userId });
   }
 
   cleanup() {

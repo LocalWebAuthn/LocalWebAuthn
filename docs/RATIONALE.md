@@ -47,14 +47,18 @@ an external administrative plane, dependency, outage boundary, and user-data rep
 
 LocalWebAuthn targets applications that deliberately want:
 
-- Passkey-only human authentication.
+- Passkey-only human authentication (replacing a password _system_, not bolting
+  passkeys onto passwords).
 - A local user directory controlled by the application.
-- No password database or password recovery flow.
-- No required hosted identity or email service.
-- SQLite for a single-node deployment or D1 for a Cloudflare deployment.
+- No password database or password-reset flow; recovery is proofing + re-enrollment.
+- No required hosted identity provider; sign-in needs the user, this service, and HTTPS
+  (optional reverse proxy / CDN for TLS is fine).
+- SQLite for a single-node deployment, PostgreSQL for a multi-process deployment,
+  or D1 for a Cloudflare deployment.
 
 It is not an identity-proofing service. The host still decides who a user is, who may approve
-an enrollment, and how the bearer enrollment link reaches that person.
+an enrollment, and how the bearer enrollment link reaches that person. For how this
+compares to ceremony libraries, auth frameworks, and IdPs, see [COMPARISON.md](COMPARISON.md).
 
 ## Boilerplate Reduction
 
@@ -83,7 +87,7 @@ The package then owns:
 - Credential counter compare-and-update.
 - Idle and absolute session expiration.
 - Credential and user-wide revocation.
-- The same storage contract for SQLite and D1.
+- The same storage contract for SQLite, PostgreSQL, and D1.
 
 The host route adapter remains intentionally small and framework-specific: read JSON, read or
 write HTTP-only cookies, enforce the exact origin, call the service, and map errors. The demo
@@ -91,8 +95,8 @@ shows this complete boundary without hiding it behind a hosted service or a larg
 
 ## Local Database Ownership
 
-The SQLite and D1 adapters are official parts of `@localwebauthn/server`. Applications run
-the adapter migration and do not issue SQL against `localwebauthn_*` tables.
+The SQLite, PostgreSQL, and D1 adapters are official parts of `@localwebauthn/server`.
+Applications run the adapter migration and do not issue SQL against `localwebauthn_*` tables.
 
 The host owns only its user table. In the demo that table contains:
 
