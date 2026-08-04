@@ -38,8 +38,33 @@ The package deliberately does not prescribe an HTTP framework. Route handlers tr
 cookies and JSON into the service methods. See the repository security policy before
 deploying.
 
-Cloudflare Workers can use `D1LocalWebAuthnStore` and `migrateD1` from
-`@localwebauthn/server/d1`.
+## Storage adapters
+
+All three pass the same conformance suite and are interchangeable via the `store` option.
+
+| Import                           | Store                        | Migration         |
+| -------------------------------- | ---------------------------- | ----------------- |
+| `@localwebauthn/server/sqlite`   | `SqliteLocalWebAuthnStore`   | `migrateSqlite`   |
+| `@localwebauthn/server/postgres` | `PostgresLocalWebAuthnStore` | `migratePostgres` |
+| `@localwebauthn/server/d1`       | `D1LocalWebAuthnStore`       | `migrateD1`       |
+
+```ts
+import { Pool } from 'pg';
+import { migratePostgres, PostgresLocalWebAuthnStore } from '@localwebauthn/server/postgres';
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+await migratePostgres(pool);
+// store: new PostgresLocalWebAuthnStore(pool)
+```
+
+`better-sqlite3` and `pg` are optional peer dependencies — install only the one you use.
+Pass a `pg.Pool` rather than a single client so transactions get their own connection.
+
+SQLite and PostgreSQL wrap multi-statement operations in real transactions. D1 cannot, and
+guards each step on the preceding row count instead; see the D1 section of the repository
+security policy, and schedule periodic `cleanup()` there.
+
+The SQLite adapter uses `UPDATE ... RETURNING`, which requires SQLite 3.35 or newer.
 
 The repository's [lifecycle demo](../../examples/demo/README.md) shows the complete SQLite
 integration, HTTP-only cookie adapter, initial bootstrap, client enrollment, additional

@@ -2,6 +2,7 @@ import type { AuthenticatorTransportFuture, Base64URLString } from '@simplewebau
 
 import Database from 'better-sqlite3';
 import { Miniflare } from 'miniflare';
+import pg from 'pg';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import type {
@@ -14,13 +15,15 @@ import {
   D1LocalWebAuthnStore,
   migrateD1,
 } from '../../packages/server/src/d1.js';
-import type { SqliteDatabase } from '../../packages/server/src/sqlite.js';
+import {
+  migratePostgres,
+  type PostgresPool,
+  PostgresLocalWebAuthnStore,
+} from '../../packages/server/src/postgres.js';
 import { migrateSqlite, SqliteLocalWebAuthnStore } from '../../packages/server/src/sqlite.js';
 
 type StoreFixture = {
   store: LocalWebAuthnStore;
-  /** Direct database access for test setup (e.g., simulating batch failures). */
-  rawDb: SqliteDatabase | D1DatabaseLike;
   close(): Promise<void>;
 };
 
@@ -104,7 +107,6 @@ async function sqliteFixture(): Promise<StoreFixture> {
   migrateSqlite(database);
   return {
     store: new SqliteLocalWebAuthnStore(database),
-    rawDb: database as unknown as SqliteDatabase,
     close: async () => {
       database.close();
     },
@@ -125,10 +127,51 @@ async function d1Fixture(): Promise<StoreFixture> {
   await migrateD1(database);
   return {
     store: new D1LocalWebAuthnStore(database),
-    rawDb: database,
     close: async () => {
       miniflares.delete(miniflare);
       await miniflare.dispose();
+    },
+  };
+}
+
+/**
+ * PostgreSQL runs against a real server; there is no faithful in-process
+ * emulator (pg-mem, for instance, mangles BYTEA parameters, which is precisely
+ * the type every token hash uses). Start one with `pg-start` in the nix
+ * devShell, or let CI's service container provide it. When no server is
+ * reachable the suite skips rather than fails.
+ */
+const postgresUrl = process.env.LOCALWEBAUTHN_TEST_POSTGRES_URL;
+
+async function postgresIsReachable(): Promise<boolean> {
+  if (!postgresUrl) {
+    return false;
+  }
+  const pool = new pg.Pool({ connectionString: postgresUrl, connectionTimeoutMillis: 2000 });
+  try {
+    await pool.query('SELECT 1');
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await pool.end().catch(() => undefined);
+  }
+}
+
+async function postgresFixture(): Promise<StoreFixture> {
+  const pool = new pg.Pool({ connectionString: postgresUrl });
+  await migratePostgres(pool as unknown as PostgresPool);
+  // Each fixture starts from an empty schema; tests in a file run sequentially.
+  await pool.query(`TRUNCATE
+    localwebauthn_sessions,
+    localwebauthn_credentials,
+    localwebauthn_challenges,
+    localwebauthn_enrollment_grants
+    RESTART IDENTITY CASCADE`);
+  return {
+    store: new PostgresLocalWebAuthnStore(pool as unknown as PostgresPool),
+    close: async () => {
+      await pool.end();
     },
   };
 }
@@ -137,8 +180,13 @@ afterAll(async () => {
   await Promise.all([...miniflares].map(async (miniflare) => miniflare.dispose()));
 });
 
-function storeConformance(name: string, createFixture: () => Promise<StoreFixture>) {
-  describe(`${name} store`, () => {
+function storeConformance(
+  name: string,
+  createFixture: () => Promise<StoreFixture>,
+  options: { skip?: boolean } = {},
+) {
+  const suite = options.skip ? describe.skip : describe;
+  suite(`${name} store`, () => {
     it('exchanges enrollment grants exactly once', async () => {
       const fixture = await createFixture();
       try {
@@ -150,6 +198,28 @@ function storeConformance(name: string, createFixture: () => Promise<StoreFixtur
         await expect(fixture.store.resolveEnrollmentSession(bytes(2), now)).resolves.toMatchObject({
           grantId: 'grant-1',
         });
+      } finally {
+        await fixture.close();
+      }
+    });
+
+    it('reports a duplicate challenge id instead of overwriting one', async () => {
+      const fixture = await createFixture();
+      try {
+        await exchangedGrant(fixture.store);
+        await expect(fixture.store.createChallenge(enrollmentChallenge('grant-1'))).resolves.toBe(
+          true,
+        );
+        // Same id_hash, different challenge value: must not replace the original.
+        await expect(
+          fixture.store.createChallenge({
+            ...enrollmentChallenge('grant-1'),
+            challenge: 'a-different-challenge',
+          }),
+        ).resolves.toBe(false);
+        await expect(
+          fixture.store.consumeChallenge(bytes(3), 'registration', now),
+        ).resolves.toMatchObject({ challenge: 'registration-challenge' });
       } finally {
         await fixture.close();
       }
@@ -349,5 +419,16 @@ function storeConformance(name: string, createFixture: () => Promise<StoreFixtur
   });
 }
 
+const postgresReachable = await postgresIsReachable();
+
+// CI sets this so an unreachable server is a failure rather than a silent skip;
+// a green run there must mean PostgreSQL was actually exercised.
+if (process.env.LOCALWEBAUTHN_REQUIRE_POSTGRES === '1' && !postgresReachable) {
+  throw new Error(
+    `LOCALWEBAUTHN_REQUIRE_POSTGRES=1 but no server was reachable at ${postgresUrl ?? '(unset LOCALWEBAUTHN_TEST_POSTGRES_URL)'}.`,
+  );
+}
+
 storeConformance('SQLite', sqliteFixture);
 storeConformance('D1', d1Fixture);
+storeConformance('PostgreSQL', postgresFixture, { skip: !postgresReachable });

@@ -1,42 +1,52 @@
 import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, g as CleanupResult } from './types-TH3Ore5_.js';
 import '@simplewebauthn/server';
 
-type D1ResultLike<Row = Record<string, unknown>> = {
-    results: Row[];
-    success: boolean;
-    meta: {
-        changes?: number;
-    };
+type PostgresQueryResult<Row> = {
+    rows: Row[];
+    rowCount: number | null;
 };
-type D1PreparedStatementLike = {
-    bind(...values: unknown[]): D1PreparedStatementLike;
-    first<Row = Record<string, unknown>>(): Promise<Row | null>;
-    all<Row = Record<string, unknown>>(): Promise<D1ResultLike<Row>>;
-    run<Row = Record<string, unknown>>(): Promise<D1ResultLike<Row>>;
+/** The subset of a node-postgres client this adapter uses. */
+type PostgresQueryable = {
+    query<Row = Record<string, unknown>>(sql: string, parameters?: unknown[]): Promise<PostgresQueryResult<Row>>;
 };
-type D1DatabaseLike = {
-    prepare(sql: string): D1PreparedStatementLike;
-    batch(statements: D1PreparedStatementLike[]): Promise<D1ResultLike[]>;
-    exec(sql: string): Promise<unknown>;
+type PostgresPoolClient = PostgresQueryable & {
+    release(): void;
+};
+/**
+ * A `pg.Pool`, or anything with the same shape.
+ *
+ * A pool rather than a single client is required: transactions need a
+ * connection to themselves, and issuing `BEGIN` on a connection shared between
+ * concurrent requests would interleave unrelated statements into the same
+ * transaction.
+ */
+type PostgresPool = PostgresQueryable & {
+    connect(): Promise<PostgresPoolClient>;
 };
 /**
  * Create or update the `localwebauthn_*` tables. Idempotent — safe to call on
- * every deploy.
- */
-declare function migrateD1(database: D1DatabaseLike, now?: number): Promise<void>;
-/**
- * {@link LocalWebAuthnStore} backed by Cloudflare D1.
+ * every start.
  *
- * D1 has no transactions. Multi-statement operations run as a `batch()`, and
- * every step that must affect exactly one row is followed by a guard statement
- * that fails the batch otherwise. This stops an unauthorized write from
- * completing, but — unlike a transaction — it cannot roll back statements that
- * already committed. See the D1 section of `SECURITY.md`, and schedule
- * {@link D1LocalWebAuthnStore.cleanup} to reap any orphaned credential rows.
+ * ```ts
+ * import { Pool } from 'pg';
+ * import { migratePostgres, PostgresLocalWebAuthnStore } from '@localwebauthn/server/postgres';
+ *
+ * const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+ * await migratePostgres(pool);
+ * const store = new PostgresLocalWebAuthnStore(pool);
+ * ```
  */
-declare class D1LocalWebAuthnStore implements LocalWebAuthnStore {
+declare function migratePostgres(pool: PostgresPool, now?: number): Promise<void>;
+/**
+ * {@link LocalWebAuthnStore} backed by PostgreSQL.
+ *
+ * Like the SQLite adapter and unlike D1, every multi-statement operation runs
+ * inside a real transaction, so partial writes cannot be observed or left
+ * behind.
+ */
+declare class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
     #private;
-    constructor(database: D1DatabaseLike);
+    constructor(pool: PostgresPool);
     replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]>;
     exchangeEnrollment(tokenHash: Uint8Array, sessionHash: Uint8Array, sessionExpiresAt: number, now: number): Promise<EnrollmentSession | null>;
     resolveEnrollmentSession(sessionHash: Uint8Array, now: number): Promise<EnrollmentSession | null>;
@@ -54,4 +64,4 @@ declare class D1LocalWebAuthnStore implements LocalWebAuthnStore {
     cleanup(now: number): Promise<CleanupResult>;
 }
 
-export { type D1DatabaseLike, D1LocalWebAuthnStore, type D1PreparedStatementLike, type D1ResultLike, migrateD1 };
+export { PostgresLocalWebAuthnStore, type PostgresPool, type PostgresPoolClient, type PostgresQueryResult, type PostgresQueryable, migratePostgres };

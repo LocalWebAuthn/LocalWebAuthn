@@ -6,23 +6,29 @@ Security fixes are applied to the most recent minor release of the current major
 LocalWebAuthn follows SemVer: the service API, store interface, and database schema change
 only in a new major version.
 
-`1.0.0` means the interface is stable, not that the code has years of production exposure.
-The project is young and has a small user base. It is also small on purpose — under 3,000
-lines of TypeScript across the service, both storage adapters, and the browser client —
-so that a reviewer can read the whole authentication path rather than trust it. Please do
-read it, and report anything that looks wrong.
+A `1.x` version means the interface is stable, not that the code has years of production
+exposure. The project is young and has a small user base. It is also small on purpose —
+about 3,300 lines of TypeScript across the service, all three storage adapters, and the
+browser client — so that a reviewer can read the whole authentication path rather than
+trust it. Every SQL statement the package executes is collected in one module,
+`packages/server/src/queries.ts`, to make that review tractable. Please do read it, and
+report anything that looks wrong.
 
 ## Reporting
 
-Do not open a public issue for a suspected vulnerability. Report it privately to the
-repository owner.
+Do not open a public issue for a suspected vulnerability. Use one of these private
+channels instead:
+
+- [GitHub private vulnerability reporting](https://github.com/LocalWebAuthn/LocalWebAuthn/security/advisories/new)
+  (preferred — keeps the report, discussion, and eventual advisory together).
+- Email `security@dominionrnd.com` (Perry Kundert).
 
 Include the affected version, deployment assumptions, reproduction steps, and likely impact.
 Do not include real enrollment links, session tokens, credential material, or user data.
 
-Maintainer note: GitHub private vulnerability reporting is not yet enabled on this
-repository. Enabling it under Settings → Code security gives reporters an authenticated
-private channel and should be done before the project attracts wider use.
+Expect an acknowledgement within a few business days. Please give us a reasonable window
+to ship a fix before public disclosure; we will credit you in the advisory unless you ask
+otherwise.
 
 ## Security Boundary
 
@@ -45,6 +51,16 @@ The host application must:
 - Revoke LocalWebAuthn state whenever a user is deactivated.
 - Require a fresh passkey assertion for recovery and sensitive credential changes.
 - Persist and monitor structured authentication audit events.
+
+## Storage Adapter Guarantees
+
+The SQLite and PostgreSQL adapters wrap every multi-statement operation in a real
+transaction, so a registration or authentication either commits completely or not at all.
+Prefer one of them when you have the choice.
+
+Schedule `cleanup()` periodically on any adapter — every few minutes is ample. It removes
+expired grants, consumed challenges, and dead sessions, and is the only thing that reaps
+the orphaned credentials described below.
 
 ## D1 Batch Non-Atomicity
 

@@ -1,22 +1,21 @@
 import {
+  ORPHANED_CREDENTIAL_GRACE_MS,
+  SQL,
   challengeFromRow,
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-QN7KH2GR.js";
+} from "./chunk-IFRZR4MT.js";
 import {
   LOCALWEBAUTHN_SCHEMA_SQL,
   LOCALWEBAUTHN_SCHEMA_VERSION
-} from "./chunk-YGBWJ5OU.js";
+} from "./chunk-6NWV3XTI.js";
 
 // src/sqlite.ts
 function migrateSqlite(database, now = Date.now()) {
   database.transaction(() => {
     database.exec(LOCALWEBAUTHN_SCHEMA_SQL);
-    database.prepare(
-      `INSERT OR IGNORE INTO localwebauthn_migrations(version, applied_at)
-         VALUES (?, ?)`
-    ).run(LOCALWEBAUTHN_SCHEMA_VERSION, now);
+    database.prepare(SQL.insertMigration).run(LOCALWEBAUTHN_SCHEMA_VERSION, now);
   })();
 }
 var SqliteLocalWebAuthnStore = class {
@@ -26,17 +25,8 @@ var SqliteLocalWebAuthnStore = class {
   }
   async replaceEnrollmentGrant(record) {
     return this.#database.transaction(() => {
-      const revoked = this.#database.prepare(
-        `UPDATE localwebauthn_enrollment_grants
-           SET revoked_at = ?
-           WHERE user_id = ? AND completed_at IS NULL AND revoked_at IS NULL
-           RETURNING id`
-      ).all(record.createdAt, record.userId);
-      this.#database.prepare(
-        `INSERT INTO localwebauthn_enrollment_grants(
-             id, user_id, token_hash, expires_at, approved_by_user_id, created_at
-           ) VALUES (?, ?, ?, ?, ?, ?)`
-      ).run(
+      const revoked = this.#database.prepare(SQL.revokePendingGrants).all(record.createdAt, record.userId);
+      this.#database.prepare(SQL.insertEnrollmentGrant).run(
         record.id,
         record.userId,
         record.tokenHash,
@@ -48,50 +38,15 @@ var SqliteLocalWebAuthnStore = class {
     })();
   }
   async exchangeEnrollment(tokenHash, sessionHash, sessionExpiresAt, now) {
-    return this.#database.transaction(() => {
-      const row = this.#database.prepare(
-        `SELECT id, user_id
-           FROM localwebauthn_enrollment_grants
-           WHERE token_hash = ?
-             AND token_consumed_at IS NULL
-             AND completed_at IS NULL
-             AND revoked_at IS NULL
-             AND expires_at > ?`
-      ).get(tokenHash, now);
-      if (!row) {
-        return null;
-      }
-      const update = this.#database.prepare(
-        `UPDATE localwebauthn_enrollment_grants
-           SET token_consumed_at = ?, session_hash = ?, session_expires_at = ?
-           WHERE id = ? AND token_consumed_at IS NULL AND revoked_at IS NULL`
-      ).run(now, sessionHash, sessionExpiresAt, row.id);
-      return update.changes === 1 ? {
-        grantId: row.id,
-        userId: row.user_id,
-        sessionHash,
-        sessionExpiresAt
-      } : null;
-    })();
+    const row = this.#database.prepare(SQL.exchangeEnrollment).get(now, sessionHash, sessionExpiresAt, tokenHash, now);
+    return row ? enrollmentSessionFromRow(row) : null;
   }
   async resolveEnrollmentSession(sessionHash, now) {
-    const row = this.#database.prepare(
-      `SELECT id, user_id, session_hash, session_expires_at
-         FROM localwebauthn_enrollment_grants
-         WHERE session_hash = ?
-           AND session_expires_at > ?
-           AND completed_at IS NULL
-           AND revoked_at IS NULL`
-    ).get(sessionHash, now);
+    const row = this.#database.prepare(SQL.selectEnrollmentSession).get(sessionHash, now);
     return row ? enrollmentSessionFromRow(row) : null;
   }
   async createChallenge(record) {
-    return this.#database.prepare(
-      `INSERT OR IGNORE INTO localwebauthn_challenges(
-             id_hash, kind, challenge, user_id, grant_id,
-             authorization_session_hash, expires_at, created_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
+    return this.#database.prepare(SQL.insertChallenge).run(
       record.idHash,
       record.kind,
       record.challenge,
@@ -103,60 +58,25 @@ var SqliteLocalWebAuthnStore = class {
     ).changes === 1;
   }
   async consumeChallenge(idHash, kind, now) {
-    return this.#database.transaction(() => {
-      const row = this.#database.prepare(
-        `SELECT kind, challenge, user_id, grant_id, authorization_session_hash
-           FROM localwebauthn_challenges
-           WHERE id_hash = ?
-             AND kind = ?
-             AND consumed_at IS NULL
-             AND expires_at > ?`
-      ).get(idHash, kind, now);
-      if (!row) {
-        return null;
-      }
-      const update = this.#database.prepare(
-        `UPDATE localwebauthn_challenges
-           SET consumed_at = ?
-           WHERE id_hash = ? AND consumed_at IS NULL`
-      ).run(now, idHash);
-      return update.changes === 1 ? challengeFromRow(row) : null;
-    })();
+    const row = this.#database.prepare(SQL.consumeChallenge).get(now, idHash, kind, now);
+    return row ? challengeFromRow(row) : null;
   }
   async listCredentials(userId, includeRevoked = false) {
-    const rows = this.#database.prepare(
-      `SELECT
-           id, user_id, public_key, counter, transports_json, device_type,
-           backed_up, label, created_at, last_used_at, revoked_at
-         FROM localwebauthn_credentials
-         WHERE user_id = ? AND (? = 1 OR revoked_at IS NULL)
-         ORDER BY created_at, id`
-    ).all(userId, includeRevoked ? 1 : 0);
+    const rows = this.#database.prepare(SQL.selectCredentialsForUser).all(userId, includeRevoked ? 1 : 0);
     return rows.map(credentialFromRow);
   }
   async getCredential(credentialId) {
-    const row = this.#database.prepare(
-      `SELECT
-           id, user_id, public_key, counter, transports_json, device_type,
-           backed_up, label, created_at, last_used_at, revoked_at
-         FROM localwebauthn_credentials
-         WHERE id = ?`
-    ).get(credentialId);
+    const row = this.#database.prepare(SQL.selectCredentialById).get(credentialId);
     return row ? credentialFromRow(row) : null;
   }
   async completeRegistration(input) {
     try {
       return this.#database.transaction(() => {
-        if (!this.#registrationAuthorizationIsValid(input)) {
+        if (!this.#registrationIsAuthorized(input)) {
           return false;
         }
         const credential = input.credential;
-        this.#database.prepare(
-          `INSERT INTO localwebauthn_credentials(
-               id, user_id, public_key, counter, transports_json,
-               device_type, backed_up, label, created_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(
+        this.#database.prepare(SQL.insertCredential).run(
           credential.id,
           credential.userId,
           credential.publicKey,
@@ -168,15 +88,7 @@ var SqliteLocalWebAuthnStore = class {
           credential.createdAt
         );
         if (input.challenge.grantId) {
-          const completion = this.#database.prepare(
-            `UPDATE localwebauthn_enrollment_grants
-               SET completed_at = ?
-               WHERE id = ?
-                 AND session_hash = ?
-                 AND session_expires_at > ?
-                 AND completed_at IS NULL
-                 AND revoked_at IS NULL`
-          ).run(input.now, input.challenge.grantId, input.enrollmentSessionHash, input.now);
+          const completion = this.#database.prepare(SQL.completeEnrollmentGrant).run(input.now, input.challenge.grantId, input.enrollmentSessionHash, input.now);
           if (completion.changes !== 1) {
             throw new Error("Enrollment grant changed during registration.");
           }
@@ -191,12 +103,8 @@ var SqliteLocalWebAuthnStore = class {
   async completeAuthentication(input) {
     try {
       return this.#database.transaction(() => {
-        const update = this.#database.prepare(
-          `UPDATE localwebauthn_credentials
-             SET counter = ?, last_used_at = ?
-             WHERE id = ? AND counter = ? AND revoked_at IS NULL`
-        ).run(input.newCounter, input.now, input.credentialId, input.previousCounter);
-        if (update.changes !== 1) {
+        const advanced = this.#database.prepare(SQL.advanceCredentialCounter).run(input.newCounter, input.now, input.credentialId, input.previousCounter);
+        if (advanced.changes !== 1) {
           return false;
         }
         this.#insertSession(input.session);
@@ -207,145 +115,63 @@ var SqliteLocalWebAuthnStore = class {
     }
   }
   async resolveSession(idHash, now, idleExpiresBefore) {
-    const row = this.#database.prepare(
-      `SELECT
-           sessions.user_id, sessions.credential_id, sessions.authenticated_at,
-           sessions.expires_at, sessions.last_seen_at
-         FROM localwebauthn_sessions AS sessions
-         JOIN localwebauthn_credentials AS credentials
-           ON credentials.id = sessions.credential_id
-         WHERE sessions.id_hash = ?
-           AND sessions.expires_at > ?
-           AND sessions.last_seen_at > ?
-           AND sessions.revoked_at IS NULL
-           AND credentials.revoked_at IS NULL`
-    ).get(idHash, now, idleExpiresBefore);
+    const row = this.#database.prepare(SQL.selectSession).get(idHash, now, idleExpiresBefore);
     return row ? sessionFromRow(row) : null;
   }
   async touchSession(idHash, now) {
-    return this.#database.prepare(
-      `UPDATE localwebauthn_sessions
-           SET last_seen_at = ?
-           WHERE id_hash = ? AND revoked_at IS NULL AND expires_at > ?`
-    ).run(now, idHash, now).changes === 1;
+    return this.#database.prepare(SQL.touchSession).run(now, idHash, now).changes === 1;
   }
   async revokeSession(idHash, now) {
-    return this.#database.prepare(
-      `UPDATE localwebauthn_sessions
-           SET revoked_at = ?
-           WHERE id_hash = ? AND revoked_at IS NULL`
-    ).run(now, idHash).changes === 1;
+    return this.#database.prepare(SQL.revokeSession).run(now, idHash).changes === 1;
   }
   async revokeCredential(userId, credentialId, now) {
     return this.#database.transaction(() => {
-      const update = this.#database.prepare(
-        `UPDATE localwebauthn_credentials
-           SET revoked_at = ?
-           WHERE id = ? AND user_id = ? AND revoked_at IS NULL`
-      ).run(now, credentialId, userId);
-      if (update.changes !== 1) {
+      const revoked = this.#database.prepare(SQL.revokeCredential).run(now, credentialId, userId);
+      if (revoked.changes !== 1) {
         return false;
       }
-      this.#database.prepare(
-        `UPDATE localwebauthn_sessions
-           SET revoked_at = ?
-           WHERE credential_id = ? AND revoked_at IS NULL`
-      ).run(now, credentialId);
+      this.#database.prepare(SQL.revokeSessionsForCredential).run(now, credentialId);
       return true;
     })();
   }
   async revokeUserAuthentication(userId, now) {
     this.#database.transaction(() => {
-      this.#database.prepare(
-        `UPDATE localwebauthn_credentials
-           SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`
-      ).run(now, userId);
-      this.#database.prepare(
-        `UPDATE localwebauthn_sessions
-           SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`
-      ).run(now, userId);
-      this.#database.prepare(
-        `UPDATE localwebauthn_enrollment_grants
-           SET revoked_at = ?
-           WHERE user_id = ? AND completed_at IS NULL AND revoked_at IS NULL`
-      ).run(now, userId);
-      this.#database.prepare(
-        `UPDATE localwebauthn_challenges
-           SET consumed_at = ?
-           WHERE user_id = ? AND consumed_at IS NULL`
-      ).run(now, userId);
+      this.#database.prepare(SQL.revokeUserCredentials).run(now, userId);
+      this.#database.prepare(SQL.revokeUserSessions).run(now, userId);
+      this.#database.prepare(SQL.revokeUserGrants).run(now, userId);
+      this.#database.prepare(SQL.consumeUserChallenges).run(now, userId);
     })();
   }
   async cleanup(now) {
     return this.#database.transaction(() => {
-      const sessions = this.#database.prepare(
-        `DELETE FROM localwebauthn_sessions
-           WHERE expires_at <= ? OR revoked_at IS NOT NULL`
-      ).run(now).changes;
-      const orphanedCredentialCutoff = now - 36e5;
-      const orphanedCredentials = this.#database.prepare(
-        `DELETE FROM localwebauthn_credentials
-           WHERE id NOT IN (SELECT DISTINCT credential_id FROM localwebauthn_sessions)
-             AND created_at <= ?`
-      ).run(orphanedCredentialCutoff).changes;
-      return {
-        enrollmentGrants: this.#database.prepare(
-          `DELETE FROM localwebauthn_enrollment_grants
-             WHERE (expires_at <= ? OR completed_at IS NOT NULL OR revoked_at IS NOT NULL)
-               AND id NOT IN (
-                 SELECT grant_id FROM localwebauthn_challenges WHERE grant_id IS NOT NULL
-               )`
-        ).run(now).changes,
-        challenges: this.#database.prepare(
-          `DELETE FROM localwebauthn_challenges
-             WHERE expires_at <= ? OR consumed_at IS NOT NULL`
-        ).run(now).changes,
-        sessions,
-        orphanedCredentials
-      };
+      const sessions = this.#database.prepare(SQL.deleteExpiredSessions).run(now).changes;
+      const orphanedCredentials = this.#database.prepare(SQL.deleteOrphanedCredentials).run(now - ORPHANED_CREDENTIAL_GRACE_MS).changes;
+      const enrollmentGrants = this.#database.prepare(SQL.deleteFinishedGrants).run(now).changes;
+      const challenges = this.#database.prepare(SQL.deleteFinishedChallenges).run(now).changes;
+      return { enrollmentGrants, challenges, sessions, orphanedCredentials };
     })();
   }
-  #registrationAuthorizationIsValid(input) {
+  /** Re-check the authorizing grant or session at commit time. */
+  #registrationIsAuthorized(input) {
     if (input.challenge.grantId && input.enrollmentSessionHash) {
-      const grant = this.#database.prepare(
-        `SELECT 1
-           FROM localwebauthn_enrollment_grants
-           WHERE id = ?
-             AND user_id = ?
-             AND session_hash = ?
-             AND session_expires_at > ?
-             AND completed_at IS NULL
-             AND revoked_at IS NULL`
-      ).get(
-        input.challenge.grantId,
-        input.credential.userId,
-        input.enrollmentSessionHash,
-        input.now
+      return Boolean(
+        this.#database.prepare(SQL.authorizeRegistrationByGrant).get(
+          input.challenge.grantId,
+          input.credential.userId,
+          input.enrollmentSessionHash,
+          input.now
+        )
       );
-      return Boolean(grant);
     }
     if (input.challenge.authorizationSessionHash && input.authenticatedSessionHash) {
-      const session = this.#database.prepare(
-        `SELECT 1
-           FROM localwebauthn_sessions AS sessions
-           JOIN localwebauthn_credentials AS credentials
-             ON credentials.id = sessions.credential_id
-           WHERE sessions.id_hash = ?
-             AND sessions.user_id = ?
-             AND sessions.expires_at > ?
-             AND sessions.revoked_at IS NULL
-             AND credentials.revoked_at IS NULL`
-      ).get(input.authenticatedSessionHash, input.credential.userId, input.now);
-      return Boolean(session);
+      return Boolean(
+        this.#database.prepare(SQL.authorizeRegistrationBySession).get(input.authenticatedSessionHash, input.credential.userId, input.now)
+      );
     }
     return false;
   }
   #insertSession(session) {
-    this.#database.prepare(
-      `INSERT INTO localwebauthn_sessions(
-           id_hash, user_id, credential_id, authenticated_at, expires_at, last_seen_at
-         ) VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(
+    this.#database.prepare(SQL.insertSession).run(
       session.idHash,
       session.userId,
       session.credentialId,
