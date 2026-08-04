@@ -10,10 +10,12 @@ import type {
   EnrollmentSession,
   LocalWebAuthnStore,
   NewSession,
+  RevokeCredentialResult,
+  RevokedSession,
   SessionIdentity,
 } from './types.js';
 
-import { ORPHANED_CREDENTIAL_GRACE_MS, SQL } from './queries.js';
+import { SQL } from './queries.js';
 import {
   type ChallengeRow,
   challengeFromRow,
@@ -45,8 +47,13 @@ export type SqliteDatabase = {
 /**
  * Create or update the `localwebauthn_*` tables. Idempotent — safe to call on
  * every start.
+ *
+ * Enables `PRAGMA foreign_keys = ON` on this connection. SQLite does not enforce
+ * foreign keys unless that pragma is set; keep using the same connection for
+ * the store so the schema constraints remain active.
  */
 export function migrateSqlite(database: SqliteDatabase, now = Date.now()): void {
+  database.exec('PRAGMA foreign_keys = ON');
   database.transaction(() => {
     database.exec(LOCALWEBAUTHN_SCHEMA_SQL);
     database.prepare(SQL.insertMigration).run(LOCALWEBAUTHN_SCHEMA_VERSION, now);
@@ -58,13 +65,15 @@ export function migrateSqlite(database: SqliteDatabase, now = Date.now()): void 
  * same synchronous `prepare`/`transaction` shape).
  *
  * Every multi-statement operation runs inside a real SQLite transaction, so
- * partial writes cannot be observed or left behind.
+ * partial writes cannot be observed or left behind. The constructor enables
+ * foreign-key enforcement on the given connection.
  */
 export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
   readonly #database;
 
   constructor(database: SqliteDatabase) {
     this.#database = database;
+    database.exec('PRAGMA foreign_keys = ON');
   }
 
   async replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]> {
@@ -192,7 +201,14 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
       return this.#database.transaction(() => {
         const advanced = this.#database
           .prepare(SQL.advanceCredentialCounter)
-          .run(input.newCounter, input.now, input.credentialId, input.previousCounter);
+          .run(
+            input.newCounter,
+            input.now,
+            input.credentialId,
+            input.previousCounter,
+            input.newCounter,
+            input.newCounter,
+          );
         if (advanced.changes !== 1) {
           return false;
         }
@@ -218,18 +234,36 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
     return this.#database.prepare(SQL.touchSession).run(now, idHash, now).changes === 1;
   }
 
-  async revokeSession(idHash: Uint8Array, now: number): Promise<boolean> {
-    return this.#database.prepare(SQL.revokeSession).run(now, idHash).changes === 1;
+  async revokeSession(idHash: Uint8Array, now: number): Promise<RevokedSession | null> {
+    const row = this.#database.prepare(SQL.revokeSession).get(now, idHash) as
+      { user_id: string; credential_id: string } | undefined;
+    return row ? { userId: row.user_id, credentialId: row.credential_id } : null;
   }
 
-  async revokeCredential(userId: string, credentialId: string, now: number): Promise<boolean> {
+  async revokeCredential(
+    userId: string,
+    credentialId: string,
+    now: number,
+    options: { allowLastCredential?: boolean } = {},
+  ): Promise<RevokeCredentialResult> {
     return this.#database.transaction(() => {
-      const revoked = this.#database.prepare(SQL.revokeCredential).run(now, credentialId, userId);
-      if (revoked.changes !== 1) {
-        return false;
+      const allowLast = options.allowLastCredential ? 1 : 0;
+      const revoked = this.#database
+        .prepare(SQL.revokeCredential)
+        .run(now, credentialId, userId, allowLast, userId, credentialId);
+      if (revoked.changes === 1) {
+        this.#database.prepare(SQL.revokeSessionsForCredential).run(now, credentialId);
+        return 'revoked';
       }
-      this.#database.prepare(SQL.revokeSessionsForCredential).run(now, credentialId);
-      return true;
+      if (
+        !options.allowLastCredential &&
+        this.#database
+          .prepare(SQL.isLastActiveCredential)
+          .get(credentialId, userId, userId, credentialId)
+      ) {
+        return 'last_credential';
+      }
+      return 'not_found';
     })();
   }
 
@@ -245,12 +279,9 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
   async cleanup(now: number): Promise<CleanupResult> {
     return this.#database.transaction(() => {
       const sessions = this.#database.prepare(SQL.deleteExpiredSessions).run(now).changes;
-      const orphanedCredentials = this.#database
-        .prepare(SQL.deleteOrphanedCredentials)
-        .run(now - ORPHANED_CREDENTIAL_GRACE_MS).changes;
       const enrollmentGrants = this.#database.prepare(SQL.deleteFinishedGrants).run(now).changes;
       const challenges = this.#database.prepare(SQL.deleteFinishedChallenges).run(now).changes;
-      return { enrollmentGrants, challenges, sessions, orphanedCredentials };
+      return { enrollmentGrants, challenges, sessions };
     })();
   }
 

@@ -406,4 +406,176 @@ describe('LocalWebAuthn lifecycle', () => {
 
     database.close();
   });
+
+  it('registers an additional passkey authorized by an authenticated session', async () => {
+    const issue = await auth.issueEnrollment(user.id);
+    const exchange = await auth.exchangeEnrollment(issue.enrollmentToken);
+    const firstRegistration = await auth.registrationOptions({
+      enrollmentSessionToken: exchange.enrollmentSessionToken,
+    });
+    const first = await auth.verifyRegistration({
+      response: registrationResponse(),
+      challengeToken: firstRegistration.challengeToken,
+      enrollmentSessionToken: exchange.enrollmentSessionToken,
+    });
+
+    const secondCredentialId = 'credential-id-2' as Base64URLString;
+    (ceremonies.verifyRegistrationResponse as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      verified: true,
+      registrationInfo: {
+        fmt: 'none',
+        aaguid: '00000000-0000-0000-0000-000000000000',
+        credential: {
+          id: secondCredentialId,
+          publicKey: new Uint8Array([4, 5, 6]),
+          counter: 0,
+          transports: ['internal'],
+        },
+        credentialType: 'public-key',
+        attestationObject: new Uint8Array(),
+        userVerified: true,
+        credentialDeviceType: 'singleDevice',
+        credentialBackedUp: false,
+        origin: 'http://localhost:5173',
+        rpID: 'localhost',
+      },
+    });
+
+    events.length = 0;
+    const secondRegistration = await auth.registrationOptions({
+      sessionToken: first.sessionToken,
+    });
+    const second = await auth.verifyRegistration({
+      response: { ...registrationResponse(), id: secondCredentialId, rawId: secondCredentialId },
+      challengeToken: secondRegistration.challengeToken,
+      sessionToken: first.sessionToken,
+      label: 'Security key',
+    });
+    expect(second.verified).toBe(true);
+    await expect(auth.listCredentials(user.id)).resolves.toHaveLength(2);
+    expect(events.map(({ type }) => type)).toEqual(['credential.registered', 'session.created']);
+    expect(events.some((event) => event.type === 'enrollment.completed')).toBe(false);
+    database.close();
+  });
+
+  it('keeps credentials after logout and cleanup so sign-in still works', async () => {
+    const issue = await auth.issueEnrollment(user.id);
+    const exchange = await auth.exchangeEnrollment(issue.enrollmentToken);
+    const registration = await auth.registrationOptions({
+      enrollmentSessionToken: exchange.enrollmentSessionToken,
+    });
+    const registered = await auth.verifyRegistration({
+      response: registrationResponse(),
+      challengeToken: registration.challengeToken,
+      enrollmentSessionToken: exchange.enrollmentSessionToken,
+    });
+
+    events.length = 0;
+    await expect(auth.revokeSession(registered.sessionToken)).resolves.toBe(true);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'session.revoked',
+        userId: user.id,
+        credentialId,
+      }),
+    );
+
+    // Past absolute session lifetime; cleanup reaps sessions, not credentials.
+    now += 9 * 60 * 60_000;
+    const cleaned = await auth.cleanup();
+    expect(cleaned.sessions).toBeGreaterThanOrEqual(1);
+    await expect(auth.listCredentials(user.id)).resolves.toHaveLength(1);
+
+    const authentication = await auth.authenticationOptions();
+    await expect(
+      auth.verifyAuthentication({
+        response: authenticationResponse(user.webAuthnUserHandle),
+        challengeToken: authentication.challengeToken,
+      }),
+    ).resolves.toMatchObject({ verified: true, credentialId });
+    database.close();
+  });
+
+  it('rejects a non-increasing non-zero authenticator counter', async () => {
+    const issue = await auth.issueEnrollment(user.id);
+    const exchange = await auth.exchangeEnrollment(issue.enrollmentToken);
+    const registration = await auth.registrationOptions({
+      enrollmentSessionToken: exchange.enrollmentSessionToken,
+    });
+    await auth.verifyRegistration({
+      response: registrationResponse(),
+      challengeToken: registration.challengeToken,
+      enrollmentSessionToken: exchange.enrollmentSessionToken,
+    });
+
+    // Advance counter to 3, then try to authenticate with newCounter 3 again.
+    (ceremonies.verifyAuthenticationResponse as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({
+        verified: true,
+        authenticationInfo: {
+          newCounter: 3,
+          credentialID: credentialId,
+          userVerified: true,
+          credentialDeviceType: 'multiDevice',
+          credentialBackedUp: true,
+          origin: 'http://localhost:5173',
+          rpID: 'localhost',
+        },
+      })
+      .mockResolvedValueOnce({
+        verified: true,
+        authenticationInfo: {
+          newCounter: 3,
+          credentialID: credentialId,
+          userVerified: true,
+          credentialDeviceType: 'multiDevice',
+          credentialBackedUp: true,
+          origin: 'http://localhost:5173',
+          rpID: 'localhost',
+        },
+      });
+
+    const first = await auth.authenticationOptions();
+    await auth.verifyAuthentication({
+      response: authenticationResponse(user.webAuthnUserHandle),
+      challengeToken: first.challengeToken,
+    });
+
+    const second = await auth.authenticationOptions();
+    await expect(
+      auth.verifyAuthentication({
+        response: authenticationResponse(user.webAuthnUserHandle),
+        challengeToken: second.challengeToken,
+      }),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<LocalWebAuthnError>>({
+        code: 'authentication_failed',
+        status: 401,
+      }),
+    );
+    database.close();
+  });
+
+  it('emits user.authentication_revoked when bulk recovery revoke runs', async () => {
+    const issue = await auth.issueEnrollment(user.id);
+    const exchange = await auth.exchangeEnrollment(issue.enrollmentToken);
+    const registration = await auth.registrationOptions({
+      enrollmentSessionToken: exchange.enrollmentSessionToken,
+    });
+    await auth.verifyRegistration({
+      response: registrationResponse(),
+      challengeToken: registration.challengeToken,
+      enrollmentSessionToken: exchange.enrollmentSessionToken,
+    });
+
+    events.length = 0;
+    await auth.revokeUserAuthentication(user.id);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'user.authentication_revoked',
+        userId: user.id,
+      }),
+    );
+    database.close();
+  });
 });

@@ -3,8 +3,10 @@
 ## Supported Versions
 
 Security fixes are applied to the most recent minor release of the current major version.
-LocalWebAuthn follows SemVer: the service API, store interface, and database schema change
-only in a new major version.
+LocalWebAuthn follows SemVer for the host-facing service API. Official storage adapters
+and the database schema stay compatible across minor releases. Custom
+`LocalWebAuthnStore` implementations may need updates when a minor release tightens the
+store contract for correctness (see [docs/MIGRATING.md](docs/MIGRATING.md)).
 
 A `1.x` version means the interface is stable, not that the code has years of production
 exposure. The project is young and has a small user base. It is also small on purpose —
@@ -58,23 +60,25 @@ The SQLite and PostgreSQL adapters wrap every multi-statement operation in a rea
 transaction, so a registration or authentication either commits completely or not at all.
 Prefer one of them when you have the choice.
 
-Schedule `cleanup()` periodically on any adapter — every few minutes is ample. It removes
-expired grants, consumed challenges, and dead sessions, and is the only thing that reaps
-the orphaned credentials described below.
+Schedule `cleanup()` periodically on any adapter — every few minutes is ample. It reclaims
+storage from expired enrollment grants, finished challenges, and dead sessions.
+Credentials are not cleaned up: they are durable authenticators, revoked only through
+`revokeCredential` / `revokeUserAuthentication`.
+
+The SQLite adapter enables `PRAGMA foreign_keys = ON` for the connection it is given
+(in both `migrateSqlite` and the store constructor). Keep using that same connection so
+schema foreign keys stay enforced.
 
 ## D1 Batch Non-Atomicity
 
 The Cloudflare D1 adapter uses `batch()` to execute multiple statements. Unlike the
 SQLite adapter's explicit transactions, D1 batches are **not atomic** — each statement
 commits independently. A rare concurrent-failure scenario in `completeRegistration` can
-leave an orphaned credential row: the credential INSERT succeeds but the session INSERT
-is never reached because the batch guard detected a mid-batch inconsistency.
+leave a credential row without its initial session when a later statement in the batch
+fails after the credential INSERT committed.
 
-Orphaned credentials are harmless (they cannot be used to authenticate without a session
-row) but consume storage. The `cleanup()` method removes credentials that have no session
-rows and were created more than one hour ago.
-
-Applications deployed on D1 should schedule periodic `cleanup()` calls.
+That row remains a normal passkey: the next successful authentication creates a session.
+There is no separate “orphan credential” cleanup path.
 
 ## Stored Secrets
 
@@ -93,11 +97,13 @@ enrollment session. Replacing an enrollment grant revokes the prior grant and em
 `enrollment.revoked` event.
 
 Credential creation, exact-grant completion, and session creation are committed as one
-transaction by the SQLite adapter. The D1 adapter cannot open a transaction and instead
-guards each step on the preceding statement's row count; see
+transaction by the SQLite and PostgreSQL adapters. The D1 adapter cannot open a
+transaction and instead guards each step on the preceding statement's row count; see
 [D1 Batch Non-Atomicity](#d1-batch-non-atomicity) above for what that does and does not
-guarantee. In both adapters, a registration that loses its authorization mid-flight
-produces no usable credential.
+guarantee. On SQLite and PostgreSQL, a registration that loses its authorization
+mid-flight rolls back completely. On D1, a mid-batch failure after the credential INSERT
+can leave a usable credential without an initial session — the user signs in again rather
+than being auto-logged-in. No cleanup step is required to reconcile that state.
 
 ## Non-Goals
 

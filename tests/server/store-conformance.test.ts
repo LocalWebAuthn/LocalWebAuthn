@@ -346,72 +346,146 @@ function storeConformance(
         await exchangedGrant(fixture.store);
         expect(await fixture.store.completeRegistration(registrationInput('grant-1'))).toBe(true);
 
+        // A second credential so last-credential protection does not block the revoke.
+        const grant2 = await exchangedGrant(fixture.store, 'grant-2', 10, 11);
+        if (!grant2) {
+          throw new Error('Second enrollment grant was not created.');
+        }
+        expect(
+          await fixture.store.completeRegistration({
+            ...registrationInput('grant-2'),
+            enrollmentSessionHash: grant2.sessionHash,
+            credential: credential('credential-2'),
+            session: {
+              idHash: bytes(12),
+              userId: 'user-1',
+              credentialId: 'credential-2',
+              authenticatedAt: now,
+              expiresAt: now + 10_000,
+              lastSeenAt: now,
+            },
+          }),
+        ).toBe(true);
+
         await expect(
           fixture.store.revokeCredential('user-1', 'credential-1', now + 1),
-        ).resolves.toBe(true);
+        ).resolves.toBe('revoked');
         await expect(fixture.store.resolveSession(bytes(4), now + 2, now - 1)).resolves.toBeNull();
-        await expect(fixture.store.listCredentials('user-1')).resolves.toHaveLength(0);
-        await expect(fixture.store.listCredentials('user-1', true)).resolves.toMatchObject([
-          { revokedAt: now + 1 },
+        await expect(fixture.store.listCredentials('user-1')).resolves.toMatchObject([
+          { id: 'credential-2' },
         ]);
+        await expect(fixture.store.listCredentials('user-1', true)).resolves.toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ id: 'credential-1', revokedAt: now + 1 }),
+            expect.objectContaining({ id: 'credential-2', revokedAt: null }),
+          ]),
+        );
       } finally {
         await fixture.close();
       }
     });
 
-    it('cleans up orphaned credentials whose sessions have all been expired or revoked', async () => {
+    it('refuses to revoke the last active credential unless recovery allows it', async () => {
       const fixture = await createFixture();
       try {
-        // Create a legitimate credential with a non-expired session.
         await exchangedGrant(fixture.store);
         expect(await fixture.store.completeRegistration(registrationInput('grant-1'))).toBe(true);
 
-        // Create a second credential whose session has already expired.
-        // The credential must be older than the 1-hour orphan grace period.
-        const grant2 = await exchangedGrant(fixture.store, 'grant-2', 10, 11);
-        if (!grant2) {
-          throw new Error('Second enrollment grant was not created.');
-        }
-        const expiredSessionNow = now - 4_000_000; // well past the 1-hour grace period
-        const secondReg: CompleteRegistrationInput = {
-          challenge: {
-            kind: 'registration',
-            challenge: 'registration-challenge',
-            userId: 'user-1',
-            grantId: 'grant-2',
-            authorizationSessionHash: null,
-          },
-          enrollmentSessionHash: grant2.sessionHash,
-          authenticatedSessionHash: null,
-          credential: {
-            ...credential('credential-2'),
-            createdAt: expiredSessionNow,
-          },
-          session: {
-            idHash: bytes(12),
-            userId: 'user-1',
-            credentialId: 'credential-2',
-            authenticatedAt: expiredSessionNow,
-            expiresAt: expiredSessionNow + 1, // already expired relative to cleanup now
-            lastSeenAt: expiredSessionNow,
-          },
-          now: expiredSessionNow,
-        };
-        expect(await fixture.store.completeRegistration(secondReg)).toBe(true);
+        await expect(
+          fixture.store.revokeCredential('user-1', 'credential-1', now + 1),
+        ).resolves.toBe('last_credential');
+        await expect(fixture.store.listCredentials('user-1')).resolves.toHaveLength(1);
 
-        // Both credentials exist.
-        const allBefore = await fixture.store.listCredentials('user-1', true);
-        expect(allBefore).toHaveLength(2);
+        await expect(
+          fixture.store.revokeCredential('user-1', 'credential-1', now + 2, {
+            allowLastCredential: true,
+          }),
+        ).resolves.toBe('revoked');
+        await expect(fixture.store.listCredentials('user-1')).resolves.toHaveLength(0);
+      } finally {
+        await fixture.close();
+      }
+    });
 
-        // cleanup() with a time well after the expired session: the session is removed,
-        // and the credential (created long ago with no remaining sessions) should also be removed.
-        const cleanupTime = now + 60_000;
-        await fixture.store.cleanup(cleanupTime);
+    it('returns revoked session identity for audit and keeps credentials after cleanup', async () => {
+      const fixture = await createFixture();
+      try {
+        await exchangedGrant(fixture.store);
+        expect(await fixture.store.completeRegistration(registrationInput('grant-1'))).toBe(true);
 
-        const allAfter = await fixture.store.listCredentials('user-1', true);
-        // credential-1 has an active session and survives; credential-2 is orphaned.
-        expect(allAfter).toHaveLength(1);
-        expect(allAfter[0].id).toBe('credential-1');
+        await expect(fixture.store.revokeSession(bytes(4), now + 1)).resolves.toEqual({
+          userId: 'user-1',
+          credentialId: 'credential-1',
+        });
+        // Idempotent: already revoked.
+        await expect(fixture.store.revokeSession(bytes(4), now + 2)).resolves.toBeNull();
+
+        // Cleanup reaps dead sessions only; credentials are not part of cleanup.
+        const cleanupResult = await fixture.store.cleanup(now + 4_000_000);
+        expect(cleanupResult.sessions).toBeGreaterThanOrEqual(1);
+        await expect(fixture.store.listCredentials('user-1')).resolves.toHaveLength(1);
+
+        // Authentication after cleanup still works (counter CAS + new session).
+        await expect(
+          fixture.store.completeAuthentication({
+            credentialId: 'credential-1',
+            previousCounter: 0,
+            newCounter: 1,
+            now: now + 4_000_001,
+            session: {
+              idHash: bytes(13),
+              userId: 'user-1',
+              credentialId: 'credential-1',
+              authenticatedAt: now + 4_000_001,
+              expiresAt: now + 5_000_000,
+              lastSeenAt: now + 4_000_001,
+            },
+          }),
+        ).resolves.toBe(true);
+      } finally {
+        await fixture.close();
+      }
+    });
+
+    it('rejects a non-increasing non-zero signature counter', async () => {
+      const fixture = await createFixture();
+      try {
+        await exchangedGrant(fixture.store);
+        expect(await fixture.store.completeRegistration(registrationInput('grant-1'))).toBe(true);
+        expect(
+          await fixture.store.completeAuthentication({
+            credentialId: 'credential-1',
+            previousCounter: 0,
+            newCounter: 5,
+            now: now + 1,
+            session: {
+              idHash: bytes(5),
+              userId: 'user-1',
+              credentialId: 'credential-1',
+              authenticatedAt: now + 1,
+              expiresAt: now + 10_000,
+              lastSeenAt: now + 1,
+            },
+          }),
+        ).toBe(true);
+
+        await expect(
+          fixture.store.completeAuthentication({
+            credentialId: 'credential-1',
+            previousCounter: 5,
+            newCounter: 5,
+            now: now + 2,
+            session: {
+              idHash: bytes(6),
+              userId: 'user-1',
+              credentialId: 'credential-1',
+              authenticatedAt: now + 2,
+              expiresAt: now + 10_000,
+              lastSeenAt: now + 2,
+            },
+          }),
+        ).resolves.toBe(false);
+        expect((await fixture.store.getCredential('credential-1'))?.counter).toBe(5);
       } finally {
         await fixture.close();
       }

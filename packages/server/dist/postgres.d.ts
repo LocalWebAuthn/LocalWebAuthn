@@ -1,4 +1,4 @@
-import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, g as CleanupResult } from './types-TH3Ore5_.js';
+import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, g as RevokeCredentialResult, h as CleanupResult } from './types-sZ3WVqGy.js';
 import '@simplewebauthn/server';
 
 type PostgresQueryResult<Row> = {
@@ -58,8 +58,10 @@ declare class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
     completeAuthentication(input: CompleteAuthenticationInput): Promise<boolean>;
     resolveSession(idHash: Uint8Array, now: number, idleExpiresBefore: number): Promise<SessionIdentity | null>;
     touchSession(idHash: Uint8Array, now: number): Promise<boolean>;
-    revokeSession(idHash: Uint8Array, now: number): Promise<boolean>;
-    revokeCredential(userId: string, credentialId: string, now: number): Promise<boolean>;
+    revokeSession(idHash: Uint8Array, now: number): Promise<RevokedSession | null>;
+    revokeCredential(userId: string, credentialId: string, now: number, options?: {
+        allowLastCredential?: boolean;
+    }): Promise<RevokeCredentialResult>;
     revokeUserAuthentication(userId: string, now: number): Promise<void>;
     cleanup(now: number): Promise<CleanupResult>;
 }

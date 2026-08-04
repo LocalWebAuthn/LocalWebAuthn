@@ -11,10 +11,12 @@ import type {
   LocalWebAuthnStore,
   NewCredential,
   NewSession,
+  RevokeCredentialResult,
+  RevokedSession,
   SessionIdentity,
 } from './types.js';
 
-import { D1_SQL, ORPHANED_CREDENTIAL_GRACE_MS, SQL } from './queries.js';
+import { D1_SQL, SQL } from './queries.js';
 import {
   type ChallengeRow,
   challengeFromRow,
@@ -75,8 +77,9 @@ async function returningRow<Row>(statement: D1PreparedStatementLike): Promise<Ro
  * every step that must affect exactly one row is followed by a guard statement
  * that fails the batch otherwise. This stops an unauthorized write from
  * completing, but — unlike a transaction — it cannot roll back statements that
- * already committed. See the D1 section of `SECURITY.md`, and schedule
- * {@link D1LocalWebAuthnStore.cleanup} to reap any orphaned credential rows.
+ * already committed. See the D1 section of `SECURITY.md`. Schedule
+ * {@link D1LocalWebAuthnStore.cleanup} to reap expired grants, challenges, and
+ * sessions.
  */
 export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
   readonly #database;
@@ -237,7 +240,14 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
       await this.#database.batch([
         this.#database
           .prepare(SQL.advanceCredentialCounter)
-          .bind(input.newCounter, input.now, input.credentialId, input.previousCounter),
+          .bind(
+            input.newCounter,
+            input.now,
+            input.credentialId,
+            input.previousCounter,
+            input.newCounter,
+            input.newCounter,
+          ),
         this.#guard(),
         this.#insertSessionStatement(input.session),
         this.#guard(),
@@ -266,17 +276,41 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
     return changes(result) === 1;
   }
 
-  async revokeSession(idHash: Uint8Array, now: number): Promise<boolean> {
-    const result = await this.#database.prepare(SQL.revokeSession).bind(now, idHash).run();
-    return changes(result) === 1;
+  async revokeSession(idHash: Uint8Array, now: number): Promise<RevokedSession | null> {
+    const row = await returningRow<{ user_id: string; credential_id: string }>(
+      this.#database.prepare(SQL.revokeSession).bind(now, idHash),
+    );
+    return row ? { userId: row.user_id, credentialId: row.credential_id } : null;
   }
 
-  async revokeCredential(userId: string, credentialId: string, now: number): Promise<boolean> {
+  async revokeCredential(
+    userId: string,
+    credentialId: string,
+    now: number,
+    options: { allowLastCredential?: boolean } = {},
+  ): Promise<RevokeCredentialResult> {
+    const allowLast = options.allowLastCredential ? 1 : 0;
+    // Conditional UPDATE encodes last-credential protection in one statement so
+    // D1 does not need a transaction for the predicate.
     const results = await this.#database.batch([
-      this.#database.prepare(SQL.revokeCredential).bind(now, credentialId, userId),
+      this.#database
+        .prepare(SQL.revokeCredential)
+        .bind(now, credentialId, userId, allowLast, userId, credentialId),
       this.#database.prepare(SQL.revokeSessionsForCredential).bind(now, credentialId),
     ]);
-    return changes(results[0]) === 1;
+    if (changes(results[0]) === 1) {
+      return 'revoked';
+    }
+    if (!options.allowLastCredential) {
+      const last = await this.#database
+        .prepare(SQL.isLastActiveCredential)
+        .bind(credentialId, userId, userId, credentialId)
+        .first();
+      if (last) {
+        return 'last_credential';
+      }
+    }
+    return 'not_found';
   }
 
   async revokeUserAuthentication(userId: string, now: number): Promise<void> {
@@ -291,17 +325,13 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
   async cleanup(now: number): Promise<CleanupResult> {
     const results = await this.#database.batch([
       this.#database.prepare(SQL.deleteExpiredSessions).bind(now),
-      this.#database
-        .prepare(SQL.deleteOrphanedCredentials)
-        .bind(now - ORPHANED_CREDENTIAL_GRACE_MS),
       this.#database.prepare(SQL.deleteFinishedGrants).bind(now),
       this.#database.prepare(SQL.deleteFinishedChallenges).bind(now),
     ]);
     return {
       sessions: changes(results[0]),
-      orphanedCredentials: changes(results[1]),
-      enrollmentGrants: changes(results[2]),
-      challenges: changes(results[3]),
+      enrollmentGrants: changes(results[1]),
+      challenges: changes(results[2]),
     };
   }
 

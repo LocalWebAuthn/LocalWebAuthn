@@ -1,5 +1,5 @@
 import type { EnrollmentIssue } from '@localwebauthn/server';
-import { createUserHandle } from '@localwebauthn/server';
+import { createUserHandle, isLocalWebAuthnError } from '@localwebauthn/server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
@@ -244,7 +244,7 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
       }
       return context.json({ revoked: true });
     } catch (error) {
-      if (error instanceof Error && error.message.includes('final active credential')) {
+      if (isLocalWebAuthnError(error) && error.code === 'last_credential') {
         return context.json({ error: 'last_passkey', message: error.message }, 409);
       }
       throw error;

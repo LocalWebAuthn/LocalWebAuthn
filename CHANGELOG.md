@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.2.0 - 2026-08-04
+
+### Security
+
+- **No credential cleanup.** 1.0.0–1.1.x deleted credentials that had no session
+  rows after one hour — the normal idle state after logout or session expiry.
+  Deployments that scheduled `cleanup()` as documented could wipe idle users'
+  passkeys. `cleanup()` now only reaps expired grants, finished challenges, and
+  dead sessions. **BREAKING:** `CleanupResult.orphanedCredentials` is removed;
+  there is no orphan-credential sweep.
+
+### Changed
+
+- **BREAKING (custom stores):** `revokeSession` returns
+  `{ userId, credentialId } | null` instead of `boolean`, so audit events can
+  carry session identity.
+- **BREAKING (custom stores):** `revokeCredential` accepts
+  `{ allowLastCredential?: boolean }` and returns
+  `'revoked' | 'not_found' | 'last_credential'`. Last-credential protection is
+  enforced in the store (atomic with the revoke on SQLite/PostgreSQL).
+- Host applications using only the official adapters and `LocalWebAuthn` service
+  API need no integration changes for the store signature updates.
+- `session.revoked` audit events now include `userId` and `credentialId`.
+- `revokeUserAuthentication` emits `user.authentication_revoked`.
+- Signature counter advances reject non-increasing non-zero values at both the
+  service and store layers (0→0 remains allowed).
+- SQLite `migrateSqlite` and `SqliteLocalWebAuthnStore` enable
+  `PRAGMA foreign_keys = ON` on the given connection.
+
+### Documentation
+
+- SECURITY.md and package README describe durable credentials vs ephemeral
+  cleanup, and correct the prior claim that “orphaned” credentials could not
+  authenticate.
+- `docs/MIGRATING.md` covers 1.1.x → 1.2.0 store contract changes.
+- Review notes: `docs/REVIEW-20260804.md`.
+
 ## 1.1.0 - 2026-08-04
 
 No breaking changes. Custom `LocalWebAuthnStore` implementations written against

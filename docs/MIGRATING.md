@@ -1,5 +1,92 @@
 # Migrating LocalWebAuthn
 
+## 1.1.x → 1.2.0
+
+### Security fix: no credential cleanup
+
+Versions 1.0.0–1.1.x deleted credentials that had no session rows and were
+older than one hour. That treated the normal idle state of a passkey (after
+logout or session expiry) as garbage and could wipe every idle user's
+credentials if operators scheduled `cleanup()` as documented.
+
+**1.2.0 removes credential cleanup entirely.** `cleanup()` only reaps expired
+grants, finished challenges, and dead sessions. The
+`CleanupResult.orphanedCredentials` field is gone — there is no orphan-credential
+sweep to report.
+
+If you run `cleanup()` on a timer, upgrade immediately. No data migration is
+required; credentials that were already deleted cannot be restored — those
+users need re-enrollment.
+
+### Custom `LocalWebAuthnStore` implementors
+
+Two store methods change return types. Host applications that only use an
+official adapter and the `LocalWebAuthn` service API need no code changes.
+
+#### `revokeSession` returns identity
+
+```ts
+// 1.1.x
+revokeSession(idHash, now): Promise<boolean>;
+
+// 1.2.0
+revokeSession(idHash, now): Promise<{ userId: string; credentialId: string } | null>;
+```
+
+Use `UPDATE … RETURNING user_id, credential_id` (or equivalent) so the service
+can emit an audit event with the session identity.
+
+#### `revokeCredential` enforces last-credential atomically
+
+```ts
+// 1.1.x
+revokeCredential(userId, credentialId, now): Promise<boolean>;
+
+// 1.2.0
+revokeCredential(
+  userId,
+  credentialId,
+  now,
+  options?: { allowLastCredential?: boolean },
+): Promise<'revoked' | 'not_found' | 'last_credential'>;
+```
+
+When `allowLastCredential` is not set, refuse to revoke the user's only
+remaining active credential and return `"last_credential"`. Perform that check
+in the same statement or transaction as the revoke.
+
+#### New audit event
+
+`revokeUserAuthentication` emits `user.authentication_revoked` with `userId`.
+Handle it if you switch on `LocalWebAuthnEvent['type']`.
+
+#### Counter advance rule
+
+`completeAuthentication` must reject a non-increasing counter when either the
+stored or new value is non-zero (0→0 remains allowed). The official SQL does
+this in `advanceCredentialCounter`.
+
+#### `CleanupResult` no longer has `orphanedCredentials`
+
+```ts
+// 1.1.x
+type CleanupResult = {
+  enrollmentGrants: number;
+  challenges: number;
+  sessions: number;
+  orphanedCredentials: number;
+};
+
+// 1.2.0
+type CleanupResult = {
+  enrollmentGrants: number;
+  challenges: number;
+  sessions: number;
+};
+```
+
+Do not delete credentials in `cleanup`.
+
 ## 1.0.x → 1.1.0
 
 Nothing to do. The `LocalWebAuthnStore` contract and every public type are
@@ -84,10 +171,9 @@ type CleanupResult = {
 };
 ```
 
-The new `orphanedCredentials` field reports how many credentials were removed
-because they had no session rows and were created more than one hour ago.
-These orphans can occur in D1 deployments when a mid-batch guard failure leaves
-a credential row without a corresponding session.
+In 1.0.0–1.1.x this field reported credentials deleted by cleanup. **That
+behavior was incorrect** (see [1.1.x → 1.2.0](#11x--120)): 1.2.0 removes the
+field and all credential cleanup.
 
 ### New Configuration Option: `logger`
 
