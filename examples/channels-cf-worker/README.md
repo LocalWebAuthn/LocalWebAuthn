@@ -38,13 +38,17 @@ so Resend signs outbound mail for `RESEND_FROM`.
 
 ## Local test (no real credentials)
 
-From the repo root:
+Use the flake shell so Node and Make match CI:
 
 ```console
 nix develop
-npm install
-npm test --workspace @localwebauthn/channels-cf-worker
+make install          # if needed
+make test-channels    # or: make test  (includes this suite)
+# outside the shell:
+make nix-test-channels
 ```
+
+Equivalent npm: `npm test --workspace @localwebauthn/channels-cf-worker`.
 
 Tests cover:
 

@@ -565,12 +565,20 @@ This repository is an npm workspace. Both public packages are versioned together
 
 ```console
 nix develop
-make check
-make demo-test
+make help
+make test              # unit + store adapters + channels worker (Miniflare)
+pg-start && make test-postgres   # require a live Postgres (CI-style)
+make test-demo-install # once: Playwright Chromium
+make test-demo         # full browser lifecycle e2e
+make check             # typecheck, lint, format, coverage, package gates
 ```
 
-`make check` runs TypeScript, lint, formatting, unit and adapter conformance tests, package
-builds, `publint`, and `arethetypeswrong`. Releases use npm OIDC Trusted Publishing and do
-not require a long-lived npm write token. Publishing is triggered by a versioned GitHub
-Release, not by an ordinary branch push. See [docs/RELEASING.md](docs/RELEASING.md) and
-[CHANGELOG.md](CHANGELOG.md).
+Outside the flake shell, wrap any target: `make nix-test`, `make nix-check`.
+
+`make test` runs Vitest (server, browser, demo API) and the channels Cloudflare
+worker suite. PostgreSQL conformance is included when `pg-start` has been run
+(otherwise that adapter skips). `make check` adds typecheck, lint, format,
+coverage thresholds, `publint`, and `arethetypeswrong`. Releases use npm OIDC
+Trusted Publishing and do not require a long-lived npm write token. Publishing
+is triggered by a versioned GitHub Release, not by an ordinary branch push. See
+[docs/RELEASING.md](docs/RELEASING.md) and [CHANGELOG.md](CHANGELOG.md).

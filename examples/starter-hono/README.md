@@ -10,13 +10,17 @@ No UI. Pair with `@localwebauthn/browser` or the lifecycle [demo](../demo).
 
 ## Run
 
-From the repo root (workspace):
+From the repo root (workspace), prefer the flake shell:
 
 ```console
 nix develop
-npm install
-npm run start --workspace @localwebauthn/starter-hono
+make install          # if needed
+make starter-hono
+# outside the shell:
+make nix-starter-hono
 ```
+
+Equivalent npm: `npm run start --workspace @localwebauthn/starter-hono`.
 
 Prints a bootstrap enrollment URL. Exchange and register with any client that
 speaks the default `/api/auth/*` protocol (see main README).

@@ -71,12 +71,15 @@ Visiting `/` without a passkey shows sign-in help pointing at the enrollment URL
 ## Test
 
 ```console
-npx playwright install chromium
-make demo-test
+nix develop
+make test-demo-install   # once: Chromium for Playwright
+make test-demo           # or: make demo-test
+make test                # unit + channels; includes demo API tests
 ```
 
-`make check` also runs API tests under `tests/application.test.ts` (bootstrap,
-admin authorization, re-enroll).
+Outside the shell: `make nix-test-demo`. `make check` / `make nix-check` include
+demo API tests under `tests/application.test.ts` (bootstrap, admin authorization,
+re-enroll) as part of the main Vitest suite.
 
 ## Security boundary
 
