@@ -12,6 +12,16 @@ const env: ChannelsEnv = {
   RESEND_FROM: 'enroll@example.test',
 };
 
+function fetchInputUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') {
+    return input;
+  }
+  if (input instanceof URL) {
+    return input.href;
+  }
+  return input.url;
+}
+
 describe('sendSms', () => {
   it('posts form-encoded credentials to the Twilio Messages API', async () => {
     const fetchImpl = vi
@@ -49,7 +59,9 @@ describe('sendSms', () => {
       { to: '+1', body: 'x' },
       fetchImpl,
     );
-    expect(String(fetchImpl.mock.calls[0]?.[0])).toContain(
+    const twilioCall = fetchImpl.mock.calls[0];
+    expect(twilioCall).toBeDefined();
+    expect(fetchInputUrl(twilioCall[0])).toContain(
       'http://127.0.0.1:9999/2010-04-01/Accounts/ACtest/Messages.json',
     );
   });
@@ -101,6 +113,8 @@ describe('sendEmail', () => {
       { to: 'a@b.c', subject: 's', html: '<p>x</p>' },
       fetchImpl,
     );
-    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe('http://mock.local/emails');
+    const resendCall = fetchImpl.mock.calls[0];
+    expect(resendCall).toBeDefined();
+    expect(fetchInputUrl(resendCall[0])).toBe('http://mock.local/emails');
   });
 });

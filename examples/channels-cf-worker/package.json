@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Minimal Cloudflare Worker for Twilio SMS + Resend email (DKIM via verified domain)",
   "scripts": {
+    "build": "node -e \"process.exit(0)\"",
     "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },

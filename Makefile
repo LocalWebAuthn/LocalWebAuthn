@@ -20,7 +20,7 @@ SHELL := /bin/bash
 
 .PHONY: help all install build typecheck lint fmt fmt-check
 .PHONY: test test-unit test-channels test-demo test-demo-install test-all test-postgres
-.PHONY: coverage check release-check
+.PHONY: ensure-postgres coverage check release-check
 .PHONY: demo demo-reset demo-test starter-hono clean
 
 all: check
@@ -87,8 +87,18 @@ test-demo:
 
 test-all: test test-demo
 
-# CI-style: Postgres must be up (run pg-start first in the flake shell).
-test-postgres:
+# Start throwaway Postgres when the flake helper is on PATH (no-op if already up).
+ensure-postgres:
+	@if command -v pg-start >/dev/null 2>&1; then \
+		pg-start; \
+	elif [ -n "$${LOCALWEBAUTHN_TEST_POSTGRES_URL:-}" ]; then \
+		echo 'pg-start not on PATH; assuming Postgres at $$LOCALWEBAUTHN_TEST_POSTGRES_URL'; \
+	else \
+		echo 'No pg-start and no LOCALWEBAUTHN_TEST_POSTGRES_URL; Postgres suite will skip.'; \
+	fi
+
+# CI-style: Postgres must be up (pg-start in the flake shell).
+test-postgres: ensure-postgres
 	@if [ -z "$${LOCALWEBAUTHN_TEST_POSTGRES_URL:-}" ]; then \
 		echo 'LOCALWEBAUTHN_TEST_POSTGRES_URL is unset. Enter the flake shell (nix develop) or export the URL.'; \
 		exit 1; \
@@ -96,9 +106,9 @@ test-postgres:
 	LOCALWEBAUTHN_REQUIRE_POSTGRES=1 npx vitest run tests/server/store-conformance.test.ts
 	$(MAKE) test-channels
 
-coverage:
+# Coverage needs Postgres for adapter files; start it when the flake provides pg-start.
+coverage: ensure-postgres
 	npm run test:coverage
-	$(MAKE) test-channels
 
 check:
 	npm run typecheck

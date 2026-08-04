@@ -14,6 +14,8 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'html'],
       include: ['packages/*/src/**/*.ts'],
+      // Re-export barrels have no statements of their own.
+      exclude: ['packages/*/src/index.ts'],
       thresholds: {
         statements: 80,
         branches: 70,

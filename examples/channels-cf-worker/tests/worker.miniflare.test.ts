@@ -50,7 +50,7 @@ describe('channels worker (in-process handler)', () => {
   it('proxies SMS and email through injectable API bases', async () => {
     const seen: { url: string }[] = [];
     const mockFetch: typeof fetch = async (input) => {
-      const url = String(input);
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
       seen.push({ url });
       if (url.includes('/Messages.json')) {
         return new Response(JSON.stringify({ sid: 'SM1' }), { status: 201 });
@@ -108,15 +108,17 @@ describe('channels worker (Miniflare)', () => {
   const requests: { method?: string; url?: string; body: string }[] = [];
 
   beforeAll(async () => {
-    mockServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) {
-        chunks.push(Buffer.from(chunk));
-      }
-      const body = Buffer.concat(chunks).toString('utf8');
-      requests.push({ method: req.method, url: req.url, body });
-      res.writeHead(201, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, path: req.url }));
+    mockServer = createServer((req: IncomingMessage, res: ServerResponse) => {
+      const chunks: Uint8Array[] = [];
+      req.on('data', (chunk: string | Buffer) => {
+        chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : new Uint8Array(chunk));
+      });
+      req.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        requests.push({ method: req.method, url: req.url, body });
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, path: req.url }));
+      });
     });
     await new Promise<void>((resolve) => {
       mockServer.listen(0, '127.0.0.1', () => resolve());

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "node -e \"process.exit(0)\"",
     "start": "node --import tsx src/server.ts",
     "reset": "rm -f .data/starter.db"
   },

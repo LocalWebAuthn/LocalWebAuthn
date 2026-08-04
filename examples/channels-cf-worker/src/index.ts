@@ -10,7 +10,11 @@ type JsonBody = Record<string, unknown>;
 
 async function readJson(request: Request): Promise<JsonBody> {
   try {
-    return (await request.json()) as JsonBody;
+    const value: unknown = await request.json();
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      return value as JsonBody;
+    }
+    return {};
   } catch {
     return {};
   }
