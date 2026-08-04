@@ -13,8 +13,10 @@
   sequencing without inventing ad-hoc pending flags.
 - **Hono starter** at `examples/starter-hono` (six routes + invite + session
   probe). Lifecycle demo uses the same cookie/origin helpers.
-- **COMPARISON.md**: JS developer friction section and starter-kit roadmap
-  (including dual-channel email+SMS as the next high-value kit).
+- **Channels Cloudflare Worker** at `examples/channels-cf-worker`: Twilio SMS +
+  Resend email delivery, Vitest + Miniflare tests with mock API origin (no live
+  credentials required in CI).
+- **COMPARISON.md**: JS developer friction section and starter-kit roadmap.
 
 ## 2.1.0 - 2026-08-05
 

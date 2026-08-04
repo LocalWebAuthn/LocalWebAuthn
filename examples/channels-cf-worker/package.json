@@ -1,0 +1,17 @@
+{
+  "name": "@localwebauthn/channels-cf-worker",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal Cloudflare Worker for Twilio SMS + Resend email (DKIM via verified domain)",
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250724.0",
+    "miniflare": "^4.20260722.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}

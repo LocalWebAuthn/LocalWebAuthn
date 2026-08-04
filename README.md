@@ -361,7 +361,9 @@ The [Hono demo adapter](examples/demo/src/auth.ts) and the minimal
 [Hono starter](examples/starter-hono) implement all six routes with those helpers. Your route
 layer still owns CSRF defenses and rate limits. Production WebAuthn requires HTTPS, with a
 browser-defined exception for localhost development. Starter-kit roadmap:
-[docs/COMPARISON.md](docs/COMPARISON.md#starter-kit-roadmap).
+[docs/COMPARISON.md](docs/COMPARISON.md#starter-kit-roadmap). For SMS/email **delivery**
+(not login), see the Miniflare-tested [channels worker](examples/channels-cf-worker)
+(Twilio + Resend).
 
 ## What LocalWebAuthn Owns
 
