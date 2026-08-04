@@ -94,6 +94,66 @@ svg {
   font-size: 12px;
 }
 
+.auth-lede,
+.auth-hint,
+.section-help,
+.summary-help,
+.callout-help,
+.dialog-help {
+  margin: 0;
+  color: #4a5754;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.auth-lede {
+  margin-bottom: 16px;
+  max-width: 28rem;
+}
+
+.auth-hint {
+  margin: 0 0 18px;
+  max-width: 28rem;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #e8efed;
+  font-size: 13px;
+}
+
+.auth-hint code {
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #d5e0dd;
+}
+
+.section-help,
+.summary-help {
+  margin-top: 6px;
+  max-width: 40rem;
+}
+
+.callout-help {
+  margin-top: 8px;
+  max-width: 36rem;
+}
+
+.dialog-help {
+  margin: 0 0 14px;
+}
+
+.field-note {
+  color: #63706d;
+  font-weight: 400;
+  font-size: 12px;
+}
+
+.muted-note {
+  color: #63706d;
+  font-size: 13px;
+  padding: 0 4px;
+}
+
 .brand-symbol {
   display: grid;
   width: 42px;

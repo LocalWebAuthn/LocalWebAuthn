@@ -47,6 +47,8 @@ type EnrollmentIdentity = {
 type IssuedEnrollment = {
   clientName: string;
   url: string;
+  expiresAt: number;
+  kind: 'new' | 'recovery';
 };
 
 const auth = new LocalWebAuthnBrowser();
@@ -130,20 +132,22 @@ function authScreen(): string {
         <div class="brand-symbol">${iconMarkup('key-round', 26)}</div>
         <div>
           <strong>LocalWebAuthn</strong>
-          <span>Lifecycle demo</span>
+          <span>Passkey lifecycle demo</span>
         </div>
       </header>
       <main class="auth-main">
         <section class="auth-panel" aria-labelledby="auth-title">
           <div class="auth-icon">${iconMarkup(enrolling ? 'shield-check' : 'lock-keyhole', 28)}</div>
-          <h1 id="auth-title">${enrolling ? 'Create your passkey' : 'Sign in'}</h1>
+          <h1 id="auth-title">${enrolling ? 'Create your passkey' : 'Sign in with a passkey'}</h1>
           ${
             enrolling
-              ? `<div class="enrollment-client">
+              ? `<p class="auth-lede">No password. Your device will create a passkey bound to this site; only the public key is stored here.</p>
+                   <div class="enrollment-client">
                    <strong>${escapeHtml(displayName)}</strong>
                    <span>${escapeHtml(state.enrollment?.name ?? '')}</span>
                  </div>`
-              : ''
+              : `<p class="auth-lede">This demo has no passwords and no third-party login. Sign-in uses a passkey you already registered for this site.</p>
+                 <p class="auth-hint">First visit? Open the <strong>enrollment URL</strong> printed by <code>make demo</code> (or issued by an administrator). This page alone cannot create a first passkey.</p>`
           }
           <button class="button primary auth-button" id="${enrolling ? 'enroll' : 'sign-in'}" type="button" ${state.busy ? 'disabled' : ''}>
             ${iconMarkup('key-round')}
@@ -160,11 +164,20 @@ function enrollmentCallout(): string {
   if (!state.issued) {
     return '';
   }
+  const recovery = state.issued.kind === 'recovery';
   return `
     <section class="enrollment-callout" aria-labelledby="issued-title">
       <div>
-        <span class="section-kicker">Enrollment ready</span>
+        <span class="section-kicker">${recovery ? 'Recovery link' : 'Enrollment ready'}</span>
         <h2 id="issued-title">${escapeHtml(state.issued.clientName)}</h2>
+        <p class="callout-help">
+          ${
+            recovery
+              ? 'Previous passkeys and sessions were revoked. Open this one-time link on the person&rsquo;s device to register a new passkey.'
+              : 'Open this one-time link in another browser profile or device. Whoever opens it first can create a passkey for this person.'
+          }
+          Expires ${escapeHtml(formatDate(state.issued.expiresAt))}.
+        </p>
       </div>
       <div class="enrollment-link-row">
         <input aria-label="Enrollment URL" id="enrollment-url" readonly value="${escapeHtml(state.issued.url)}" />
@@ -202,16 +215,21 @@ function clientRows(): string {
           <td>${String(client.passkeyCount)}</td>
           <td>
             <div class="row-actions">
-              <button class="button quiet issue-link" data-client-id="${escapeHtml(client.id)}" data-client-name="${escapeHtml(client.displayName)}" type="button">
-                ${iconMarkup('link', 16)}
-                Issue link
-              </button>
               ${
                 isCurrent
-                  ? ''
-                  : `<button class="icon-button danger revoke-client" data-client-id="${escapeHtml(client.id)}" title="Revoke authentication" aria-label="Revoke authentication for ${escapeHtml(client.displayName)}" type="button">
-                       ${iconMarkup('trash-2', 17)}
-                     </button>`
+                  ? '<span class="muted-note">You</span>'
+                  : enrolled
+                    ? `<button class="button quiet re-enroll" data-client-id="${escapeHtml(client.id)}" data-client-name="${escapeHtml(client.displayName)}" type="button" title="Revoke passkeys, then issue a recovery enrollment link">
+                         ${iconMarkup('refresh-cw', 16)}
+                         Re-enroll
+                       </button>
+                       <button class="icon-button danger revoke-client" data-client-id="${escapeHtml(client.id)}" title="Revoke all passkeys without issuing a new link" aria-label="Revoke authentication for ${escapeHtml(client.displayName)}" type="button">
+                         ${iconMarkup('trash-2', 17)}
+                       </button>`
+                    : `<button class="button quiet issue-link" data-client-id="${escapeHtml(client.id)}" data-client-name="${escapeHtml(client.displayName)}" type="button" title="Issue a one-time enrollment link">
+                         ${iconMarkup('link', 16)}
+                         Issue link
+                       </button>`
               }
             </div>
           </td>
@@ -230,21 +248,22 @@ function clientsSection(): string {
       <div class="section-heading">
         <div>
           <span class="section-kicker">Administrator</span>
-          <h2 id="clients-title">Clients</h2>
+          <h2 id="clients-title">People</h2>
+          <p class="section-help">Invite someone with a one-time enrollment link. There is no password reset email — recovery is re-enrollment after you confirm who they are.</p>
         </div>
         <button class="button primary" id="open-client-dialog" type="button">
           ${iconMarkup('user-plus')}
-          Add client
+          Add person
         </button>
       </div>
       <div class="table-frame">
         <table>
           <thead>
             <tr>
-              <th>Client</th>
+              <th>Person</th>
               <th>Role</th>
-              <th>Authentication</th>
               <th>Passkeys</th>
+              <th>Count</th>
               <th><span class="visually-hidden">Actions</span></th>
             </tr>
           </thead>
@@ -261,8 +280,9 @@ function passkeysSection(): string {
     <section class="workspace-section" aria-labelledby="passkeys-title">
       <div class="section-heading">
         <div>
-          <span class="section-kicker">Current client</span>
+          <span class="section-kicker">Your account</span>
           <h2 id="passkeys-title">Passkeys</h2>
+          <p class="section-help">Add a second device or security key while signed in — no enrollment link required. Keep at least one passkey so you are not locked out.</p>
         </div>
         <button class="button secondary" id="add-passkey" type="button" ${state.busy ? 'disabled' : ''}>
           ${iconMarkup('circle-plus')}
@@ -300,22 +320,23 @@ function clientDialog(): string {
       <form id="client-form">
         <div class="dialog-heading">
           <div>
-            <span class="section-kicker">New identity</span>
-            <h2 id="client-dialog-title">Add client</h2>
+            <span class="section-kicker">Invitation</span>
+            <h2 id="client-dialog-title">Add person</h2>
           </div>
           <button class="icon-button" id="close-client-dialog" aria-label="Close" title="Close" type="button">${iconMarkup('x')}</button>
         </div>
+        <p class="dialog-help">Creates an application user and a one-time enrollment link. Email is only a label in this demo — not a login or password-reset channel.</p>
         <label>
           Display name
           <input autocomplete="name" id="client-name" maxlength="120" required />
         </label>
         <label>
-          Email
+          Email <span class="field-note">(identifier only)</span>
           <input autocomplete="email" id="client-email" required type="email" />
         </label>
         <div class="dialog-actions">
           <button class="button quiet" id="cancel-client" type="button">Cancel</button>
-          <button class="button primary" type="submit">${iconMarkup('user-plus')}Create client</button>
+          <button class="button primary" type="submit">${iconMarkup('user-plus')}Create and issue link</button>
         </div>
       </form>
     </dialog>
@@ -334,7 +355,7 @@ function dashboard(): string {
           <div class="brand-symbol">${iconMarkup('key-round', 23)}</div>
           <div>
             <strong>LocalWebAuthn</strong>
-            <span>Lifecycle demo</span>
+            <span>Passkeys only · no passwords · no IdP</span>
           </div>
         </div>
         <div class="current-client">
@@ -348,11 +369,12 @@ function dashboard(): string {
       <main>
         <section class="summary-band" aria-labelledby="page-title">
           <div>
-            <span class="section-kicker">${current.role === 'administrator' ? 'Administrator workspace' : 'Client workspace'}</span>
-            <h1 id="page-title">${current.role === 'administrator' ? 'Client access' : 'Your access'}</h1>
+            <span class="section-kicker">${current.role === 'administrator' ? 'Administrator' : 'Signed in'}</span>
+            <h1 id="page-title">${current.role === 'administrator' ? 'Manage access' : 'Your access'}</h1>
+            <p class="summary-help">Authentication is a passkey on your device. This app stores public keys and session hashes only — never a password.</p>
           </div>
           <dl>
-            <div><dt>Clients</dt><dd>${current.role === 'administrator' ? String(state.clients.length) : '1'}</dd></div>
+            <div><dt>${current.role === 'administrator' ? 'People' : 'Account'}</dt><dd>${current.role === 'administrator' ? String(state.clients.length) : 'You'}</dd></div>
             <div><dt>Your passkeys</dt><dd>${String(state.session?.passkeys.length ?? 0)}</dd></div>
             <div><dt>Session</dt><dd class="connected">${iconMarkup('shield-check', 17)}Active</dd></div>
           </dl>
@@ -466,6 +488,7 @@ function bindEvents(): void {
       const result = await request<{
         client: DemoClient;
         enrollmentUrl: string;
+        expiresAt: number;
       }>('/api/clients', {
         method: 'POST',
         body: JSON.stringify({ displayName, email }),
@@ -474,6 +497,8 @@ function bindEvents(): void {
       state.issued = {
         clientName: result.client.displayName,
         url: result.enrollmentUrl,
+        expiresAt: result.expiresAt,
+        kind: 'new',
       };
     });
   });
@@ -481,20 +506,54 @@ function bindEvents(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>('.issue-link')) {
     button.addEventListener('click', () => {
       void perform(async () => {
-        const result = await request<{ enrollmentUrl: string }>(
+        const result = await request<{ enrollmentUrl: string; expiresAt: number }>(
           `/api/clients/${encodeURIComponent(button.dataset.clientId ?? '')}/enrollment`,
           { method: 'POST' },
         );
         state.issued = {
-          clientName: button.dataset.clientName ?? 'Client',
+          clientName: button.dataset.clientName ?? 'Person',
           url: result.enrollmentUrl,
+          expiresAt: result.expiresAt,
+          kind: 'new',
         };
+      });
+    });
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('.re-enroll')) {
+    button.addEventListener('click', () => {
+      const name = button.dataset.clientName ?? 'this person';
+      if (
+        !window.confirm(
+          `Re-enroll ${name}?\n\nThis revokes every passkey and session for them, then issues a one-time recovery link. Confirm their identity out of band before sharing the link.`,
+        )
+      ) {
+        return;
+      }
+      void perform(async () => {
+        const result = await request<{
+          enrollmentUrl: string;
+          expiresAt: number;
+        }>(`/api/clients/${encodeURIComponent(button.dataset.clientId ?? '')}/re-enroll`, {
+          method: 'POST',
+        });
+        await refreshSession();
+        state.issued = {
+          clientName: name,
+          url: result.enrollmentUrl,
+          expiresAt: result.expiresAt,
+          kind: 'recovery',
+        };
+        state.notice = 'Passkeys revoked and recovery enrollment issued.';
       });
     });
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('.revoke-client')) {
     button.addEventListener('click', () => {
-      if (!window.confirm('Revoke all authentication for this client?')) {
+      if (
+        !window.confirm(
+          'Revoke all passkeys and sessions for this person without issuing a new link? They will be locked out until you re-enroll them.',
+        )
+      ) {
         return;
       }
       void perform(async () => {
@@ -503,7 +562,7 @@ function bindEvents(): void {
           { method: 'POST' },
         );
         await refreshSession();
-        state.notice = 'Client authentication revoked.';
+        state.notice = 'Authentication revoked. Issue a re-enrollment link when ready.';
       });
     });
   }

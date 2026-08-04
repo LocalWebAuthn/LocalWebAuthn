@@ -200,6 +200,38 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
     });
   });
 
+  /**
+   * Recovery as documented in the package README: revoke every passkey and
+   * session for the client, then issue a fresh enrollment link. Order matters —
+   * issuing first would destroy the link you just created.
+   */
+  app.post('/api/clients/:clientId/re-enroll', authenticated, administrator, async (context) => {
+    const currentUserId = context.get('authenticatedUser').id;
+    const client = clientById(database, context.req.param('clientId'));
+    if (!client?.active) {
+      return context.json({ error: 'client_not_found', message: 'The client was not found.' }, 404);
+    }
+    if (client.id === currentUserId) {
+      return context.json(
+        {
+          error: 'self_recovery',
+          message: 'Add another passkey while signed in, or recover from a second administrator.',
+        },
+        409,
+      );
+    }
+    await authentication.revokeUserAuthentication(client.id);
+    const enrollment = await authentication.issueEnrollment(
+      client.id,
+      context.get('authenticatedUser').id,
+    );
+    return context.json({
+      client: await clientPayload(client, authentication),
+      enrollmentUrl: enrollment.enrollmentUrl,
+      expiresAt: enrollment.expiresAt,
+    });
+  });
+
   app.post(
     '/api/clients/:clientId/revoke-authentication',
     authenticated,
