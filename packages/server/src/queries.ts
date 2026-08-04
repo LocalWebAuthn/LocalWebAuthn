@@ -337,6 +337,32 @@ export const D1_SQL = {
 } as const;
 
 /**
+ * SQL used only by the PostgreSQL adapter.
+ *
+ * SQLite and D1 serialize writers, so a conditional `UPDATE` whose predicate
+ * counts the user's other active credentials is atomic there. PostgreSQL is
+ * MVCC: under the default READ COMMITTED isolation, an `EXISTS` sub-select does
+ * not block on another transaction's uncommitted `UPDATE` of a *different* row.
+ * Two concurrent revokes of two different credentials would therefore each see
+ * the other as still active and both succeed, emptying the account.
+ */
+export const POSTGRES_SQL = {
+  /**
+   * Take a row lock on the user's active credentials before evaluating the
+   * last-credential predicate. The second concurrent revoke blocks here until
+   * the first commits, then sees the true remaining set.
+   *
+   * `ORDER BY id` makes the lock acquisition order deterministic so two
+   * transactions locking the same user cannot deadlock against each other.
+   */
+  lockUserCredentials: `
+    SELECT id FROM localwebauthn_credentials
+    WHERE user_id = ? AND revoked_at IS NULL
+    ORDER BY id
+    FOR UPDATE`,
+} as const;
+
+/**
  * Rewrite `?` placeholders as PostgreSQL's `$1`, `$2`, … positional form.
  *
  * Safe for these statements because none of them contain a `?` inside a string

@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { D1_SQL, SQL, toPositionalPlaceholders } from '../../packages/server/src/queries.js';
+import {
+  D1_SQL,
+  POSTGRES_SQL,
+  SQL,
+  toPositionalPlaceholders,
+} from '../../packages/server/src/queries.js';
 
-const allStatements = { ...SQL, ...D1_SQL };
+const allStatements = { ...SQL, ...D1_SQL, ...POSTGRES_SQL };
 
 describe('toPositionalPlaceholders', () => {
   it('numbers placeholders from one, in order', () => {

@@ -265,6 +265,21 @@ var D1_SQL = {
   guardPreviousChange: `INSERT INTO localwebauthn_transaction_guard(value) VALUES (changes())`,
   clearGuard: `DELETE FROM localwebauthn_transaction_guard`
 };
+var POSTGRES_SQL = {
+  /**
+   * Take a row lock on the user's active credentials before evaluating the
+   * last-credential predicate. The second concurrent revoke blocks here until
+   * the first commits, then sees the true remaining set.
+   *
+   * `ORDER BY id` makes the lock acquisition order deterministic so two
+   * transactions locking the same user cannot deadlock against each other.
+   */
+  lockUserCredentials: `
+    SELECT id FROM localwebauthn_credentials
+    WHERE user_id = ? AND revoked_at IS NULL
+    ORDER BY id
+    FOR UPDATE`
+};
 function toPositionalPlaceholders(sql) {
   let index = 0;
   return sql.replace(/\?/gu, () => `$${String(++index)}`);
@@ -343,6 +358,7 @@ function sessionFromRow(row) {
 export {
   SQL,
   D1_SQL,
+  POSTGRES_SQL,
   toPositionalPlaceholders,
   credentialFromRow,
   challengeFromRow,

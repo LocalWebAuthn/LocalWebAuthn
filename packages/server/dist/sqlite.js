@@ -4,7 +4,7 @@ import {
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-CCPC5ZXZ.js";
+} from "./chunk-CNGBEFAA.js";
 import {
   LOCALWEBAUTHN_SCHEMA_SQL,
   LOCALWEBAUTHN_SCHEMA_VERSION

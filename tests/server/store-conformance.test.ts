@@ -506,3 +506,67 @@ if (process.env.LOCALWEBAUTHN_REQUIRE_POSTGRES === '1' && !postgresReachable) {
 storeConformance('SQLite', sqliteFixture);
 storeConformance('D1', d1Fixture);
 storeConformance('PostgreSQL', postgresFixture, { skip: !postgresReachable });
+
+/**
+ * PostgreSQL is the only engine where the last-credential predicate can race:
+ * SQLite and D1 serialize writers, but MVCC lets two READ COMMITTED
+ * transactions each read the other's credential as still active.
+ *
+ * A `Promise.all` of two revokes usually happens to serialize and so proves
+ * nothing. This drives two connections through the exact interleaving instead,
+ * which is what a real pair of concurrent requests can produce. Without
+ * POSTGRES_SQL.lockUserCredentials both revokes succeed and the user is left
+ * with no passkeys at all.
+ */
+describe.skipIf(!postgresReachable)('PostgreSQL concurrent revoke', () => {
+  it('leaves one active credential when two revokes interleave', async () => {
+    const pool = new pg.Pool({ connectionString: postgresUrl });
+    await migratePostgres(pool as unknown as PostgresPool);
+    await pool.query(`TRUNCATE localwebauthn_sessions, localwebauthn_credentials,
+      localwebauthn_challenges, localwebauthn_enrollment_grants RESTART IDENTITY CASCADE`);
+
+    const store = new PostgresLocalWebAuthnStore(pool as unknown as PostgresPool);
+    for (const id of ['credential-a', 'credential-b']) {
+      await pool.query(
+        `INSERT INTO localwebauthn_credentials(
+           id, user_id, public_key, counter, transports_json,
+           device_type, backed_up, label, created_at)
+         VALUES ($1, 'user-1', $2, 0, '[]', 'multiDevice', true, 'passkey', $3)`,
+        [id, Buffer.from(bytes(9)), now],
+      );
+    }
+
+    // Hold the user's credential rows on a third connection so both revokes
+    // are guaranteed to be in flight at the same time before either can
+    // proceed. Without the adapter's own lock neither call blocks here, both
+    // read the other credential as active, and both succeed.
+    const blocker = await pool.connect();
+    let first: string;
+    let second: string;
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query(
+        `SELECT id FROM localwebauthn_credentials
+         WHERE user_id = $1 AND revoked_at IS NULL ORDER BY id FOR UPDATE`,
+        ['user-1'],
+      );
+
+      const a = store.revokeCredential('user-1', 'credential-a', now);
+      const b = store.revokeCredential('user-1', 'credential-b', now);
+      // Give both a chance to reach (and block on) the lock.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await blocker.query('COMMIT');
+
+      [first, second] = await Promise.all([a, b]);
+    } finally {
+      blocker.release();
+    }
+
+    // Exactly one succeeds; the other is refused as the last credential.
+    expect([first, second].filter((result) => result === 'revoked')).toHaveLength(1);
+    expect([first, second].filter((result) => result === 'last_credential')).toHaveLength(1);
+    await expect(store.listCredentials('user-1')).resolves.toHaveLength(1);
+
+    await pool.end();
+  });
+});

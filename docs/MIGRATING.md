@@ -1,15 +1,15 @@
 # Migrating LocalWebAuthn
 
-## 1.1.x → 1.2.0
+## 1.1.0 → 2.0.0
 
 ### Security fix: no credential cleanup
 
-Versions 1.0.0–1.1.x deleted credentials that had no session rows and were
+Versions 1.0.0–1.1.0 deleted credentials that had no session rows and were
 older than one hour. That treated the normal idle state of a passkey (after
 logout or session expiry) as garbage and could wipe every idle user's
 credentials if operators scheduled `cleanup()` as documented.
 
-**1.2.0 removes credential cleanup entirely.** `cleanup()` only reaps expired
+**2.0.0 removes credential cleanup entirely.** `cleanup()` only reaps expired
 grants, finished challenges, and dead sessions. The
 `CleanupResult.orphanedCredentials` field is gone — there is no orphan-credential
 sweep to report.
@@ -26,10 +26,10 @@ official adapter and the `LocalWebAuthn` service API need no code changes.
 #### `revokeSession` returns identity
 
 ```ts
-// 1.1.x
+// 1.1.0
 revokeSession(idHash, now): Promise<boolean>;
 
-// 1.2.0
+// 2.0.0
 revokeSession(idHash, now): Promise<{ userId: string; credentialId: string } | null>;
 ```
 
@@ -39,10 +39,10 @@ can emit an audit event with the session identity.
 #### `revokeCredential` enforces last-credential atomically
 
 ```ts
-// 1.1.x
+// 1.1.0
 revokeCredential(userId, credentialId, now): Promise<boolean>;
 
-// 1.2.0
+// 2.0.0
 revokeCredential(
   userId,
   credentialId,
@@ -69,7 +69,7 @@ this in `advanceCredentialCounter`.
 #### `CleanupResult` no longer has `orphanedCredentials`
 
 ```ts
-// 1.1.x
+// 1.1.0
 type CleanupResult = {
   enrollmentGrants: number;
   challenges: number;
@@ -77,7 +77,7 @@ type CleanupResult = {
   orphanedCredentials: number;
 };
 
-// 1.2.0
+// 2.0.0
 type CleanupResult = {
   enrollmentGrants: number;
   challenges: number;
@@ -86,6 +86,41 @@ type CleanupResult = {
 ```
 
 Do not delete credentials in `cleanup`.
+
+#### Last-credential protection must be race-free
+
+When `allowLastCredential` is false, `revokeCredential` must refuse to remove a
+user's only active passkey — and that check has to be atomic with the revoke,
+not a read followed by a write.
+
+A single conditional `UPDATE` is enough on engines that serialize writers:
+
+```sql
+UPDATE localwebauthn_credentials
+SET revoked_at = ?
+WHERE id = ? AND user_id = ? AND revoked_at IS NULL
+  AND (? = 1 OR EXISTS (
+    SELECT 1 FROM localwebauthn_credentials AS other
+    WHERE other.user_id = ? AND other.id <> ? AND other.revoked_at IS NULL))
+```
+
+**On PostgreSQL that is not sufficient.** Under the default READ COMMITTED
+isolation the `EXISTS` sub-select does not block on another transaction's
+uncommitted `UPDATE` of a different row, so two concurrent revokes of two
+different credentials each see the other as still active and both succeed —
+leaving the account with no passkeys. Take a row lock first, inside the same
+transaction:
+
+```sql
+SELECT id FROM localwebauthn_credentials
+WHERE user_id = $1 AND revoked_at IS NULL
+ORDER BY id
+FOR UPDATE
+```
+
+`ORDER BY id` keeps lock acquisition deterministic so two transactions on the
+same user cannot deadlock. The official PostgreSQL adapter does this; a custom
+MVCC-backed store needs the equivalent.
 
 ## 1.0.x → 1.1.0
 
@@ -171,8 +206,8 @@ type CleanupResult = {
 };
 ```
 
-In 1.0.0–1.1.x this field reported credentials deleted by cleanup. **That
-behavior was incorrect** (see [1.1.x → 1.2.0](#11x--120)): 1.2.0 removes the
+In 1.0.0–1.1.0 this field reported credentials deleted by cleanup. **That
+behavior was incorrect** (see [1.1.0 → 2.0.0](#110--200)): 2.0.0 removes the
 field and all credential cleanup.
 
 ### New Configuration Option: `logger`

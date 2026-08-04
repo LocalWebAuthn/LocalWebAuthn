@@ -1,11 +1,12 @@
 import {
+  POSTGRES_SQL,
   SQL,
   challengeFromRow,
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow,
   toPositionalPlaceholders
-} from "./chunk-CCPC5ZXZ.js";
+} from "./chunk-CNGBEFAA.js";
 import {
   LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL,
   LOCALWEBAUTHN_SCHEMA_VERSION
@@ -14,6 +15,9 @@ import {
 // src/postgres.ts
 var PG = Object.fromEntries(
   Object.entries(SQL).map(([name, sql]) => [name, toPositionalPlaceholders(sql)])
+);
+var PG_ONLY = Object.fromEntries(
+  Object.entries(POSTGRES_SQL).map(([name, sql]) => [name, toPositionalPlaceholders(sql)])
 );
 var Rollback = class extends Error {
 };
@@ -187,6 +191,7 @@ var PostgresLocalWebAuthnStore = class {
   }
   async revokeCredential(userId, credentialId, now, options = {}) {
     return this.#transaction(async (tx) => {
+      await tx.query(PG_ONLY.lockUserCredentials, [userId]);
       const allowLast = options.allowLastCredential ? 1 : 0;
       const revoked = await tx.query(PG.revokeCredential, [
         now,

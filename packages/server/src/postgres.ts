@@ -15,7 +15,7 @@ import type {
   SessionIdentity,
 } from './types.js';
 
-import { SQL, toPositionalPlaceholders } from './queries.js';
+import { POSTGRES_SQL, SQL, toPositionalPlaceholders } from './queries.js';
 import {
   type ChallengeRow,
   challengeFromRow,
@@ -32,6 +32,11 @@ import { LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL, LOCALWEBAUTHN_SCHEMA_VERSION } from 
 const PG: { [Name in keyof typeof SQL]: string } = Object.fromEntries(
   Object.entries(SQL).map(([name, sql]) => [name, toPositionalPlaceholders(sql)]),
 ) as { [Name in keyof typeof SQL]: string };
+
+/** PostgreSQL-only statements, converted the same way. */
+const PG_ONLY: { [Name in keyof typeof POSTGRES_SQL]: string } = Object.fromEntries(
+  Object.entries(POSTGRES_SQL).map(([name, sql]) => [name, toPositionalPlaceholders(sql)]),
+) as { [Name in keyof typeof POSTGRES_SQL]: string };
 
 export type PostgresQueryResult<Row> = {
   rows: Row[];
@@ -295,6 +300,12 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
     options: { allowLastCredential?: boolean } = {},
   ): Promise<RevokeCredentialResult> {
     return this.#transaction(async (tx) => {
+      // Serialize concurrent revokes for this user. Without this lock the
+      // last-credential predicate below is subject to a READ COMMITTED race in
+      // which two revokes of different credentials both succeed. See
+      // POSTGRES_SQL.lockUserCredentials.
+      await tx.query(PG_ONLY.lockUserCredentials, [userId]);
+
       const allowLast = options.allowLastCredential ? 1 : 0;
       const revoked = await tx.query(PG.revokeCredential, [
         now,

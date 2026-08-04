@@ -16,9 +16,12 @@ Your application keeps its users and authorization. It does not keep passwords, 
 hashes, password reset tokens, TOTP seeds, or recovery codes. It stores public keys and
 hashed opaque tokens instead, and no database value can be replayed as a passkey.
 
-LocalWebAuthn is `1.2.0`. The service API follows SemVer for host integrations; custom
-`LocalWebAuthnStore` implementations may see store-interface changes in minor releases
-when required for correctness — see [docs/MIGRATING.md](docs/MIGRATING.md).
+LocalWebAuthn is `2.0.0`. The service API, store interface, and database schema follow
+SemVer: breaking changes arrive only in a new major version, with upgrade notes in
+[docs/MIGRATING.md](docs/MIGRATING.md).
+
+**If you are on 1.0.0 or 1.1.0, upgrade.** Those releases delete passkeys during routine
+maintenance; see [the 2.0.0 migration notes](docs/MIGRATING.md).
 
 A stable API is not a long production track record. This is young software with a small
 user base, and it sits on the authentication path. Both packages together are about 3,300

@@ -1,6 +1,6 @@
 {
   "name": "@localwebauthn/browser",
-  "version": "1.2.0",
+  "version": "2.0.0",
   "description": "Browser client for the LocalWebAuthn HTTP protocol",
   "type": "module",
   "license": "MIT",
