@@ -1,4 +1,4 @@
-# Review Findings — 0.1.1 → 1.0.0
+# Review Findings — 0.1.1 → 1.1.0
 
 Comprehensive review of claims, implementation, tests, and documentation.
 Status key: ✅ fixed ◷ deferred ✘ not started
@@ -57,6 +57,10 @@ very hard to audit. A single off-by-one would be a security bug.
 documents the two mutually-exclusive authorization paths (grant vs. session),
 and every `.bind()` parameter is labeled with its position and purpose.
 
+**Superseded in 1.1.0**: the statement was split into two single-purpose
+queries, so the labelled 19-parameter version no longer exists. See the second
+pass below.
+
 ### ✅ 6. Demo Error Detection Depends on SQLite Error Strings
 
 In `examples/demo/src/application.ts`, duplicate email detection parsed
@@ -67,13 +71,14 @@ and incompatible with D1.
 INSERT. The catch block now returns a generic 500 without inspecting error
 messages.
 
-### ◷ 7. No Migration Strategy Documentation
+### ✅ 7. No Migration Strategy Documentation
 
 Schema versioning exists but there's no documented procedure for applying
 future schema changes in production.
 
-**Deferred**: Needs a `docs/MIGRATING.md` covering idempotent re-runs,
-version checks, and the intended upgrade path when v2 schema ships.
+**Done** (1.1.0): `docs/MIGRATING.md` covers each version transition, and the
+README states that every `migrate*` call is idempotent and safe to run on each
+start. The migrations table records the applied schema version.
 
 ### ✅ 8. Missing Logger for Event-Emission Failures
 
@@ -94,11 +99,13 @@ values.
 collision (astronomically unlikely with 256-bit random tokens, but handled
 defensively).
 
-### ◷ 10. CI Tests Only Node 24, Package Declares `>=22.14`
+### ✅ 10. CI Tests Only Node 24, Package Declares `>=22.14`
 
 The minimum supported Node version isn't tested in CI.
 
-**Deferred**: Add a Node 22.x matrix entry to `.github/workflows/ci.yml`.
+**Done** (1.1.0): the check job runs a `[22, 24]` matrix. This mattered more
+than it looked — a stray Node 20 in the local environment produced a native
+module ABI mismatch, confirming the declared floor is real and worth testing.
 
 ## Nice to Have
 
@@ -106,9 +113,9 @@ The minimum supported Node version isn't tested in CI.
 | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | ✅     | `toWebAuthnCredential` byte copy — investigated; the `Uint8Array.from()` call is **necessary** for narrowing `ArrayBufferLike` to `ArrayBuffer` for SimpleWebAuthn type compatibility. Not a redundant copy. Comment added. |
 | ✅     | `rpId` format validation — validates bare hostname via `new URL('https://' + rpId)` in `config.ts`.                                                                                                                         |
-| ◷      | Cookie naming gap between SECURITY.md and demo — `__Host-` prefix requires HTTPS; demo is localhost.                                                                                                                        |
+| ◷      | Cookie naming gap between SECURITY.md and demo — `__Host-` prefix requires HTTPS; demo is localhost. The README adapter example now uses `__Host-` names.                                                                   |
 | ◷      | Concurrent-access tests for WAL-mode SQLite — current in-memory test serialises implicitly.                                                                                                                                 |
-| ◷      | Documented cleanup scheduling recommendations — mention periodic `cleanup()` cadence in SECURITY.md or README.                                                                                                              |
+| ✅     | Documented cleanup scheduling recommendations — SECURITY.md now asks for a periodic `cleanup()` (every few minutes) under "Storage Adapter Guarantees".                                                                     |
 
 ## Discovered During Implementation
 
@@ -134,13 +141,57 @@ The minimum supported Node version isn't tested in CI.
   explicit error-path tests can be added when coverage thresholds are next
   raised.
 
+## Second Pass (1.1.0)
+
+A follow-up review targeted the developer coming from password authentication,
+PostgreSQL support, and simplification.
+
+**Documentation gap found.** The browser client POSTs to six endpoints that the
+host must implement, and nothing outside `packages/browser/src/index.ts`
+enumerated them. A developer could install both packages, call `auth.signIn()`,
+and get a 404 with no documented way to learn which routes to build. The README
+now has an endpoint table, the cookies each route sets, and a complete adapter.
+A "Coming From Password Authentication" section maps each password concept to
+its replacement and explains the two-request ceremony and the absent username.
+
+**Simplifications applied.**
+
+- Every SQL statement moved into `packages/server/src/queries.ts`. One
+  definition per query to audit rather than one per adapter, and the SQLite and
+  D1 adapters lost ~590 lines between them with no behavior change.
+- SQLite `exchangeEnrollment` and `consumeChallenge` became single
+  `UPDATE ... RETURNING` statements instead of `SELECT`-then-`UPDATE` inside a
+  transaction — the same guarantee with the TOCTOU window removed rather than
+  papered over.
+- The D1 credential insert went from one 19-parameter statement branching on
+  `? IS NOT NULL` to two single-purpose statements. The caller already knows
+  which authorization path applies, so the SQL no longer has to.
+- `StoreFixture.rawDb` was dead after the 1.0.0 orphan-test rewrite; removed.
+
+**Discovered during PostgreSQL work.**
+
+- `pg-mem` is unusable for this adapter: it inlines a `Buffer` bind parameter as
+  an empty string and lacks `octet_length`. Byte-array hashes are the core data
+  type here, so testing against it would have produced confident, wrong results.
+  PostgreSQL conformance therefore requires a real server — provisioned by
+  `flake.nix` locally and a service container in CI.
+- node-postgres returns `BIGINT` as a string. The row mappers coerce, and reject
+  anything that will not round-trip as a safe integer rather than truncating a
+  timestamp or counter silently.
+- `$N IS NOT NULL` fails in PostgreSQL with "could not determine data type of
+  parameter". This is what motivated splitting the D1 query rather than adding
+  casts, which turned a portability obstacle into a readability win.
+- CI sets `LOCALWEBAUTHN_REQUIRE_POSTGRES=1` so an unreachable server fails the
+  run. Without it a misconfigured service container would skip the PostgreSQL
+  suite and still report green.
+
 ## Summary
 
-All Must Fix and Should Fix items requiring code changes are complete. The
-three deferred items (migration docs, CI matrix, and cookie-naming note) are
-documentation or CI-configuration tasks suitable for the next release cycle.
+Every Must Fix and Should Fix item is now closed. One nice-to-have remains open:
+concurrent-access tests for WAL-mode SQLite, where the current in-memory fixture
+serialises implicitly and so does not exercise real contention.
 
-The architecture remains sound, the security model is well-considered, and the
-codebase is measurably more robust: 37 tests (up from 30), orphaned-credential
-cleanup, audit-event completeness, duplicate-challenge detection, validated
-configuration, and comprehensive TSDoc on all public interfaces.
+The codebase is measurably more robust than at 0.1.1: 52 tests (up from 30)
+across three storage adapters, one auditable home for all SQL, orphaned-credential
+cleanup, audit-event completeness, validated configuration, and TSDoc on every
+public interface.

@@ -1,5 +1,36 @@
 # Migrating LocalWebAuthn
 
+## 1.0.x → 1.1.0
+
+Nothing to do. The `LocalWebAuthnStore` contract and every public type are
+unchanged, so existing integrations and custom store implementations keep
+working as-is.
+
+To adopt PostgreSQL, install `pg` and swap the adapter — nothing else about your
+integration changes:
+
+```ts
+import { Pool } from 'pg';
+import { migratePostgres, PostgresLocalWebAuthnStore } from '@localwebauthn/server/postgres';
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+await migratePostgres(pool);
+
+const auth = new LocalWebAuthn({
+  // ... unchanged
+  store: new PostgresLocalWebAuthnStore(pool),
+});
+```
+
+Pass a `Pool`, not a single `Client`: transactions need a connection to
+themselves, and issuing `BEGIN` on a connection shared between concurrent
+requests would interleave unrelated statements into the same transaction.
+
+There is no data migration path between adapters. `migratePostgres` creates an
+empty schema; it does not copy an existing SQLite database. Moving a live
+deployment means re-enrolling users, because moving credentials between stores
+is out of scope for this package.
+
 ## 0.1.x → 1.0.0
 
 ### Breaking Store-Interface Changes

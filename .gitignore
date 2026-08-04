@@ -7,3 +7,6 @@ coverage/
 examples/demo/dist/
 playwright-report/
 test-results/
+
+# Local PostgreSQL test instance (nix devShell: pg-start / pg-stop)
+.pgdata/

@@ -14,7 +14,18 @@ type SqliteDatabase = {
     prepare(sql: string): SqliteStatement;
     transaction<T>(operation: () => T): () => T;
 };
+/**
+ * Create or update the `localwebauthn_*` tables. Idempotent — safe to call on
+ * every start.
+ */
 declare function migrateSqlite(database: SqliteDatabase, now?: number): void;
+/**
+ * {@link LocalWebAuthnStore} backed by better-sqlite3 (or any driver with the
+ * same synchronous `prepare`/`transaction` shape).
+ *
+ * Every multi-statement operation runs inside a real SQLite transaction, so
+ * partial writes cannot be observed or left behind.
+ */
 declare class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
     #private;
     constructor(database: SqliteDatabase);

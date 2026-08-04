@@ -1,6 +1,6 @@
 {
   "name": "@localwebauthn/server",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Self-hosted, invitation-first passkey authentication lifecycle",
   "type": "module",
   "license": "MIT",
@@ -26,22 +26,30 @@
       "types": "./dist/d1.d.ts",
       "import": "./dist/d1.js"
     },
+    "./postgres": {
+      "types": "./dist/postgres.d.ts",
+      "import": "./dist/postgres.js"
+    },
     "./schema": {
       "types": "./dist/schema.d.ts",
       "import": "./dist/schema.js"
     }
   },
   "scripts": {
-    "build": "tsup src/index.ts src/sqlite.ts src/d1.ts src/schema.ts --format esm --dts --clean"
+    "build": "tsup src/index.ts src/sqlite.ts src/d1.ts src/postgres.ts src/schema.ts --format esm --dts --clean"
   },
   "dependencies": {
     "@simplewebauthn/server": "^13.3.2"
   },
   "peerDependencies": {
-    "better-sqlite3": ">=11"
+    "better-sqlite3": ">=11",
+    "pg": ">=8"
   },
   "peerDependenciesMeta": {
     "better-sqlite3": {
+      "optional": true
+    },
+    "pg": {
       "optional": true
     }
   },
@@ -62,6 +70,8 @@
     "webauthn",
     "authentication",
     "sqlite",
+    "postgres",
+    "postgresql",
     "cloudflare-d1"
   ]
 }

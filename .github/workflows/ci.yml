@@ -12,11 +12,38 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 is the minimum the packages declare support for; 24 is current.
+        node-version: ['22', '24']
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: localwebauthn_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      LOCALWEBAUTHN_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/localwebauthn_test
+      # Turn an unreachable server into a failure so the PostgreSQL store
+      # conformance suite can never silently skip in CI.
+      LOCALWEBAUTHN_REQUIRE_POSTGRES: '1'
+
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
-          node-version: '24'
+          node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
       - run: npm run check

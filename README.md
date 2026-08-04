@@ -10,18 +10,18 @@
 LocalWebAuthn is a self-hosted, invitation-first, passkey-only authentication lifecycle
 for TypeScript applications. It gives a small application the parts normally missing
 between WebAuthn ceremonies and an authenticated session: enrollment, credentials,
-challenges, sessions, revocation, and SQLite or Cloudflare D1 persistence.
+challenges, sessions, revocation, and SQLite, PostgreSQL, or Cloudflare D1 persistence.
 
 Your application keeps its users and authorization. It does not keep passwords, password
 hashes, password reset tokens, TOTP seeds, or recovery codes. It stores public keys and
 hashed opaque tokens instead, and no database value can be replayed as a passkey.
 
-LocalWebAuthn is `1.0.0`. The service API, store interface, and database schema follow
-SemVer from here: breaking changes arrive only in a new major version, with upgrade notes
-in [docs/MIGRATING.md](docs/MIGRATING.md).
+LocalWebAuthn is `1.1.0`. The service API, store interface, and database schema follow
+SemVer: breaking changes arrive only in a new major version, with upgrade notes in
+[docs/MIGRATING.md](docs/MIGRATING.md).
 
 A stable API is not a long production track record. This is young software with a small
-user base, and it sits on the authentication path. Both packages together are under 3,000
+user base, and it sits on the authentication path. Both packages together are about 3,300
 lines of TypeScript, deliberately kept small enough to read — do that, and read
 [SECURITY.md](SECURITY.md), before you depend on it.
 
@@ -95,6 +95,51 @@ a full server compromise can still subvert authentication. Recovery and identity
 remain product policy. The narrower claim is the important one: **your server never
 receives or stores a reusable user authentication secret.**
 
+## Coming From Password Authentication
+
+If you have built login with `bcrypt` and a session cookie, or wired up Passport,
+NextAuth, or a hosted provider, most of what you know still applies. Sessions, cookies,
+CSRF, and authorization are unchanged. Three things are different.
+
+**Every password concept has a direct replacement.**
+
+| Password application                        | LocalWebAuthn                                                        |
+| ------------------------------------------- | -------------------------------------------------------------------- |
+| `users.password_hash` column                | No such column; a public key lives in `localwebauthn_credentials`    |
+| `bcrypt.hash(...)` when the user signs up   | `createUserHandle()`; the authenticator generates the key pair       |
+| `bcrypt.compare(...)` when the user logs in | `auth.verifyAuthentication({ response, challengeToken })`            |
+| "Forgot password" email with a reset token  | `auth.issueEnrollment(userId)` returns a one-time URL                |
+| `req.session.userId = user.id`              | `auth.resolveSession(sessionToken)` returns the user                 |
+| `req.session.destroy()`                     | `auth.revokeSession(sessionToken)`                                   |
+| Force a reset after a leak                  | `auth.revokeCredential(...)` or `auth.revokeUserAuthentication(...)` |
+| Bolt on TOTP for a second factor            | `userVerification: 'required'`; the authenticator does it            |
+
+**Signing in takes two requests instead of one.** A password is a secret the client can
+just send. A passkey proves possession of a private key, so the server issues a random
+challenge first and verifies a signature over it second:
+
+```text
+password   POST /login          {username, password}   -> Set-Cookie: session
+
+passkey    POST /login/options  {}                     -> challenge  + Set-Cookie: challenge
+             (browser prompts for Touch ID, a security key, or the password manager)
+           POST /login/verify   {signed assertion}     -> Set-Cookie: session
+```
+
+The challenge has to survive between those two requests. LocalWebAuthn hands your route a
+`challengeToken` to put in a short-lived cookie, and stores only its hash server-side.
+
+**Sign-in submits no username.** Passkeys are discoverable credentials: the authenticator
+already knows which account it holds for your site, so the user picks it in the browser's
+own UI. `POST /login/options` therefore takes an empty body. Practically, this means there
+is no username-enumeration surface to defend, and no per-username rate limit to write —
+rate limit the route instead.
+
+The trade you are accepting is recovery. There is no "email me a reset link" that a
+password system gives you for free, because there is no shared secret to reset. Recovery
+means issuing a fresh enrollment link, which is an act of identity proofing your
+application must define. Plan that before you ship, not after a user loses their phone.
+
 ## From User Row To Session
 
 Install both packages:
@@ -116,7 +161,7 @@ CREATE TABLE app_users (
 );
 ```
 
-Connect that table to LocalWebAuthn and choose a storage adapter:
+Connect that table to LocalWebAuthn and choose a storage adapter. SQLite:
 
 ```ts
 import Database from 'better-sqlite3';
@@ -148,6 +193,32 @@ const auth = new LocalWebAuthn({
   },
 });
 ```
+
+PostgreSQL and Cloudflare D1 are drop-in replacements for the `store` option. Pass a
+`pg.Pool` rather than a single client, so transactions get a connection to themselves:
+
+```ts
+import { Pool } from 'pg';
+import { migratePostgres, PostgresLocalWebAuthnStore } from '@localwebauthn/server/postgres';
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+await migratePostgres(pool);
+
+// ... store: new PostgresLocalWebAuthnStore(pool)
+```
+
+```ts
+import { D1LocalWebAuthnStore, migrateD1 } from '@localwebauthn/server/d1';
+
+await migrateD1(env.DB);
+
+// ... store: new D1LocalWebAuthnStore(env.DB)
+```
+
+Each `migrate*` call is idempotent, so calling it on every start is fine. All three
+adapters pass the same store conformance suite. SQLite and PostgreSQL use real
+transactions; D1 cannot, and the [D1 section of SECURITY.md](SECURITY.md#d1-batch-non-atomicity)
+explains what it does instead.
 
 Create the application's user with `createUserHandle()`, then issue an enrollment:
 
@@ -186,11 +257,75 @@ if (token) {
 An authenticated user adds another passkey with the same
 `auth.registerPasskey('Security key')` call. No enrollment link is required.
 
-The packages are HTTP-framework neutral. Your route adapter owns exact-origin checks,
-HTTP-only `Secure` cookies, CSRF defenses, rate limits, and response mapping. The
-[Hono demo adapter](examples/demo/src/auth.ts) is a complete reference implementation,
-not hidden framework behavior. Production WebAuthn requires HTTPS, with a browser-defined
-exception for localhost development.
+### The Six Endpoints
+
+`LocalWebAuthnBrowser` speaks a small JSON protocol over six routes that you implement.
+There is no hidden framework behavior — these are the paths it POSTs to, and nothing
+happens that your own handler did not do:
+
+| Route (default)                      | Service call                  | Cookie it sets / clears                     |
+| ------------------------------------ | ----------------------------- | ------------------------------------------- |
+| `POST /api/auth/enrollment/exchange` | `exchangeEnrollment(token)`   | sets enrollment                             |
+| `POST /api/auth/register/options`    | `registrationOptions({...})`  | sets challenge                              |
+| `POST /api/auth/register/verify`     | `verifyRegistration({...})`   | clears challenge + enrollment, sets session |
+| `POST /api/auth/login/options`       | `authenticationOptions()`     | sets challenge                              |
+| `POST /api/auth/login/verify`        | `verifyAuthentication({...})` | clears challenge, sets session              |
+| `POST /api/auth/logout`              | `revokeSession(token)`        | clears session                              |
+
+Change the prefix with `new LocalWebAuthnBrowser({ basePath: '/auth' })`, or any
+individual path with the `endpoints` option.
+
+Three cookies are involved, all opaque, all hashed before storage, none readable by
+JavaScript: a short-lived **challenge** cookie that lives only between an `options` call
+and its `verify`, an **enrollment** cookie that lives from link exchange until the first
+passkey exists, and the **session** cookie that is the actual login.
+
+A complete adapter is about forty lines. In Hono:
+
+```ts
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
+
+const cookie = (expiresAt?: number) => ({
+  httpOnly: true,
+  secure: true,
+  sameSite: 'Strict' as const,
+  path: '/',
+  ...(expiresAt ? { maxAge: Math.ceil((expiresAt - Date.now()) / 1000) } : {}),
+});
+
+app.post('/api/auth/login/options', async (c) => {
+  const { options, challengeToken, expiresAt } = await auth.authenticationOptions();
+  setCookie(c, '__Host-challenge', challengeToken, cookie(expiresAt));
+  return c.json(options);
+});
+
+app.post('/api/auth/login/verify', async (c) => {
+  const challengeToken = getCookie(c, '__Host-challenge') ?? '';
+  deleteCookie(c, '__Host-challenge', cookie());
+  const result = await auth.verifyAuthentication({
+    response: await c.req.json(),
+    challengeToken,
+  });
+  setCookie(c, '__Host-session', result.sessionToken, cookie(result.expiresAt));
+  return c.json({ verified: true });
+});
+
+// Guard your own routes:
+app.use('/api/*', async (c, next) => {
+  const resolved = await auth.resolveSession(getCookie(c, '__Host-session') ?? '');
+  if (!resolved) return c.json({ error: 'unauthenticated' }, 401);
+  c.set('user', resolved.user);
+  await next();
+});
+```
+
+Throw a `LocalWebAuthnError` into your error mapper and it carries a `code` and an HTTP
+`status`, so failures become JSON responses without leaking why a ceremony failed.
+
+The [Hono demo adapter](examples/demo/src/auth.ts) implements all six routes, plus
+exact-origin enforcement and the enrollment flow. Your route layer owns origin checks,
+CSRF defenses, and rate limits. Production WebAuthn requires HTTPS, with a
+browser-defined exception for localhost development.
 
 ## What LocalWebAuthn Owns
 
@@ -206,7 +341,7 @@ to each application:
 | Registration and authentication challenges     | LocalWebAuthn  |
 | Credential metadata, counters, and revocation  | LocalWebAuthn  |
 | Session expiry, touch, logout, and revocation  | LocalWebAuthn  |
-| SQLite and D1 authentication schemas           | LocalWebAuthn  |
+| SQLite, PostgreSQL, and D1 schemas             | LocalWebAuthn  |
 | WebAuthn option generation and verification    | SimpleWebAuthn |
 
 This boundary is intentional. Authentication lifecycle is reusable; identity proofing and
@@ -259,7 +394,8 @@ for a population whose devices or accessibility needs you have not validated.
 ## Packages
 
 - [`@localwebauthn/server`](packages/server) provides the framework-neutral lifecycle and
-  conforming SQLite and Cloudflare D1 stores.
+  conforming SQLite, PostgreSQL, and Cloudflare D1 stores, exported from
+  `/sqlite`, `/postgres`, and `/d1`.
 - [`@localwebauthn/browser`](packages/browser) performs enrollment, registration,
   authentication, and logout through a small default HTTP protocol.
 
