@@ -1,12 +1,31 @@
 # LocalWebAuthn Lifecycle Demo
 
-This example is a complete local passkey application, not a mocked UI. It uses:
+A **simple, complete** local app that demonstrates passkey-only authentication
+and invitation-based user management — without passwords and without a third-party
+identity provider.
 
-- `@localwebauthn/server` with the SQLite adapter.
-- `@localwebauthn/browser` for browser ceremonies.
-- Hono for the small HTTP and cookie adapter.
-- One application-owned `demo_clients` table.
-- Vite for static client assets.
+It uses:
+
+- `@localwebauthn/server` with the SQLite adapter
+- `@localwebauthn/browser` for browser ceremonies
+- Hono for the HTTP and cookie adapter
+- One application-owned `demo_clients` table
+- Vite for static client assets
+
+How this positions against ceremony libraries, auth frameworks, and IdPs:
+[docs/COMPARISON.md](../../docs/COMPARISON.md).
+
+## What you should notice
+
+| Instead of…                  | This demo does…                                          |
+| ---------------------------- | -------------------------------------------------------- |
+| Password signup / login      | Passkey create + continue                                |
+| "Forgot password" email      | Administrator **Re-enroll** (revoke, then one-time link) |
+| Auth0 / Clerk / OIDC         | Auth runs in this process; users live in `demo_clients`  |
+| Self-serve open registration | Invitation URLs printed or copied by an administrator    |
+
+The application never writes LocalWebAuthn grants, challenges, credentials, or
+sessions. Those tables belong to `SqliteLocalWebAuthnStore`.
 
 ## Start
 
@@ -16,55 +35,50 @@ make demo-reset
 make demo
 ```
 
-The server prints a URL similar to:
+The server prints:
 
 ```text
 Initial administrator enrollment URL:
 http://localhost:4173/enroll#token=...
 ```
 
-Open the URL, create the administrator passkey, then use **Add client**. Open the resulting
-client URL in another browser profile or device to create that client's first passkey. Any
-signed-in client can use **Add passkey** to register another passkey without an enrollment
-link.
+1. Open that URL and create the administrator passkey.
+2. Use **Add person** to invite someone; copy the enrollment URL.
+3. Open the URL in another browser profile or device; create their passkey.
+4. While signed in, **Add passkey** registers another device (no new link).
+5. **Re-enroll** revokes their passkeys and issues a recovery link (the
+   documented recovery order).
 
-`make demo-reset` removes only the disposable database at
-`examples/demo/.data/localwebauthn-demo.db`.
+`make demo-reset` removes only `examples/demo/.data/localwebauthn-demo.db`.
 
-## Code Map
+Visiting `/` without a passkey shows sign-in help pointing at the enrollment URL
+— first credentials always come from an invitation, not from the bare homepage.
 
-- `src/database.ts` creates the one application-owned client table and invokes the package
-  SQLite migration.
-- `src/auth.ts` is the complete Hono-to-LocalWebAuthn adapter: exact-origin enforcement,
-  opaque HTTP-only cookies, and JSON mapping.
-- `src/application.ts` contains demo policy: bootstrap, administrator-only client creation,
-  enrollment issuance, and revocation.
-- `src/client.ts` uses `LocalWebAuthnBrowser`; it contains no direct WebAuthn API calls.
-- `e2e/lifecycle.spec.ts` verifies initial bootstrap, administrator enrollment, client
-  creation, client enrollment, a second passkey, logout, passkey login, and the mobile
-  layout.
+## Code map
 
-The application never writes LocalWebAuthn grants, challenges, credentials, or sessions.
-Those tables and their atomic updates belong to `SqliteLocalWebAuthnStore`.
+| File                    | Responsibility                                                |
+| ----------------------- | ------------------------------------------------------------- |
+| `src/database.ts`       | App-owned `demo_clients` + package SQLite migration           |
+| `src/auth.ts`           | Complete Hono adapter: origin check, cookies, six auth routes |
+| `src/application.ts`    | Bootstrap, invite, re-enroll, revoke, list passkeys           |
+| `src/client.ts`         | UI via `LocalWebAuthnBrowser` (no raw WebAuthn calls)         |
+| `e2e/lifecycle.spec.ts` | Playwright + Chromium virtual passkeys                        |
 
 ## Test
-
-Install Chromium for Playwright once if it is not already available:
 
 ```console
 npx playwright install chromium
 make demo-test
 ```
 
-The regular `make check` also runs the demo's API-level bootstrap and authorization tests.
+`make check` also runs API tests under `tests/application.test.ts` (bootstrap,
+admin authorization, re-enroll).
 
-## Security Boundary
+## Security boundary
 
-The example binds to `127.0.0.1`, uses HTTP only for localhost, and prints enrollment secrets
-to the terminal. It is deliberately convenient for local review and is not a production
-deployment template.
+Binds to `127.0.0.1`, HTTP for localhost, enrollment secrets on the terminal.
+Convenient for local review — **not** a production template.
 
-A production host must use an exact HTTPS origin, secure cookies, approved enrollment-link
-delivery, rate limiting, audit persistence, and an explicit recovery policy. The demo keeps
-those responsibilities visible rather than implying that a package can choose them safely
-for every application.
+Production still needs exact HTTPS origins, secure cookies, approved link
+delivery, rate limits, audit persistence, and a real recovery policy. The demo
+keeps those host duties visible rather than hiding them inside the package.

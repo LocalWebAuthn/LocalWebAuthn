@@ -66,13 +66,13 @@ test('runs the bootstrap, client enrollment, and additional-passkey lifecycle', 
   await expect(page.getByText('Demo Administrator')).toBeVisible();
   await capture(page, 'demo-enrollment.png');
   await page.getByRole('button', { name: 'Create passkey' }).click();
-  await expect(page.getByRole('heading', { name: 'Client access' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Manage access' })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Add client' }).click();
-  const dialog = page.getByRole('dialog', { name: 'Add client' });
+  await page.getByRole('button', { name: 'Add person' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Add person' });
   await dialog.getByLabel('Display name').fill('Ada Client');
-  await dialog.getByLabel('Email').fill('ada@example.test');
-  await dialog.getByRole('button', { name: 'Create client' }).click();
+  await dialog.getByLabel(/Email/u).fill('ada@example.test');
+  await dialog.getByRole('button', { name: 'Create and issue link' }).click();
 
   const enrollmentUrl = await page.getByRole('textbox', { name: 'Enrollment URL' }).inputValue();
   expect(enrollmentUrl).toMatch(/^http:\/\/localhost:4173\/enroll#token=[a-z2-7]{52}$/u);
@@ -102,7 +102,7 @@ test('runs the bootstrap, client enrollment, and additional-passkey lifecycle', 
   await capture(clientPage, 'demo-passkeys-mobile.png');
 
   await clientPage.getByRole('button', { name: 'Sign out' }).click();
-  await expect(clientPage.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+  await expect(clientPage.getByRole('heading', { name: 'Sign in with a passkey' })).toBeVisible();
   await clientPage.getByRole('button', { name: 'Continue with passkey' }).click();
   await expect(clientPage.getByRole('heading', { name: 'Your access' })).toBeVisible();
 
@@ -110,5 +110,21 @@ test('runs the bootstrap, client enrollment, and additional-passkey lifecycle', 
   expect(
     await clientPage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
   ).toBe(true);
+
+  // Admin list was loaded before Ada enrolled; reload session to see passkey counts.
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Manage access' })).toBeVisible();
+  const adaRow = page.getByRole('row').filter({ hasText: 'ada@example.test' });
+  await expect(adaRow.getByText('Enrolled')).toBeVisible();
+
+  // Recovery: revoke-then-issue (documented order) as a single admin action.
+  page.once('dialog', (dialog) => dialog.accept());
+  await adaRow.getByRole('button', { name: 'Re-enroll' }).click();
+  await expect(page.getByText('Passkeys revoked and recovery enrollment issued.')).toBeVisible();
+  const recoveryUrl = await page.getByRole('textbox', { name: 'Enrollment URL' }).inputValue();
+  expect(recoveryUrl).toMatch(/^http:\/\/localhost:4173\/enroll#token=[a-z2-7]{52}$/u);
+  expect(recoveryUrl).not.toBe(enrollmentUrl);
+  await expect(adaRow.getByText('Pending')).toBeVisible();
+
   await clientContext.close();
 });

@@ -176,4 +176,41 @@ describe('LocalWebAuthn demo application', () => {
     });
     expect(response.status).toBe(403);
   });
+
+  it('re-enrolls by revoking then issuing a recovery link', async () => {
+    const { app, database } = setup();
+    const administrator = await authenticatedClient(database, 'administrator');
+    const subject = await authenticatedClient(database, 'client');
+    const headers = {
+      Cookie: administrator.cookie,
+      Origin: publicOrigin,
+      'Content-Type': 'application/json',
+    };
+
+    const recovery = await app.request(`/api/clients/${subject.id}/re-enroll`, {
+      method: 'POST',
+      headers,
+    });
+    expect(recovery.status).toBe(200);
+    const payload = (await recovery.json()) as {
+      client: { passkeyCount: number };
+      enrollmentUrl: string;
+      expiresAt: number;
+    };
+    expect(payload.client.passkeyCount).toBe(0);
+    expect(payload.enrollmentUrl).toMatch(/^http:\/\/localhost:4173\/enroll#token=[a-z2-7]{52}$/u);
+    expect(payload.expiresAt).toBeGreaterThan(Date.now());
+
+    // Old session is dead after bulk revoke.
+    const oldSession = await app.request('/api/session', {
+      headers: { Cookie: subject.cookie, Origin: publicOrigin },
+    });
+    expect(oldSession.status).toBe(401);
+
+    const self = await app.request(`/api/clients/${administrator.id}/re-enroll`, {
+      method: 'POST',
+      headers,
+    });
+    expect(self.status).toBe(409);
+  });
 });
