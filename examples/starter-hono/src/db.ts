@@ -64,6 +64,12 @@ export function getUser(database: StarterDatabase, id: string): StarterUser | nu
   };
 }
 
+export function getUserByEmail(database: StarterDatabase, email: string): StarterUser | null {
+  const row = database.prepare(`SELECT id FROM users WHERE email = ?`).get(email) as
+    { id: string } | undefined;
+  return row ? getUser(database, row.id) : null;
+}
+
 export function ensureUser(
   database: StarterDatabase,
   input: { id: string; email: string; displayName: string },

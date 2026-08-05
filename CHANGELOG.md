@@ -18,6 +18,18 @@
   credentials required in CI).
 - **COMPARISON.md**: JS developer friction section and starter-kit roadmap.
 
+### Changed
+
+- `authCookieNames` and `cookieAttributes` now **throw** for a plain-HTTP
+  `publicOrigin` that is not loopback (`localhost`, `*.localhost`, `127.0.0.1`,
+  `[::1]`), instead of silently issuing non-`Secure` cookies. WebAuthn never
+  runs on such origins, so the value was always a misconfiguration.
+- `serializeCookie` validates the cookie name and value against RFC 6265 and
+  throws `TypeError` on characters that would corrupt or inject headers.
+- The channels worker's Miniflare suite bundles and runs the real
+  `src/index.ts` (esbuild) instead of an inline copy; the starter's
+  `/api/invite` returns 409 for an already-invited email.
+
 ## 2.1.0 - 2026-08-05
 
 ### Added

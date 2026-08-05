@@ -28,11 +28,7 @@ declare function isLocalWebAuthnError(value: unknown): value is LocalWebAuthnErr
  * so every starter (and the demo) shares one correct implementation.
  */
 type AuthCookieKind = 'challenge' | 'enrollment' | 'session';
-type AuthCookieNames = {
-    challenge: string;
-    enrollment: string;
-    session: string;
-};
+type AuthCookieNames = Record<AuthCookieKind, string>;
 /**
  * Attributes for an opaque auth cookie (challenge, enrollment, or session).
  *
@@ -65,8 +61,9 @@ declare function isHttpsPublicOrigin(publicOrigin: string): boolean;
  * Cookie names for the three opaque tokens.
  *
  * On HTTPS origins, names use the `__Host-` prefix (Secure, Path=/, no Domain).
- * On local HTTP (`http://localhost`, `http://127.0.0.1`), plain names are used
- * because browsers reject `__Host-` without `Secure`.
+ * On loopback HTTP (`http://localhost`, `http://127.0.0.1`), plain names are
+ * used because browsers reject `__Host-` without `Secure`. Any other `http://`
+ * origin throws — see {@link cookieAttributes}.
  *
  * @param namespace - Short prefix, default `lwa`. Demo uses `lwa_demo`.
  */
@@ -76,6 +73,10 @@ declare function authCookieNames(publicOrigin: string, namespace?: string): Auth
  *
  * When `expiresAt` is provided, `maxAge` is derived in whole seconds (minimum 1).
  * When omitted, no `maxAge` is set (suitable for delete/clear).
+ *
+ * Throws for a plain-HTTP `publicOrigin` that is not loopback: WebAuthn will
+ * not run there, and issuing non-`Secure` cookies for it would only hide the
+ * misconfiguration.
  */
 declare function cookieAttributes(options: CookieAttributesOptions): CookieAttributes;
 /**
@@ -87,10 +88,18 @@ declare function cookieAttributes(options: CookieAttributesOptions): CookieAttri
 declare function isExactOrigin(requestOrigin: string | null | undefined, expectedOrigin: string): boolean;
 /**
  * Parse a `Cookie` header into a name → value map (first value wins).
+ *
+ * Values are returned raw, with no percent-decoding — LocalWebAuthn tokens are
+ * URL-safe base32 and never need it. Do not use this as a general-purpose
+ * cookie parser for values a framework may have percent-encoded.
  */
 declare function parseCookieHeader(header: string | null | undefined): Record<string, string>;
 /**
  * Build a single `Set-Cookie` header value (for plain Node or undici adapters).
+ *
+ * Throws `TypeError` when `name` or `value` contains characters RFC 6265 does
+ * not allow (which would otherwise corrupt or inject headers). LocalWebAuthn
+ * tokens are URL-safe base32 and always pass.
  */
 declare function serializeCookie(name: string, value: string, attributes: CookieAttributes): string;
 /**

@@ -8,6 +8,7 @@ import { mountPasskeyAuth, requireSession, type StarterEnv } from './auth-routes
 import {
   ensureUser,
   getUser,
+  getUserByEmail,
   hasPendingEnrollment,
   openDatabase,
   setPendingEnrollment,
@@ -87,6 +88,10 @@ app.get('/api/me', requireSession(auth, config), async (c) => {
 });
 
 // Example of host-owned signup: create user + issue grant (no channel proof here).
+//
+// AUTHORIZATION IS YOURS: every signed-in session may invite here. A real
+// application must add its own role check (see the demo's `administrator`
+// middleware) and rate limiting before exposing this route.
 app.post('/api/invite', requireSession(auth, config), async (c) => {
   const body = await c.req
     .json<{ email?: string; displayName?: string }>()
@@ -95,6 +100,9 @@ app.post('/api/invite', requireSession(auth, config), async (c) => {
   const displayName = typeof body.displayName === 'string' ? body.displayName.trim() : '';
   if (!email || !displayName) {
     return c.json({ error: 'invalid_invite', message: 'email and displayName are required.' }, 400);
+  }
+  if (getUserByEmail(database, email)) {
+    return c.json({ error: 'email_exists', message: 'That email is already invited.' }, 409);
   }
   const id = randomUUID();
   ensureUser(database, { id, email, displayName });

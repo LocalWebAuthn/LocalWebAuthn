@@ -110,12 +110,10 @@ test-postgres: ensure-postgres
 coverage: ensure-postgres
 	npm run test:coverage
 
-check:
-	npm run typecheck
-	npm run lint
-	npm run format:check
-	$(MAKE) coverage
-	npm run check:packages
+# Single source of truth for the gate is package.json's `check`; this target
+# only ensures PostgreSQL is available first so coverage cannot silently skip.
+check: ensure-postgres
+	npm run check
 
 release-check:
 	npm run release:check

@@ -46,8 +46,10 @@ LocalWebAuthn relies on:
 The host application must:
 
 - Put enrollment, challenge, and session tokens in `Secure`, `HttpOnly`, `SameSite=Strict`
-  cookies using `__Host-` names under HTTPS.
-- Reject state-changing requests whose exact `Origin` is not allowlisted.
+  cookies using `__Host-` names under HTTPS — `authCookieNames` and `cookieAttributes`
+  on `@localwebauthn/server` implement exactly this; do not re-derive the flags.
+- Reject state-changing requests whose exact `Origin` is not allowlisted
+  (`isExactOrigin` implements the comparison).
 - Apply endpoint and identity-aware rate limits.
 - Deliver enrollment links through an approved confidential channel.
 - Suspend users by returning `active: false` from `getUser` — every ceremony and

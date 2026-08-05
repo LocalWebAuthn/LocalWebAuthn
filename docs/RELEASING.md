@@ -44,7 +44,10 @@ packages published from the public repository through this workflow.
 
 ## Regular Release
 
-1. Update both package versions to the same SemVer value.
+1. Update both package versions to the same SemVer value, and update the example
+   dependency pins (`examples/*/package.json` pin `@localwebauthn/*` exactly) so
+   examples copied out of the workspace install the release that actually has
+   the APIs they use.
 2. Update the changelog and migration notes.
 3. Run `npm install --package-lock-only` and `make release-check` (or `make nix-release-check`).
 4. Merge the release commit to the protected default branch.

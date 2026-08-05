@@ -633,6 +633,15 @@ lint.
 | 5   | Low      | HTTP helper polish (validation, `http://` downgrade, types)    | `packages/server/src/http.ts`    |
 | 6   | Low      | Docs and release hygiene (links, version pins, Make vs npm)    | repo-wide                        |
 
+**Status (August 2026):** #2, #5, and #6 are **done** on this branch (Miniflare
+bundles the real source; helpers reject non-loopback HTTP and validate cookie
+octets; SECURITY.md links the helpers, `make check` delegates to `npm run
+check`, RELEASING.md pins example versions at release). #4 is done except the
+`basePath` parameter (mount-order note added instead). #1 and #3 remain open:
+the worker hardening is pending a design discussion (auth token vs service
+binding, template-only sends, SMTP-vs-API), and the grant-read store API is
+2.2.0 contract work.
+
 #### 1. Channels worker must ship secure by default (high)
 
 `POST /send-sms` and `POST /send-email` accept requests from **anyone** — no

@@ -22,6 +22,9 @@ export type StarterConfig = {
 /**
  * Drop-in six-route adapter for `@localwebauthn/browser` defaults.
  * Copy this file into an application and adjust cookie namespace if needed.
+ *
+ * Call `mountPasskeyAuth` BEFORE registering your own `/api/*` routes: its
+ * origin-check middleware only protects routes registered after it.
  */
 export function mountPasskeyAuth(
   app: Hono<StarterEnv>,

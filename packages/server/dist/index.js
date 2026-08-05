@@ -86,9 +86,19 @@ function isLocalWebAuthnError(value) {
 function isHttpsPublicOrigin(publicOrigin) {
   return new URL(publicOrigin).protocol === "https:";
 }
+function isLoopbackHost(hostname) {
+  return hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "127.0.0.1" || hostname === "[::1]";
+}
+function assertSupportedPublicOrigin(publicOrigin) {
+  const url = new URL(publicOrigin);
+  if (url.protocol !== "https:" && !isLoopbackHost(url.hostname)) {
+    throw new Error(`publicOrigin must be HTTPS (or loopback for development): ${url.origin}`);
+  }
+  return url;
+}
 function authCookieNames(publicOrigin, namespace = "lwa") {
   const base = namespace.replaceAll(/[^a-z0-9_-]/giu, "") || "lwa";
-  const host = isHttpsPublicOrigin(publicOrigin);
+  const host = assertSupportedPublicOrigin(publicOrigin).protocol === "https:";
   const prefix = host ? `__Host-${base}` : base;
   return {
     challenge: `${prefix}_challenge`,
@@ -97,7 +107,7 @@ function authCookieNames(publicOrigin, namespace = "lwa") {
   };
 }
 function cookieAttributes(options) {
-  const secure = isHttpsPublicOrigin(options.publicOrigin);
+  const secure = assertSupportedPublicOrigin(options.publicOrigin).protocol === "https:";
   const attributes = {
     httpOnly: true,
     path: "/",
@@ -142,8 +152,23 @@ function parseCookieHeader(header) {
   }
   return cookies;
 }
+var COOKIE_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u;
+var COOKIE_VALUE = /^[\u0021\u0023-\u002B\u002D-\u003A\u003C-\u005B\u005D-\u007E]*$/u;
 function serializeCookie(name, value, attributes) {
-  const segments = [`${name}=${value}`, "HttpOnly", `Path=${attributes.path}`, "SameSite=Strict"];
+  if (!COOKIE_NAME.test(name)) {
+    throw new TypeError(`Invalid cookie name: ${JSON.stringify(name)}`);
+  }
+  if (!COOKIE_VALUE.test(value)) {
+    throw new TypeError("Invalid cookie value: not RFC 6265 cookie-octets.");
+  }
+  const segments = [
+    `${name}=${value}`,
+    `Path=${attributes.path}`,
+    `SameSite=${attributes.sameSite}`
+  ];
+  if (attributes.httpOnly) {
+    segments.push("HttpOnly");
+  }
   if (attributes.secure) {
     segments.push("Secure");
   }

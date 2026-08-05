@@ -62,9 +62,7 @@ function isLoopbackHost(hostname: string): boolean {
 function assertSupportedPublicOrigin(publicOrigin: string): URL {
   const url = new URL(publicOrigin);
   if (url.protocol !== 'https:' && !isLoopbackHost(url.hostname)) {
-    throw new Error(
-      `publicOrigin must be HTTPS (or loopback for development): ${url.origin}`,
-    );
+    throw new Error(`publicOrigin must be HTTPS (or loopback for development): ${url.origin}`);
   }
   return url;
 }
@@ -184,7 +182,11 @@ export function serializeCookie(name: string, value: string, attributes: CookieA
   if (!COOKIE_VALUE.test(value)) {
     throw new TypeError('Invalid cookie value: not RFC 6265 cookie-octets.');
   }
-  const segments = [`${name}=${value}`, `Path=${attributes.path}`, `SameSite=${attributes.sameSite}`];
+  const segments = [
+    `${name}=${value}`,
+    `Path=${attributes.path}`,
+    `SameSite=${attributes.sameSite}`,
+  ];
   if (attributes.httpOnly) {
     segments.push('HttpOnly');
   }
