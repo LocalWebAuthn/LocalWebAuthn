@@ -57,6 +57,27 @@ describe('HTTP cookie and origin helpers', () => {
     expect(isExactOrigin('not a url', expected)).toBe(false);
   });
 
+  it('rejects a non-loopback plain-HTTP public origin', () => {
+    expect(() => authCookieNames('http://app.internal')).toThrow(/HTTPS/u);
+    expect(() => cookieAttributes({ publicOrigin: 'http://10.0.0.5:8080' })).toThrow(/HTTPS/u);
+    // Loopback development origins remain fine.
+    expect(authCookieNames('http://127.0.0.1:4173').session).toBe('lwa_session');
+    expect(authCookieNames('http://app.localhost:4173').session).toBe('lwa_session');
+  });
+
+  it('rejects cookie names and values RFC 6265 does not allow', () => {
+    const attributes = {
+      httpOnly: true as const,
+      path: '/' as const,
+      sameSite: 'Strict' as const,
+      secure: true,
+    };
+    expect(() => serializeCookie('bad name', 'value', attributes)).toThrow(TypeError);
+    expect(() => serializeCookie('name', 'semi;colon', attributes)).toThrow(TypeError);
+    expect(() => serializeCookie('name', 'new\nline', attributes)).toThrow(TypeError);
+    expect(serializeCookie('name', 'tokenb32value', attributes)).toContain('name=tokenb32value');
+  });
+
   it('parses and serializes cookies for plain Node adapters', () => {
     expect(parseCookieHeader('a=1; b=two; a=ignored')).toEqual({ a: '1', b: 'two' });
     const set = serializeCookie('lwa_session', 'token', {
