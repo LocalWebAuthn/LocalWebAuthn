@@ -1,10 +1,24 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { fileURLToPath } from 'node:url';
 
+import { build } from 'esbuild';
 import { Miniflare } from 'miniflare';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { ChannelsEnv } from '../src/env.js';
 import worker from '../src/index.js';
+
+/** Bundle the real worker entry point so Miniflare runs the shipped source. */
+async function bundledWorkerScript(): Promise<string> {
+  const result = await build({
+    entryPoints: [fileURLToPath(new URL('../src/index.ts', import.meta.url))],
+    bundle: true,
+    format: 'esm',
+    write: false,
+    target: 'es2022',
+  });
+  return result.outputFiles[0].text;
+}
 
 const testEnv: ChannelsEnv = {
   TWILIO_ACCOUNT_SID: 'ACminiflare',
@@ -129,45 +143,10 @@ describe('channels worker (Miniflare)', () => {
     }
     mockOrigin = `http://127.0.0.1:${String(address.port)}`;
 
-    // Self-contained worker script for workerd (same public contract as src/).
-    const script = `
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
-    if (url.pathname === "/health") {
-      return Response.json({ status: "ok", service: "localwebauthn-channels-cf-worker" });
-    }
-    if (request.method === "POST" && url.pathname === "/send-sms") {
-      const body = await request.json();
-      const endpoint = env.TWILIO_API_BASE + "/2010-04-01/Accounts/" + env.TWILIO_ACCOUNT_SID + "/Messages.json";
-      const payload = new URLSearchParams({ To: body.to, From: env.TWILIO_PHONE_NUMBER, Body: body.body });
-      const auth = btoa(env.TWILIO_ACCOUNT_SID + ":" + env.TWILIO_AUTH_TOKEN);
-      return fetch(endpoint, {
-        method: "POST",
-        headers: { Authorization: "Basic " + auth, "Content-Type": "application/x-www-form-urlencoded" },
-        body: payload,
-      });
-    }
-    if (request.method === "POST" && url.pathname === "/send-email") {
-      const body = await request.json();
-      return fetch(env.RESEND_API_BASE + "/emails", {
-        method: "POST",
-        headers: {
-          Authorization: "Bearer " + env.RESEND_API_KEY,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ from: env.RESEND_FROM, to: [body.to], subject: body.subject, html: body.html }),
-      });
-    }
-    return Response.json({ error: "not_found" }, { status: 404 });
-  }
-};
-`;
-
     miniflare = new Miniflare({
       compatibilityDate: '2025-01-01',
       modules: true,
-      script,
+      script: await bundledWorkerScript(),
       bindings: {
         TWILIO_ACCOUNT_SID: testEnv.TWILIO_ACCOUNT_SID,
         TWILIO_AUTH_TOKEN: testEnv.TWILIO_AUTH_TOKEN,

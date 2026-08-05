@@ -54,7 +54,7 @@ Tests cover:
 
 1. Provider helpers with a mock `fetch` (correct URLs, Basic/Bearer auth, bodies).
 2. Worker routing in-process.
-3. **Miniflare** dispatch of `/send-sms` and `/send-email` against a local mock HTTP origin.
+3. **Miniflare** dispatch of the **bundled `src/` worker** (esbuild, built in the test) against a local mock HTTP origin — the shipped source, not a copy.
 
 ## Deploy (sketch)
 
