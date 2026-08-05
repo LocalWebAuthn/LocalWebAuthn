@@ -21,6 +21,7 @@ How this positions against ceremony libraries, auth frameworks, and IdPs:
 | ---------------------------- | -------------------------------------------------------- |
 | Password signup / login      | Passkey create + continue                                |
 | "Forgot password" email      | Administrator **Re-enroll** (revoke, then one-time link) |
+| "Stolen laptop" panic reset  | **Sign out everywhere** — sessions end, passkeys survive |
 | Auth0 / Clerk / OIDC         | Auth runs in this process; users live in `demo_clients`  |
 | Self-serve open registration | Invitation URLs printed or copied by an administrator    |
 
@@ -46,7 +47,10 @@ http://localhost:4173/enroll#token=...
 2. Use **Add person** to invite someone; copy the enrollment URL.
 3. Open the URL in another browser profile or device; create their passkey.
 4. While signed in, **Add passkey** registers another device (no new link).
-5. **Re-enroll** revokes their passkeys and issues a recovery link (the
+5. **Sign out other devices** (your account) and the per-person **Sign out**
+   action end sessions only — passkeys stay valid and the person just signs in
+   again. Use these when a session, not a credential, is the problem.
+6. **Re-enroll** revokes their passkeys and issues a recovery link (the
    documented recovery order).
 
 `make demo-reset` removes only `examples/demo/.data/localwebauthn-demo.db`.
@@ -60,7 +64,7 @@ Visiting `/` without a passkey shows sign-in help pointing at the enrollment URL
 | ----------------------- | ------------------------------------------------------------- |
 | `src/database.ts`       | App-owned `demo_clients` + package SQLite migration           |
 | `src/auth.ts`           | Complete Hono adapter: origin check, cookies, six auth routes |
-| `src/application.ts`    | Bootstrap, invite, re-enroll, revoke, list passkeys           |
+| `src/application.ts`    | Bootstrap, invite, re-enroll, revoke, session sign-out        |
 | `src/client.ts`         | UI via `LocalWebAuthnBrowser` (no raw WebAuthn calls)         |
 | `e2e/lifecycle.spec.ts` | Playwright + Chromium virtual passkeys                        |
 

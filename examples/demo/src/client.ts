@@ -8,6 +8,7 @@ import {
   Link,
   LockKeyhole,
   LogOut,
+  MonitorOff,
   RefreshCw,
   ShieldCheck,
   Trash2,
@@ -223,6 +224,9 @@ function clientRows(): string {
                          ${iconMarkup('refresh-cw', 16)}
                          Re-enroll
                        </button>
+                       <button class="icon-button sign-out-client" data-client-id="${escapeHtml(client.id)}" data-client-name="${escapeHtml(client.displayName)}" title="End every session; passkeys stay valid" aria-label="Sign out ${escapeHtml(client.displayName)} everywhere" type="button">
+                         ${iconMarkup('monitor-off', 17)}
+                       </button>
                        <button class="icon-button danger revoke-client" data-client-id="${escapeHtml(client.id)}" title="Revoke all passkeys without issuing a new link" aria-label="Revoke authentication for ${escapeHtml(client.displayName)}" type="button">
                          ${iconMarkup('trash-2', 17)}
                        </button>`
@@ -284,10 +288,16 @@ function passkeysSection(): string {
           <h2 id="passkeys-title">Passkeys</h2>
           <p class="section-help">Add a second device or security key while signed in — no enrollment link required. Keep at least one passkey so you are not locked out.</p>
         </div>
-        <button class="button secondary" id="add-passkey" type="button" ${state.busy ? 'disabled' : ''}>
-          ${iconMarkup('circle-plus')}
-          Add passkey
-        </button>
+        <div class="heading-actions">
+          <button class="button quiet" id="sign-out-others" type="button" ${state.busy ? 'disabled' : ''} title="End your sessions on every other device; this one stays signed in">
+            ${iconMarkup('monitor-off')}
+            Sign out other devices
+          </button>
+          <button class="button secondary" id="add-passkey" type="button" ${state.busy ? 'disabled' : ''}>
+            ${iconMarkup('circle-plus')}
+            Add passkey
+          </button>
+        </div>
       </div>
       <div class="passkey-grid">
         ${passkeys
@@ -406,6 +416,7 @@ function render(): void {
       Link,
       LockKeyhole,
       LogOut,
+      MonitorOff,
       RefreshCw,
       ShieldCheck,
       Trash2,
@@ -469,6 +480,17 @@ function bindEvents(): void {
       await auth.registerPasskey('Additional passkey');
       await refreshSession();
       state.notice = 'Additional passkey registered.';
+    });
+  });
+  document.querySelector('#sign-out-others')?.addEventListener('click', () => {
+    void perform(async () => {
+      const result = await request<{ revokedSessions: number }>('/api/session/revoke-others', {
+        method: 'POST',
+      });
+      state.notice =
+        result.revokedSessions === 0
+          ? 'No other sessions to sign out.'
+          : `Signed out ${String(result.revokedSessions)} other ${result.revokedSessions === 1 ? 'session' : 'sessions'}. Your passkeys are unchanged.`;
     });
   });
 
@@ -544,6 +566,19 @@ function bindEvents(): void {
           kind: 'recovery',
         };
         state.notice = 'Passkeys revoked and recovery enrollment issued.';
+      });
+    });
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('.sign-out-client')) {
+    button.addEventListener('click', () => {
+      const name = button.dataset.clientName ?? 'this person';
+      void perform(async () => {
+        const result = await request<{ revokedSessions: number }>(
+          `/api/clients/${encodeURIComponent(button.dataset.clientId ?? '')}/revoke-sessions`,
+          { method: 'POST' },
+        );
+        await refreshSession();
+        state.notice = `Ended ${String(result.revokedSessions)} ${result.revokedSessions === 1 ? 'session' : 'sessions'} for ${name}. Passkeys remain valid — no re-enrollment needed.`;
       });
     });
   }

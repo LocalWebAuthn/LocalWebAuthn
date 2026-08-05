@@ -47,7 +47,7 @@ Administrator enrollment:
 
 ![Administrator enrollment](docs/images/demo-enrollment.png)
 
-Client creation, enrollment, passkey counts, and revocation:
+Client creation, enrollment, passkey counts, session sign-out, and revocation:
 
 ![Client and enrollment management](docs/images/demo-administration.png)
 

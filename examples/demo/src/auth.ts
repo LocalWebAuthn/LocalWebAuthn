@@ -130,6 +130,14 @@ export function requireExpectedOrigin(config: DemoAuthConfig): MiddlewareHandler
   };
 }
 
+/**
+ * Raw session token from the request cookie, for routes that act on the
+ * caller's own session (e.g. "sign out my other devices").
+ */
+export function currentSessionToken(context: Context<DemoEnvironment>): string | undefined {
+  return getCookie(context, SESSION_COOKIE);
+}
+
 export function requireAuthentication(
   authentication: DemoAuthentication,
 ): MiddlewareHandler<DemoEnvironment> {

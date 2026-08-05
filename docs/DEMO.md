@@ -28,8 +28,8 @@ The command resets its isolated database and replaces:
 - `docs/images/demo-passkeys-mobile.png`
 
 Enrollment fragments are consumed before Playwright captures a page. The administration
-screenshot dismisses the newly issued client link first, so committed screenshots contain
-no live bearer tokens.
+screenshot is taken after the issued link is dismissed and the client has enrolled, so
+committed screenshots contain no live bearer tokens.
 
 ## Recreate The Terminal Recording
 
