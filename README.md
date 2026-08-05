@@ -125,6 +125,7 @@ CSRF, and authorization are unchanged. Three things are different.
 | "Forgot password" email with a reset token  | `auth.issueEnrollment(userId)` returns a one-time URL                |
 | `req.session.userId = user.id`              | `auth.resolveSession(sessionToken)` returns the user                 |
 | `req.session.destroy()`                     | `auth.revokeSession(sessionToken)`                                   |
+| "Sign out other devices"                    | `auth.revokeUserSessions(userId, { exceptSessionToken })`            |
 | Force a reset after a leak                  | `auth.revokeCredential(...)` or `auth.revokeUserAuthentication(...)` |
 | Bolt on TOTP for a second factor            | `userVerification: 'required'`; the authenticator does it            |
 
@@ -208,6 +209,14 @@ const auth = new LocalWebAuthn({
   },
 });
 ```
+
+`getUser` returning `active: false` is the supported way to suspend a user. Every
+ceremony — issuing and exchanging enrollment links, registration, authentication — and
+every session resolution refuses an inactive user immediately, without revoking
+anything; flip `active` back and their passkeys work again. When suspending, also call
+`revokeUserSessions(userId)` if you want the outstanding session records ended rather
+than merely unusable, and `revokeUserAuthentication(userId)` only when the passkeys
+themselves must go (the user then needs a fresh enrollment).
 
 PostgreSQL and Cloudflare D1 are drop-in replacements for the `store` option. Pass a
 `pg.Pool` rather than a single client, so transactions get a connection to themselves:

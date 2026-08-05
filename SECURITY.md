@@ -50,7 +50,9 @@ The host application must:
 - Reject state-changing requests whose exact `Origin` is not allowlisted.
 - Apply endpoint and identity-aware rate limits.
 - Deliver enrollment links through an approved confidential channel.
-- Revoke LocalWebAuthn state whenever a user is deactivated.
+- Suspend users by returning `active: false` from `getUser` — every ceremony and
+  session resolution refuses an inactive user — and use `revokeUserSessions` (sessions
+  only) or `revokeUserAuthentication` (credentials too) to revoke their stored state.
 - Require a fresh passkey assertion for recovery and sensitive credential changes.
 - Persist and monitor structured authentication audit events.
 

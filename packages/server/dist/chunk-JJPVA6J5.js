@@ -190,6 +190,35 @@ var SQL = {
     UPDATE localwebauthn_sessions
     SET revoked_at = ?
     WHERE credential_id = ? AND revoked_at IS NULL`,
+  /**
+   * Revoke every live session for a user, leaving credentials and grants
+   * untouched. "Live" mirrors selectSession's predicates (not revoked, not past
+   * absolute expiry, not idle-expired), so the row count reports sessions that
+   * could still have resolved — not stale rows awaiting cleanup.
+   *
+   * Binds: now, userId, now, idleExpiresBefore.
+   */
+  revokeLiveUserSessions: `
+    UPDATE localwebauthn_sessions
+    SET revoked_at = ?
+    WHERE user_id = ?
+      AND revoked_at IS NULL
+      AND expires_at > ?
+      AND last_seen_at > ?`,
+  /**
+   * As {@link SQL.revokeLiveUserSessions}, sparing one session — the caller's
+   * own, for "sign out everywhere else".
+   *
+   * Binds: now, userId, now, idleExpiresBefore, exceptIdHash.
+   */
+  revokeLiveUserSessionsExcept: `
+    UPDATE localwebauthn_sessions
+    SET revoked_at = ?
+    WHERE user_id = ?
+      AND revoked_at IS NULL
+      AND expires_at > ?
+      AND last_seen_at > ?
+      AND id_hash <> ?`,
   revokeUserSessions: `
     UPDATE localwebauthn_sessions
     SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`,

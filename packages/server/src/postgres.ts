@@ -293,6 +293,24 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
     return row ? { userId: row.user_id, credentialId: row.credential_id } : null;
   }
 
+  async revokeUserSessions(
+    userId: string,
+    now: number,
+    idleExpiresBefore: number,
+    exceptSessionHash?: Uint8Array,
+  ): Promise<number> {
+    const result = exceptSessionHash
+      ? await this.#pool.query(PG.revokeLiveUserSessionsExcept, [
+          now,
+          userId,
+          now,
+          idleExpiresBefore,
+          exceptSessionHash,
+        ])
+      : await this.#pool.query(PG.revokeLiveUserSessions, [now, userId, now, idleExpiresBefore]);
+    return result.rowCount ?? 0;
+  }
+
   async revokeCredential(
     userId: string,
     credentialId: string,

@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `revokeUserSessions(userId, { exceptSessionToken? })` on `LocalWebAuthn`:
+  end every live session for a user without revoking credentials or enrollment
+  grants — "sign out everywhere", or "sign out my other devices" when the
+  caller's own token is excepted. Emits a new `user.sessions_revoked` audit
+  event and returns the revoked count. (#1)
+- **Custom store implementers:** the `LocalWebAuthnStore` contract gains a
+  required method
+  `revokeUserSessions(userId, now, idleExpiresBefore, exceptSessionHash?)`.
+  The official SQLite, PostgreSQL, and D1 adapters implement it (single
+  conditional `UPDATE`; no transaction required).
+- `issueEnrollment` now returns `supersededGrantIds`, the pending grants it
+  revoked by superseding them, so hosts can record the replacement durably from
+  the return value; the `enrollment.revoked` events remain best-effort
+  observability. (#3)
+
+### Documentation
+
+- Every method that refuses an inactive user (`getUser` returning
+  `active: false`) now says so: `issueEnrollment`, `exchangeEnrollment`,
+  `registrationOptions`, `verifyRegistration`, `verifyAuthentication`, and
+  `resolveSession`. README and SECURITY.md state that `active: false` is the
+  supported suspension switch. (#2)
+
 ## 2.0.0 - 2026-08-04
 
 Major release. Upgrading from 1.0.0 or 1.1.0 is strongly recommended: those
