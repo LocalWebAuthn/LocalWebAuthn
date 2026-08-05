@@ -187,9 +187,8 @@ export function serializeCookie(name: string, value: string, attributes: CookieA
     `Path=${attributes.path}`,
     `SameSite=${attributes.sameSite}`,
   ];
-  if (attributes.httpOnly) {
-    segments.push('HttpOnly');
-  }
+  // CookieAttributes pins httpOnly to `true`; widen the type before changing this.
+  segments.push('HttpOnly');
   if (attributes.secure) {
     segments.push('Secure');
   }
