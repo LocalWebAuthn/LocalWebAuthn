@@ -23,7 +23,7 @@ Your application keeps its users and authorization. It does not keep passwords, 
 hashes, password reset tokens, TOTP seeds, or recovery codes. It stores public keys and
 hashed opaque tokens instead, and no database value can be replayed as a passkey.
 
-LocalWebAuthn is `2.0.0`. The service API, store interface, and database schema follow
+LocalWebAuthn is `2.1.0`. The service API, store interface, and database schema follow
 SemVer: breaking changes arrive only in a new major version, with upgrade notes in
 [docs/MIGRATING.md](docs/MIGRATING.md).
 

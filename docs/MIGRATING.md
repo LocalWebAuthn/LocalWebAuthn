@@ -1,5 +1,36 @@
 # Migrating LocalWebAuthn
 
+## 2.0.0 → 2.1.0
+
+No changes are required for applications using the official SQLite, PostgreSQL,
+or D1 adapters and the `LocalWebAuthn` service API.
+
+**Custom `LocalWebAuthnStore` implementations** must add one method:
+
+```ts
+revokeUserSessions(
+  userId: string,
+  now: number,
+  idleExpiresBefore: number,
+  exceptSessionHash?: Uint8Array,
+): Promise<number>;
+```
+
+Revoke every live session for the user — not revoked, `expires_at > now`,
+`last_seen_at > idleExpiresBefore` (the same predicates `resolveSession`
+applies) — skip the session whose token hash equals `exceptSessionHash` when
+given, and return the number of sessions revoked. A single conditional `UPDATE`
+suffices; no transaction is required. The store conformance suite pins the
+required behavior.
+
+**Exhaustive `LocalWebAuthnEvent` switches** gain one new member:
+`user.sessions_revoked` (`{ at, userId, count }`), emitted by the new
+`revokeUserSessions` service method.
+
+`issueEnrollment` now also returns `supersededGrantIds`. Nothing to change,
+but hosts that recorded grant replacement from the best-effort
+`enrollment.revoked` event can now record it durably from the return value.
+
 ## 1.1.0 → 2.0.0
 
 ### Security fix: no credential cleanup
