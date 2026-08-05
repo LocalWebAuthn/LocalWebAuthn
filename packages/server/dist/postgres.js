@@ -6,7 +6,7 @@ import {
   enrollmentSessionFromRow,
   sessionFromRow,
   toPositionalPlaceholders
-} from "./chunk-CNGBEFAA.js";
+} from "./chunk-JJPVA6J5.js";
 import {
   LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL,
   LOCALWEBAUTHN_SCHEMA_VERSION
@@ -188,6 +188,16 @@ var PostgresLocalWebAuthnStore = class {
     );
     const row = result.rows.at(0);
     return row ? { userId: row.user_id, credentialId: row.credential_id } : null;
+  }
+  async revokeUserSessions(userId, now, idleExpiresBefore, exceptSessionHash) {
+    const result = exceptSessionHash ? await this.#pool.query(PG.revokeLiveUserSessionsExcept, [
+      now,
+      userId,
+      now,
+      idleExpiresBefore,
+      exceptSessionHash
+    ]) : await this.#pool.query(PG.revokeLiveUserSessions, [now, userId, now, idleExpiresBefore]);
+    return result.rowCount ?? 0;
   }
   async revokeCredential(userId, credentialId, now, options = {}) {
     return this.#transaction(async (tx) => {

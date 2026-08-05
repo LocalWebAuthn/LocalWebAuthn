@@ -111,12 +111,19 @@ export class LocalWebAuthn {
    * Issue a single-use enrollment grant for a user.
    *
    * If the user already has a pending (uncompleted) enrollment grant, it is
-   * implicitly revoked and an {@link LocalWebAuthnEvent.enrollment.revoked | `enrollment.revoked`}
-   * audit event is emitted for the prior grant.
+   * revoked in the same operation. The revoked IDs are returned as
+   * `supersededGrantIds` so the host can record the replacement durably from
+   * the return value; an `enrollment.revoked` event is also emitted per prior
+   * grant, but events are best-effort and must not be the only record.
+   *
+   * Throws `invalid_enrollment` (404) if the user is unknown or **inactive** —
+   * the `getUser` provider returned `null`, `active: false`, or a
+   * `webAuthnUserHandle` that is not 32 bytes.
    *
    * @param userId - The application user ID to enroll.
    * @param approvedByUserId - Optional ID of the administrator who approved this enrollment.
-   * @returns The enrollment URL (with `#token=` fragment), raw token, and expiry.
+   * @returns The enrollment URL (with `#token=` fragment), raw token, expiry,
+   *   and the IDs of any grants this issue superseded.
    */
   async issueEnrollment(userId: string, approvedByUserId?: string): Promise<EnrollmentIssue> {
     const user = await this.#activeUser(userId);
@@ -158,6 +165,7 @@ export class LocalWebAuthn {
       enrollmentToken,
       enrollmentUrl: enrollmentUrl.toString(),
       expiresAt,
+      supersededGrantIds: revokedGrantIds,
     };
   }
 
@@ -167,6 +175,12 @@ export class LocalWebAuthn {
    * The token is single-use — subsequent exchanges with the same token will fail.
    * The returned `enrollmentSessionToken` must be stored in an HTTP-only cookie
    * and passed to {@link registrationOptions} and {@link verifyRegistration}.
+   *
+   * Throws `invalid_enrollment` (400) for a malformed token, and
+   * `invalid_enrollment` (403) when the token is unknown, expired, already
+   * exchanged, revoked — or when the user is **inactive** as reported by the
+   * `getUser` provider, so deactivating a user refuses their outstanding
+   * enrollment links.
    *
    * @param enrollmentToken - The raw token from the enrollment URL fragment.
    * @returns The enrollment session and public user identity.
@@ -208,6 +222,18 @@ export class LocalWebAuthn {
     };
   }
 
+  /**
+   * Create passkey-creation options bound to a registration authorization.
+   *
+   * Authorization is exactly one of: an exchanged enrollment session (the
+   * user's first passkey) or an authenticated session (an additional passkey).
+   * The returned single-use `challengeToken` must come back through
+   * {@link verifyRegistration}, typically via an HTTP-only cookie.
+   *
+   * Throws `enrollment_not_authorized` (403) when neither authorization is
+   * valid — including when the user is **inactive** as reported by the
+   * `getUser` provider.
+   */
   async registrationOptions(input: {
     enrollmentSessionToken?: string;
     sessionToken?: string;
@@ -255,6 +281,20 @@ export class LocalWebAuthn {
     return { options, challengeToken, expiresAt };
   }
 
+  /**
+   * Verify a registration response, store the credential, and open a session.
+   *
+   * The challenge is consumed exactly once, the registration authorization is
+   * re-checked, and the store commits credential + grant completion + initial
+   * session atomically (see the D1 caveat in SECURITY.md).
+   *
+   * Throws `invalid_ceremony` (400) for an unknown, expired, or replayed
+   * challenge; `enrollment_not_authorized` (403) when the enrollment or
+   * authenticated session no longer authorizes this challenge — including when
+   * the user is **inactive** as reported by the `getUser` provider; and
+   * `registration_failed` (400, or 409 when authorization was lost at commit
+   * time) when the WebAuthn response does not verify.
+   */
   async verifyRegistration(
     input: RegistrationVerificationInput,
   ): Promise<RegistrationVerificationResult> {
@@ -366,6 +406,13 @@ export class LocalWebAuthn {
     return { verified: true, sessionToken, expiresAt, credentialId: credential.id };
   }
 
+  /**
+   * Create discoverable-credential authentication options with
+   * `userVerification: 'required'` and a single-use challenge token.
+   *
+   * No user is identified at this point; the authenticator chooses the
+   * credential and {@link verifyAuthentication} resolves and checks the user.
+   */
   async authenticationOptions(): Promise<AuthenticationOptionsResult> {
     const options = await this.#ceremonies.generateAuthenticationOptions({
       rpID: this.config.rpId,
@@ -395,6 +442,18 @@ export class LocalWebAuthn {
     return { options, challengeToken, expiresAt };
   }
 
+  /**
+   * Verify an authentication assertion and create a session.
+   *
+   * Throws `invalid_ceremony` (400) for an unknown, expired, or replayed
+   * challenge. Throws `authentication_failed` (401) when the credential is
+   * unknown or revoked, the response's user handle does not match, the
+   * signature does not verify, the signature counter does not advance — or the
+   * user is **inactive** as reported by the `getUser` provider, so a
+   * deactivated user is refused at the ceremony itself, not just at session
+   * resolution. Throws `authentication_failed` (409) when the credential
+   * changed concurrently (counter compare-and-swap lost).
+   */
   async verifyAuthentication(
     input: AuthenticationVerificationInput,
   ): Promise<AuthenticationVerificationResult> {
@@ -546,6 +605,12 @@ export class LocalWebAuthn {
     return { user, session: { ...session, lastSeenAt: touch ? now : session.lastSeenAt } };
   }
 
+  /**
+   * Revoke a single session by its raw token (logout).
+   *
+   * @returns `true` if a live session was revoked, `false` if the token was
+   *   unknown or already revoked.
+   */
   async revokeSession(sessionToken: string): Promise<boolean> {
     const now = this.#now();
     const revoked = await this.#store.revokeSession(await sha256(sessionToken), now);
@@ -560,6 +625,45 @@ export class LocalWebAuthn {
     return revoked !== null;
   }
 
+  /**
+   * Revoke every live session for a user — "sign out everywhere" — without
+   * touching credentials or enrollment grants.
+   *
+   * Use it when a session (not a passkey) is the problem: a suspected stolen
+   * cookie, a self-service "sign out my other devices" control, or hygiene
+   * when suspending a user. Deactivating a user (`getUser` returning
+   * `active: false`) already blocks every ceremony and session resolution
+   * immediately; this method additionally ends the session records themselves.
+   * To revoke the passkeys too, use {@link revokeUserAuthentication}.
+   *
+   * Pass the caller's own cookie token as `exceptSessionToken` to spare it
+   * ("sign out everywhere else"). Omit it to revoke every session, including
+   * the caller's own — appropriate when the current machine may itself be
+   * suspect. Emits a `user.sessions_revoked` event when at least one session
+   * was revoked.
+   *
+   * @param userId - The application user whose sessions end.
+   * @param options.exceptSessionToken - Raw session token to leave live.
+   * @returns The number of live sessions revoked.
+   */
+  async revokeUserSessions(
+    userId: string,
+    options: { exceptSessionToken?: string } = {},
+  ): Promise<number> {
+    const now = this.#now();
+    const count = await this.#store.revokeUserSessions(
+      userId,
+      now,
+      now - this.config.durations.sessionIdleMs,
+      options.exceptSessionToken ? await sha256(options.exceptSessionToken) : undefined,
+    );
+    if (count > 0) {
+      await this.#emit({ type: 'user.sessions_revoked', at: now, userId, count });
+    }
+    return count;
+  }
+
+  /** List a user's credentials; revoked ones only when `includeRevoked` is `true`. */
   listCredentials(userId: string, includeRevoked = false): Promise<Credential[]> {
     return this.#store.listCredentials(userId, includeRevoked);
   }
@@ -602,12 +706,25 @@ export class LocalWebAuthn {
     return false;
   }
 
+  /**
+   * Revoke all of a user's credentials, sessions, pending enrollment grants,
+   * and unconsumed challenges — the recovery reset.
+   *
+   * The user must re-enroll through a fresh {@link issueEnrollment} to sign in
+   * again. To end sessions while keeping passkeys, use
+   * {@link revokeUserSessions} instead.
+   */
   async revokeUserAuthentication(userId: string): Promise<void> {
     const now = this.#now();
     await this.#store.revokeUserAuthentication(userId, now);
     await this.#emit({ type: 'user.authentication_revoked', at: now, userId });
   }
 
+  /**
+   * Reap expired enrollment grants, finished challenges, and dead sessions.
+   * Schedule periodically (every few minutes is ample); credentials are never
+   * part of cleanup.
+   */
   cleanup() {
     return this.#store.cleanup(this.#now());
   }

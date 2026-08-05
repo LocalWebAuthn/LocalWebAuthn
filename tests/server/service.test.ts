@@ -214,6 +214,129 @@ describe('LocalWebAuthn lifecycle', () => {
     database.close();
   });
 
+  it('reports superseded grants from issueEnrollment for durable host audit', async () => {
+    const first = await auth.issueEnrollment(user.id);
+    expect(first.supersededGrantIds).toEqual([]);
+
+    const second = await auth.issueEnrollment(user.id);
+    expect(second.supersededGrantIds).toEqual([first.grantId]);
+    // The best-effort event names the same grant the return value reports.
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'enrollment.revoked', grantId: first.grantId }),
+    );
+    database.close();
+  });
+
+  it('refuses enrollment exchange and registration for a user deactivated mid-flow', async () => {
+    const issue = await auth.issueEnrollment(user.id);
+    user.active = false;
+    await expect(auth.exchangeEnrollment(issue.enrollmentToken)).rejects.toEqual(
+      expect.objectContaining<Partial<LocalWebAuthnError>>({
+        code: 'invalid_enrollment',
+        status: 403,
+      }),
+    );
+
+    user.active = true;
+    const secondIssue = await auth.issueEnrollment(user.id);
+    const exchange = await auth.exchangeEnrollment(secondIssue.enrollmentToken);
+    const registration = await auth.registrationOptions({
+      enrollmentSessionToken: exchange.enrollmentSessionToken,
+    });
+    user.active = false;
+    await expect(
+      auth.verifyRegistration({
+        response: registrationResponse(),
+        challengeToken: registration.challengeToken,
+        enrollmentSessionToken: exchange.enrollmentSessionToken,
+      }),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<LocalWebAuthnError>>({
+        code: 'enrollment_not_authorized',
+        status: 403,
+      }),
+    );
+    await expect(auth.listCredentials(user.id)).resolves.toHaveLength(0);
+    database.close();
+  });
+
+  it('refuses authentication and session use for a deactivated user with a valid passkey', async () => {
+    const issue = await auth.issueEnrollment(user.id);
+    const exchange = await auth.exchangeEnrollment(issue.enrollmentToken);
+    const registration = await auth.registrationOptions({
+      enrollmentSessionToken: exchange.enrollmentSessionToken,
+    });
+    const registered = await auth.verifyRegistration({
+      response: registrationResponse(),
+      challengeToken: registration.challengeToken,
+      enrollmentSessionToken: exchange.enrollmentSessionToken,
+    });
+    const authentication = await auth.authenticationOptions();
+    user.active = false;
+
+    // The ceremony refuses; the credential is not confirmed as working.
+    await expect(
+      auth.verifyAuthentication({
+        response: authenticationResponse(user.webAuthnUserHandle),
+        challengeToken: authentication.challengeToken,
+      }),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<LocalWebAuthnError>>({
+        code: 'authentication_failed',
+        status: 401,
+      }),
+    );
+    // Existing sessions stop resolving and cannot authorize more passkeys.
+    await expect(auth.resolveSession(registered.sessionToken)).resolves.toBeNull();
+    await expect(
+      auth.registrationOptions({ sessionToken: registered.sessionToken }),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<LocalWebAuthnError>>({
+        code: 'enrollment_not_authorized',
+        status: 403,
+      }),
+    );
+    database.close();
+  });
+
+  it('revokes all user sessions without touching credentials, sparing an excepted one', async () => {
+    const issue = await auth.issueEnrollment(user.id);
+    const exchange = await auth.exchangeEnrollment(issue.enrollmentToken);
+    const registration = await auth.registrationOptions({
+      enrollmentSessionToken: exchange.enrollmentSessionToken,
+    });
+    const registered = await auth.verifyRegistration({
+      response: registrationResponse(),
+      challengeToken: registration.challengeToken,
+      enrollmentSessionToken: exchange.enrollmentSessionToken,
+    });
+    const authentication = await auth.authenticationOptions();
+    const authenticated = await auth.verifyAuthentication({
+      response: authenticationResponse(user.webAuthnUserHandle),
+      challengeToken: authentication.challengeToken,
+    });
+
+    // "Sign out everywhere else": the excepted session survives.
+    await expect(
+      auth.revokeUserSessions(user.id, { exceptSessionToken: authenticated.sessionToken }),
+    ).resolves.toBe(1);
+    await expect(auth.resolveSession(registered.sessionToken)).resolves.toBeNull();
+    await expect(auth.resolveSession(authenticated.sessionToken)).resolves.not.toBeNull();
+
+    // "Sign out everywhere": no exception, and calling again finds nothing.
+    await expect(auth.revokeUserSessions(user.id)).resolves.toBe(1);
+    await expect(auth.resolveSession(authenticated.sessionToken)).resolves.toBeNull();
+    await expect(auth.revokeUserSessions(user.id)).resolves.toBe(0);
+
+    // Credentials and pending grants are untouched; only sessions ended.
+    await expect(auth.listCredentials(user.id)).resolves.toHaveLength(1);
+    expect(events.filter((event) => event.type === 'user.sessions_revoked')).toEqual([
+      expect.objectContaining({ userId: user.id, count: 1 }),
+      expect.objectContaining({ userId: user.id, count: 1 }),
+    ]);
+    database.close();
+  });
+
   it('rejects a ceremony after its enrollment grant is replaced', async () => {
     const firstIssue = await auth.issueEnrollment(user.id);
     const firstExchange = await auth.exchangeEnrollment(firstIssue.enrollmentToken);

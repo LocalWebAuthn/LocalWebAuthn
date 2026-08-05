@@ -1,4 +1,4 @@
-import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, g as RevokeCredentialResult, h as CleanupResult } from './types-sZ3WVqGy.js';
+import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, g as RevokeCredentialResult, h as CleanupResult } from './types-CDh1Rr6m.js';
 import '@simplewebauthn/server';
 
 type D1ResultLike<Row = Record<string, unknown>> = {
@@ -50,6 +50,7 @@ declare class D1LocalWebAuthnStore implements LocalWebAuthnStore {
     resolveSession(idHash: Uint8Array, now: number, idleExpiresBefore: number): Promise<SessionIdentity | null>;
     touchSession(idHash: Uint8Array, now: number): Promise<boolean>;
     revokeSession(idHash: Uint8Array, now: number): Promise<RevokedSession | null>;
+    revokeUserSessions(userId: string, now: number, idleExpiresBefore: number, exceptSessionHash?: Uint8Array): Promise<number>;
     revokeCredential(userId: string, credentialId: string, now: number, options?: {
         allowLastCredential?: boolean;
     }): Promise<RevokeCredentialResult>;

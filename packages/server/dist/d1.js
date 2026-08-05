@@ -5,7 +5,7 @@ import {
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-CNGBEFAA.js";
+} from "./chunk-JJPVA6J5.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnSchemaStatements
@@ -154,6 +154,10 @@ var D1LocalWebAuthnStore = class {
       this.#database.prepare(SQL.revokeSession).bind(now, idHash)
     );
     return row ? { userId: row.user_id, credentialId: row.credential_id } : null;
+  }
+  async revokeUserSessions(userId, now, idleExpiresBefore, exceptSessionHash) {
+    const statement = exceptSessionHash ? this.#database.prepare(SQL.revokeLiveUserSessionsExcept).bind(now, userId, now, idleExpiresBefore, exceptSessionHash) : this.#database.prepare(SQL.revokeLiveUserSessions).bind(now, userId, now, idleExpiresBefore);
+    return changes(await statement.run());
   }
   async revokeCredential(userId, credentialId, now, options = {}) {
     const allowLast = options.allowLastCredential ? 1 : 0;

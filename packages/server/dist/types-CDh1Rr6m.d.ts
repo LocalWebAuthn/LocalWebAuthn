@@ -170,7 +170,8 @@ type RevokedSession = {
  *
  * **Authentication flow:** {@link getCredential} / (challenge) → {@link completeAuthentication}.
  *
- * **Session management:** {@link resolveSession} → {@link touchSession} → {@link revokeSession}.
+ * **Session management:** {@link resolveSession} → {@link touchSession} →
+ * {@link revokeSession} / {@link revokeUserSessions}.
  *
  * **Maintenance:** {@link cleanup} removes expired grants, challenges, and
  * sessions.
@@ -246,6 +247,18 @@ type LocalWebAuthnStore = {
      */
     revokeSession(idHash: Uint8Array, now: number): Promise<RevokedSession | null>;
     /**
+     * Revoke every live session for a user, leaving credentials and enrollment
+     * grants untouched.
+     *
+     * A session is live when it is not revoked, not past its absolute expiry at
+     * `now`, and its `lastSeenAt` is after `idleExpiresBefore` — the same
+     * predicates {@link resolveSession} applies. When `exceptSessionHash` is
+     * given, the matching session is spared ("sign out everywhere else").
+     *
+     * @returns The number of live sessions revoked.
+     */
+    revokeUserSessions(userId: string, now: number, idleExpiresBefore: number, exceptSessionHash?: Uint8Array): Promise<number>;
+    /**
      * Revoke a single credential and all its sessions.
      *
      * When `allowLastCredential` is false (the default), the store must refuse
@@ -285,6 +298,13 @@ type LocalWebAuthnEvent = {
     at: number;
     userId?: string;
     credentialId?: string;
+} | {
+    /** Bulk session revoke ("sign out everywhere"): credentials and grants untouched. */
+    type: 'user.sessions_revoked';
+    at: number;
+    userId: string;
+    /** Live sessions revoked; an excepted session is not counted. */
+    count: number;
 } | {
     /** Bulk recovery revoke: credentials, sessions, grants, and challenges. */
     type: 'user.authentication_revoked';
@@ -378,6 +398,12 @@ type EnrollmentIssue = {
     enrollmentToken: string;
     enrollmentUrl: string;
     expiresAt: number;
+    /**
+     * Pending grants revoked because this issue superseded them (usually zero or
+     * one). Returned so the host can record the replacement durably in its own
+     * transaction; the matching `enrollment.revoked` events remain best-effort.
+     */
+    supersededGrantIds: string[];
 };
 type EnrollmentExchange = {
     enrollmentSessionToken: string;

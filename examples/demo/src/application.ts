@@ -10,6 +10,7 @@ import type { DemoClient, DemoDatabase } from './database';
 
 import {
   createDemoAuthentication,
+  currentSessionToken,
   mountAuthenticationRoutes,
   requireAuthentication,
   requireExpectedOrigin,
@@ -260,6 +261,40 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
       });
     },
   );
+
+  /**
+   * Sessions-only response for when a session, not a passkey, is the problem
+   * (stolen laptop, suspected cookie theft). Contrast with Re-enroll: the
+   * person's passkeys stay valid and they simply sign in again.
+   */
+  app.post(
+    '/api/clients/:clientId/revoke-sessions',
+    authenticated,
+    administrator,
+    async (context) => {
+      const client = clientById(database, context.req.param('clientId'));
+      if (!client) {
+        return context.json(
+          { error: 'client_not_found', message: 'The client was not found.' },
+          404,
+        );
+      }
+      const revokedSessions = await authentication.revokeUserSessions(client.id);
+      return context.json({
+        client: await clientPayload(client, authentication),
+        revokedSessions,
+      });
+    },
+  );
+
+  /** Self-service "sign out my other devices": the calling session survives. */
+  app.post('/api/session/revoke-others', authenticated, async (context) => {
+    const revokedSessions = await authentication.revokeUserSessions(
+      context.get('authenticatedUser').id,
+      { exceptSessionToken: currentSessionToken(context) },
+    );
+    return context.json({ revokedSessions });
+  });
 
   app.post('/api/passkeys/:credentialId/revoke', authenticated, async (context) => {
     const userId = context.get('authenticatedUser').id;

@@ -407,6 +407,78 @@ function storeConformance(
       }
     });
 
+    it('revokes only live user sessions, sparing an excepted one', async () => {
+      const fixture = await createFixture();
+      try {
+        await exchangedGrant(fixture.store);
+        expect(await fixture.store.completeRegistration(registrationInput('grant-1'))).toBe(true);
+
+        // A second live session (another device on the same passkey).
+        expect(
+          await fixture.store.completeAuthentication({
+            credentialId: 'credential-1',
+            previousCounter: 0,
+            newCounter: 1,
+            now: now + 1,
+            session: {
+              idHash: bytes(5),
+              userId: 'user-1',
+              credentialId: 'credential-1',
+              authenticatedAt: now + 1,
+              expiresAt: now + 10_000,
+              lastSeenAt: now + 1,
+            },
+          }),
+        ).toBe(true);
+
+        // A stale session already past its absolute expiry at revoke time: it
+        // must be neither revoked nor counted.
+        expect(
+          await fixture.store.completeAuthentication({
+            credentialId: 'credential-1',
+            previousCounter: 1,
+            newCounter: 2,
+            now: now + 2,
+            session: {
+              idHash: bytes(6),
+              userId: 'user-1',
+              credentialId: 'credential-1',
+              authenticatedAt: now + 2,
+              expiresAt: now + 50,
+              lastSeenAt: now + 2,
+            },
+          }),
+        ).toBe(true);
+
+        // Spare bytes(5): only the registration session bytes(4) is live and unexcepted.
+        await expect(
+          fixture.store.revokeUserSessions('user-1', now + 100, now - 1, bytes(5)),
+        ).resolves.toBe(1);
+        await expect(
+          fixture.store.resolveSession(bytes(4), now + 101, now - 1),
+        ).resolves.toBeNull();
+        await expect(
+          fixture.store.resolveSession(bytes(5), now + 101, now - 1),
+        ).resolves.not.toBeNull();
+
+        // Without an exception the spared session goes too; repeat finds nothing.
+        await expect(fixture.store.revokeUserSessions('user-1', now + 102, now - 1)).resolves.toBe(
+          1,
+        );
+        await expect(
+          fixture.store.resolveSession(bytes(5), now + 103, now - 1),
+        ).resolves.toBeNull();
+        await expect(fixture.store.revokeUserSessions('user-1', now + 104, now - 1)).resolves.toBe(
+          0,
+        );
+
+        // Credentials are untouched by session revocation.
+        await expect(fixture.store.listCredentials('user-1')).resolves.toHaveLength(1);
+      } finally {
+        await fixture.close();
+      }
+    });
+
     it('returns revoked session identity for audit and keeps credentials after cleanup', async () => {
       const fixture = await createFixture();
       try {

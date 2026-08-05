@@ -23,7 +23,7 @@ Your application keeps its users and authorization. It does not keep passwords, 
 hashes, password reset tokens, TOTP seeds, or recovery codes. It stores public keys and
 hashed opaque tokens instead, and no database value can be replayed as a passkey.
 
-LocalWebAuthn is `2.0.0`. The service API, store interface, and database schema follow
+LocalWebAuthn is `2.1.0`. The service API, store interface, and database schema follow
 SemVer: breaking changes arrive only in a new major version, with upgrade notes in
 [docs/MIGRATING.md](docs/MIGRATING.md).
 
@@ -47,7 +47,7 @@ Administrator enrollment:
 
 ![Administrator enrollment](docs/images/demo-enrollment.png)
 
-Client creation, enrollment, passkey counts, and revocation:
+Client creation, enrollment, passkey counts, session sign-out, and revocation:
 
 ![Client and enrollment management](docs/images/demo-administration.png)
 
@@ -125,6 +125,7 @@ CSRF, and authorization are unchanged. Three things are different.
 | "Forgot password" email with a reset token  | `auth.issueEnrollment(userId)` returns a one-time URL                |
 | `req.session.userId = user.id`              | `auth.resolveSession(sessionToken)` returns the user                 |
 | `req.session.destroy()`                     | `auth.revokeSession(sessionToken)`                                   |
+| "Sign out other devices"                    | `auth.revokeUserSessions(userId, { exceptSessionToken })`            |
 | Force a reset after a leak                  | `auth.revokeCredential(...)` or `auth.revokeUserAuthentication(...)` |
 | Bolt on TOTP for a second factor            | `userVerification: 'required'`; the authenticator does it            |
 
@@ -208,6 +209,14 @@ const auth = new LocalWebAuthn({
   },
 });
 ```
+
+`getUser` returning `active: false` is the supported way to suspend a user. Every
+ceremony — issuing and exchanging enrollment links, registration, authentication — and
+every session resolution refuses an inactive user immediately, without revoking
+anything; flip `active` back and their passkeys work again. When suspending, also call
+`revokeUserSessions(userId)` if you want the outstanding session records ended rather
+than merely unusable, and `revokeUserAuthentication(userId)` only when the passkeys
+themselves must go (the user then needs a fresh enrollment).
 
 PostgreSQL and Cloudflare D1 are drop-in replacements for the `store` option. Pass a
 `pg.Pool` rather than a single client, so transactions get a connection to themselves:

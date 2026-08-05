@@ -61,6 +61,24 @@ async function authenticatedClient(
   };
 }
 
+/** A second live session for an existing client (another device). */
+async function additionalSession(database: DemoDatabase, userId: string): Promise<string> {
+  const sessionToken = createOpaqueToken();
+  const now = Date.now();
+  const credential = database
+    .prepare(`SELECT id FROM localwebauthn_credentials WHERE user_id = ?`)
+    .get(userId) as { id: string };
+  database
+    .prepare(
+      `INSERT INTO localwebauthn_sessions(
+         id_hash, user_id, credential_id,
+         authenticated_at, expires_at, last_seen_at
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(await sha256(sessionToken), userId, credential.id, now, now + 60_000, now);
+  return sessionToken;
+}
+
 afterEach(() => {
   for (const database of databases.splice(0)) {
     database.close();
@@ -175,6 +193,71 @@ describe('LocalWebAuthn demo application', () => {
       }),
     });
     expect(response.status).toBe(403);
+  });
+
+  it('lets an administrator end sessions while passkeys stay valid', async () => {
+    const { app, database } = setup();
+    const administrator = await authenticatedClient(database, 'administrator');
+    const subject = await authenticatedClient(database, 'client');
+    const headers = { Cookie: administrator.cookie, Origin: publicOrigin };
+
+    // Administrator-only, like the other client actions.
+    const forbidden = await app.request(`/api/clients/${administrator.id}/revoke-sessions`, {
+      method: 'POST',
+      headers: { Cookie: subject.cookie, Origin: publicOrigin },
+    });
+    expect(forbidden.status).toBe(403);
+
+    const missing = await app.request('/api/clients/unknown-client/revoke-sessions', {
+      method: 'POST',
+      headers,
+    });
+    expect(missing.status).toBe(404);
+
+    const response = await app.request(`/api/clients/${subject.id}/revoke-sessions`, {
+      method: 'POST',
+      headers,
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      revokedSessions: 1,
+      client: { passkeyCount: 1 },
+    });
+
+    // The subject's session is dead, but their passkey survived.
+    const oldSession = await app.request('/api/session', {
+      headers: { Cookie: subject.cookie, Origin: publicOrigin },
+    });
+    expect(oldSession.status).toBe(401);
+  });
+
+  it('signs out other sessions while keeping the caller signed in', async () => {
+    const { app, database } = setup();
+    const subject = await authenticatedClient(database, 'client');
+    const otherToken = await additionalSession(database, subject.id);
+
+    const unauthenticated = await app.request('/api/session/revoke-others', {
+      method: 'POST',
+      headers: { Origin: publicOrigin },
+    });
+    expect(unauthenticated.status).toBe(401);
+
+    const response = await app.request('/api/session/revoke-others', {
+      method: 'POST',
+      headers: { Cookie: subject.cookie, Origin: publicOrigin },
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ revokedSessions: 1 });
+
+    // The caller's own session survives; the other device is signed out.
+    const own = await app.request('/api/session', {
+      headers: { Cookie: subject.cookie, Origin: publicOrigin },
+    });
+    expect(own.status).toBe(200);
+    const other = await app.request('/api/session', {
+      headers: { Cookie: `localwebauthn_demo_session=${otherToken}`, Origin: publicOrigin },
+    });
+    expect(other.status).toBe(401);
   });
 
   it('re-enrolls by revoking then issuing a recovery link', async () => {

@@ -283,6 +283,23 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
     return row ? { userId: row.user_id, credentialId: row.credential_id } : null;
   }
 
+  async revokeUserSessions(
+    userId: string,
+    now: number,
+    idleExpiresBefore: number,
+    exceptSessionHash?: Uint8Array,
+  ): Promise<number> {
+    // A single conditional UPDATE, so D1 needs no transaction here.
+    const statement = exceptSessionHash
+      ? this.#database
+          .prepare(SQL.revokeLiveUserSessionsExcept)
+          .bind(now, userId, now, idleExpiresBefore, exceptSessionHash)
+      : this.#database
+          .prepare(SQL.revokeLiveUserSessions)
+          .bind(now, userId, now, idleExpiresBefore);
+    return changes(await statement.run());
+  }
+
   async revokeCredential(
     userId: string,
     credentialId: string,
