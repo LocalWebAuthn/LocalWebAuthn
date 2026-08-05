@@ -610,6 +610,144 @@ package.
 - Helpers and starters shrink that shell; dual-channel examples shrink recovery
   and signup fear. OAuth and multi-method growth remain deliberately elsewhere.
 
+### Review Findings
+
+A full review (August 2026) of the first starter-kit branch — HTTP/signup
+helpers (kits #3/#4), the Hono starter (#1), and the delivery worker (part of
+#2) — recorded these findings to direct the next development sessions. The
+review verified a green baseline first, all inside the flake shell:
+`make nix-check` (typecheck, lint, format, coverage thresholds, publint,
+arethetypeswrong) and `make nix-test-demo` (Playwright lifecycle e2e) pass; the
+channels worker suite passes; committed `dist/` matches a fresh rebuild; the
+starter's routes match the `@localwebauthn/browser` defaults (`/api/auth`
+base path, `{ token }` exchange body); tokens are lowercase base32, so raw
+cookie round-trips are safe; `examples/**` is covered by root typecheck and
+lint.
+
+| #   | Severity | Finding                                                        | Where                            |
+| --- | -------- | -------------------------------------------------------------- | -------------------------------- |
+| 1   | **High** | Channels worker is an unauthenticated SMS / email relay        | `examples/channels-cf-worker`    |
+| 2   | Medium   | Miniflare test runs a hand-copied script, not the real worker  | `tests/worker.miniflare.test.ts` |
+| 3   | Medium   | `SignupFacts` are not observable through the package API       | store contract + both consumers  |
+| 4   | Low      | Starter invite authorization, duplicate-email 500, README gaps | `examples/starter-hono`          |
+| 5   | Low      | HTTP helper polish (validation, `http://` downgrade, types)    | `packages/server/src/http.ts`    |
+| 6   | Low      | Docs and release hygiene (links, version pins, Make vs npm)    | repo-wide                        |
+
+#### 1. Channels worker must ship secure by default (high)
+
+`POST /send-sms` and `POST /send-email` accept requests from **anyone** — no
+caller authentication of any kind — and the README's deploy sketch publishes
+the worker with `wrangler deploy`. Deployed as-is it is SMS-pumping fraud
+infrastructure (scripted sends to premium-rate numbers on the host's Twilio
+bill) and a phishing relay from the DKIM-verified `RESEND_FROM` domain. The
+existing caveat ("do not accept an attacker-supplied address") assumes an
+honest caller — the wrong attacker. Direction:
+
+- Require a `CHANNELS_AUTH_TOKEN` secret binding, checked with a timing-safe
+  compare against `Authorization: Bearer …`; fail closed (401, and refuse to
+  serve when the binding is unset).
+- README: a prominent "Protect this endpoint" section — Cloudflare service
+  bindings or Access (never internet-reachable), rate limits, destination
+  country allowlist, and the cost blast radius of getting this wrong.
+- Stop relaying upstream Twilio/Resend response bodies and thrown
+  `error.message`s (which name missing bindings) verbatim to untrusted
+  callers.
+
+#### 2. Miniflare test must execute the real worker (medium)
+
+`worker.miniflare.test.ts` feeds Miniflare a hand-copied inline script ("same
+public contract as `src/`") — and it has already drifted: the inline copy
+returns upstream responses verbatim while `src/index.ts` re-wraps them with
+its own `Content-Type` / `Cache-Control` headers. The shipped source is only
+exercised in-process under Node, so edits to `src/` cannot fail the Miniflare
+test. Direction: bundle the real source (one esbuild call in `beforeAll`) or
+adopt `@cloudflare/vitest-pool-workers` so tests run the actual module inside
+workerd; otherwise soften the "Miniflare-tested" claims here and in the
+worker README.
+
+#### 3. Make `SignupFacts` observable (medium — API gap)
+
+`signupPhase` warns against ad-hoc pending flags, but the store contract has
+no grant **read** (`replaceEnrollmentGrant` is write-only), so both consumers
+on this branch invent exactly those flags:
+
+- The demo feeds `hasPendingEnrollmentGrant: passkeyCount === 0` — degenerate
+  (only 2 of 4 phases are reachable), and the demo UI never renders the new
+  `signupPhase` / `signupPhaseLabel` payload fields.
+- The starter's `pending_enrollment` column is set on issue but never cleared
+  when the invitee enrolls, and goes wrong after grant expiry or
+  `revokeUserAuthentication`.
+
+Direction (either): add `hasPendingEnrollment(userId)` or
+`listEnrollmentGrants(userId)` (metadata only — issuedAt / expiresAt /
+approvedBy, never token material) to the service and store contract, enabling
+a `signupPhaseFor(auth, userId)` convenience; or wire the starter's flag to
+`onEvent` (`enrollment.completed`, `enrollment.revoked`,
+`user.authentication_revoked` already exist), which doubles as the roadmap #6
+ops snippet. Until one lands, roadmap #4 above is honestly **Partial —
+vocabulary shipped; facts not yet derivable from the store**, and the
+CHANGELOG's "without inventing ad-hoc pending flags" oversells.
+
+#### 4. Starter hardening (low, but it is the copy-paste artifact)
+
+- `/api/invite`: **any** authenticated session can mint users and enrollment
+  grants (the demo gates on administrator; the starter has no roles). Add a
+  loud comment ("add your role check here") and a README bullet.
+- Re-inviting an existing email hits the `UNIQUE` constraint and surfaces as
+  an unhandled 500; catch it and return 409.
+- README gaps: POSTs require an `Origin: http://localhost:4180` header (there
+  is no UI — people will curl and hit `invalid_origin` with no hint);
+  restarting with zero credentials revokes the old bootstrap link and prints a
+  fresh one (nice property — say it); the `127.0.0.1` bind plus
+  `STARTER_PUBLIC_ORIGIN`-derived `Secure` cookies is exactly right behind a
+  TLS-terminating proxy — one sentence would market the helpers' best feature.
+- `mountPasskeyAuth` hardcodes `'/api/*'` while the browser client takes a
+  `basePath`; parameterize it, and note that the origin middleware must be
+  mounted before any host routes it should protect.
+
+#### 5. HTTP helper polish (low)
+
+- `serializeCookie` interpolates name and value unvalidated — safe for base32
+  tokens, but it is exported general-purpose API: assert RFC 6265
+  cookie-octets (or document "LocalWebAuthn tokens only").
+- `parseCookieHeader` does no percent-decoding while Hono's `setCookie`
+  percent-encodes; add a doc line so nobody uses it as a general cookie
+  parser.
+- `isHttpsPublicOrigin` silently downgrades **any** `http://` origin — not
+  just loopback — to plain, non-`Secure` cookie names, though the docstring
+  frames plain names as a localhost concession. Warn or throw on non-loopback
+  `http://` so a misconfigured `publicOrigin` fails loudly.
+- `AuthCookieKind` is exported but unused: define
+  `AuthCookieNames = Record<AuthCookieKind, string>` or drop it.
+- `serializeCookie` hardcodes `HttpOnly` / `SameSite=Strict` instead of
+  deriving them from its argument — consistent while the type pins them,
+  brittle if `CookieAttributes` ever loosens.
+
+#### 6. Documentation and release hygiene (low)
+
+- SECURITY.md's host-duty bullets (cookies, exact origin) now have first-party
+  implementations — link `authCookieNames` / `cookieAttributes` /
+  `isExactOrigin` there. `http.ts` already points at SECURITY.md; make the
+  pointer bidirectional.
+- Both examples pin `"@localwebauthn/server": "2.0.0"` but import unreleased
+  APIs; that resolves in-workspace and breaks when an example is copied out.
+  Bump the pins at release (checklist item in docs/RELEASING.md) or note it in
+  the example READMEs until the next version ships.
+- `make check` re-lists the package.json `check` steps and inserts
+  `ensure-postgres`; two sources of truth will drift — have one delegate to
+  the other.
+
+#### What held up under review
+
+The demo refactor is a real dedup and a behavioral improvement (normalized
+exact-origin comparison instead of string equality, so
+`https://app.example.com:443` now matches). `__Host-` naming honors Hono's
+prefix validation (Secure, `Path=/`); challenge cookies are cleared before
+verification; `serializeClearedCookie` and the `maxAge >= 1` clamp are
+correct. The injectable-`fetch` provider tests keep credentials out of CI.
+The Makefile/flake tiers (`test`, `test-postgres`, `test-channels`,
+`test-demo`, `nix-%`) work as documented.
+
 ---
 
 ## Summary
