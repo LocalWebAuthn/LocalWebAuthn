@@ -256,7 +256,7 @@ describe('LocalWebAuthn demo application', () => {
     });
     expect(own.status).toBe(200);
     const other = await app.request('/api/session', {
-      headers: { Cookie: `localwebauthn_demo_session=${otherToken}`, Origin: publicOrigin },
+      headers: { Cookie: `lwa_demo_session=${otherToken}`, Origin: publicOrigin },
     });
     expect(other.status).toBe(401);
   });

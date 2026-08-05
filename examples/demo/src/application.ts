@@ -308,7 +308,7 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
   app.post('/api/session/revoke-others', authenticated, async (context) => {
     const revokedSessions = await authentication.revokeUserSessions(
       context.get('authenticatedUser').id,
-      { exceptSessionToken: currentSessionToken(context) },
+      { exceptSessionToken: currentSessionToken(context, options.auth) },
     );
     return context.json({ revokedSessions });
   });
