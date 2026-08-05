@@ -1,10 +1,15 @@
 # Releasing LocalWebAuthn
 
-Both packages are versioned and released together. A GitHub Release tagged with the shared
-package version triggers `.github/workflows/publish.yml`.
+Both packages are versioned and released together. Publishing is triggered by the GitHub
+Release **published** event — `.github/workflows/publish.yml` runs
+`on: release: types: [published]` — for a Release whose tag is `vX.Y.Z`.
 
-Ordinary branch pushes run CI but never publish. This is deliberate: every immutable npm
-version must map to an explicit Git tag and GitHub Release.
+Be precise about the two objects involved. The _tag_ is an ordinary Git ref pointing at
+the release commit on `main`; the _Release_ is the GitHub object attached to that tag
+(title, notes, and a published event). Pushing the tag alone publishes nothing — like
+ordinary branch pushes, it runs no publish job. Only publishing the Release fires the
+workflow. This is deliberate: every immutable npm version must map to an explicit Git tag
+and a GitHub Release a maintainer chose to publish.
 
 ## One-Time Bootstrap
 
@@ -43,12 +48,26 @@ packages published from the public repository through this workflow.
 2. Update the changelog and migration notes.
 3. Run `npm install --package-lock-only` and `npm run release:check`.
 4. Merge the release commit to the protected default branch.
-5. Create a GitHub Release tagged `vX.Y.Z`.
+5. Tag that commit and publish a GitHub Release on the tag:
+
+   ```console
+   git tag vX.Y.Z <merge-commit> && git push origin vX.Y.Z
+   gh release create vX.Y.Z --verify-tag --title "vX.Y.Z" --notes "…"
+   ```
+
+   `gh release create` without a pre-pushed tag also works (it creates the tag on the
+   default branch head); if you point it elsewhere, `--target` accepts a branch name or
+   full commit SHA — not an abbreviated SHA. Either way, it is the Release being
+   published — not the tag existing — that triggers `publish.yml`.
+
 6. Approve the `npm` environment deployment if required reviewers are configured.
 7. Confirm both npm packages show the new version and provenance.
 8. Verify installation into a clean Node and Workers example.
 
-The workflow rejects a tag that does not exactly equal the shared package version.
+Before publishing anything, the workflow asserts the tag name equals `v` + the shared
+package version and re-runs the full gate (`npm run check`, with a PostgreSQL service so
+the conformance suite cannot silently skip). A mismatched tag or failing gate stops the
+release with nothing published.
 
 ## Recovery
 
