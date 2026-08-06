@@ -11,7 +11,19 @@ import type { MiddlewareHandler } from 'hono';
 import { randomUUID } from 'node:crypto';
 
 import type { DemoAuthConfig, DemoAuthentication, DemoEnvironment } from './auth';
-import type { DemoClient, DemoDatabase } from './database';
+import type { DemoClient, DemoDatabase, DemoSignup } from './database';
+
+import {
+  assertE164,
+  createSignupChallenge,
+  signupMissing,
+  signupProofEmail,
+  signupProofSms,
+  signupProofUrl,
+  signupSatisfied,
+  verifySignupProof,
+  type SignupProofState,
+} from '@localwebauthn/channels-core';
 
 import {
   createDemoAuthentication,
@@ -20,7 +32,15 @@ import {
   requireAuthentication,
   requireExpectedOrigin,
 } from './auth';
-import { clientByEmail, clientById, listClients } from './database';
+import {
+  clientByEmail,
+  clientById,
+  completeSignup,
+  insertSignup,
+  listClients,
+  markSignupProved,
+  signupById,
+} from './database';
 
 export type DemoApplicationOptions = {
   auth: DemoAuthConfig;
@@ -93,12 +113,218 @@ export async function ensureBootstrapAdministrator(
   return authentication.issueEnrollment(administrator.id);
 }
 
+const SIGNUP_CHANNELS = ['email', 'phone'] as const;
+type DemoSignupChannel = (typeof SIGNUP_CHANNELS)[number];
+
+function signupProofState(signup: DemoSignup): SignupProofState & {
+  otpHashes: Record<DemoSignupChannel, Uint8Array>;
+} {
+  return {
+    expiresAt: signup.expiresAt,
+    consumedAt: signup.consumedAt,
+    provedAt: { email: signup.emailProvedAt, phone: signup.phoneProvedAt },
+    otpHashes: { email: signup.otpEmailHash, phone: signup.otpPhoneHash },
+  };
+}
+
+/**
+ * Self-serve signup with SIMULATED delivery: instead of sending email and SMS,
+ * `start` returns the two proof messages so the UI can display them as a
+ * pretend inbox. Everything else — the state machine, claim-on-reopen, the
+ * enrollment issued only after both proofs — is the real flow; swap the
+ * simulated response for `channels-node` / `channels-cf` senders in a real app.
+ *
+ * Host duties this demo skips on purpose: rate limiting and bot defense on
+ * `start` (it sends two messages per call in a real deployment), and
+ * disposable-domain policy. See docs/COMPARISON.md.
+ */
+function mountSignupRoutes(
+  app: Hono<DemoEnvironment>,
+  database: DemoDatabase,
+  authentication: DemoAuthentication,
+  config: DemoAuthConfig,
+): void {
+  app.post('/api/signup/start', async (context) => {
+    const body = await context.req
+      .json<{ email?: unknown; phone?: unknown; displayName?: unknown }>()
+      .catch((): { email?: unknown; phone?: unknown; displayName?: unknown } => ({}));
+    const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+    const displayName = typeof body.displayName === 'string' ? body.displayName.trim() : '';
+    let phone: string;
+    try {
+      phone = assertE164(typeof body.phone === 'string' ? body.phone : '');
+    } catch {
+      phone = '';
+    }
+    if (!validEmail(email) || !phone || !displayName || displayName.length > 120) {
+      return context.json(
+        {
+          error: 'invalid_signup',
+          message: 'A display name, valid email, and E.164 phone number are required.',
+        },
+        400,
+      );
+    }
+
+    // Existing accounts make this a RE-enrollment (recovery by proofing).
+    // Administrators are excluded: they recover through another administrator,
+    // so channel compromise alone can never take over an admin account.
+    const existing = clientByEmail(database, email);
+    if (existing?.role === 'administrator') {
+      return context.json(
+        {
+          error: 'not_self_serve',
+          message: 'This account cannot use self-serve signup.',
+        },
+        409,
+      );
+    }
+
+    const challenge = await createSignupChallenge(SIGNUP_CHANNELS);
+    insertSignup(database, {
+      id: challenge.signupId,
+      email,
+      phone,
+      displayName: existing?.displayName ?? displayName,
+      otpEmailHash: challenge.otpHashes.email,
+      otpPhoneHash: challenge.otpHashes.phone,
+      expiresAt: challenge.expiresAt,
+    });
+
+    const appName = config.rpName;
+    const emailUrl = signupProofUrl(
+      config.publicOrigin,
+      challenge.signupId,
+      'email',
+      challenge.otps.email,
+    );
+    const phoneUrl = signupProofUrl(
+      config.publicOrigin,
+      challenge.signupId,
+      'phone',
+      challenge.otps.phone,
+    );
+    return context.json(
+      {
+        signupId: challenge.signupId,
+        expiresAt: challenge.expiresAt,
+        recovery: existing !== null,
+        // Simulated delivery: a real host sends these and returns nothing.
+        simulated: [
+          {
+            channel: 'email',
+            to: email,
+            subject: signupProofEmail({ appName, url: emailUrl }).subject,
+            body: signupProofEmail({ appName, url: emailUrl }).text,
+          },
+          {
+            channel: 'phone',
+            to: phone,
+            body: signupProofSms({ appName, url: phoneUrl }),
+          },
+        ],
+      },
+      201,
+    );
+  });
+
+  app.post('/api/signup/prove', async (context) => {
+    const body = await context.req
+      .json<{ signupId?: unknown; channel?: unknown; otp?: unknown }>()
+      .catch((): { signupId?: unknown; channel?: unknown; otp?: unknown } => ({}));
+    const signupId = typeof body.signupId === 'string' ? body.signupId : '';
+    const otp = typeof body.otp === 'string' ? body.otp : '';
+    const channel = SIGNUP_CHANNELS.find((candidate) => candidate === body.channel);
+    const signup = signupId ? signupById(database, signupId) : null;
+    if (!signup || !channel || !otp) {
+      return context.json(
+        { error: 'invalid_proof', message: 'This confirmation link is not valid.' },
+        403,
+      );
+    }
+
+    const now = Date.now();
+    const state = signupProofState(signup);
+    const outcome = await verifySignupProof(state, { channel, otp }, now);
+
+    if (outcome === 'invalid') {
+      return context.json(
+        { error: 'invalid_proof', message: 'This confirmation link is not valid.' },
+        403,
+      );
+    }
+    if (outcome === 'expired') {
+      return context.json(
+        { error: 'signup_expired', message: 'This signup expired. Start over.' },
+        410,
+      );
+    }
+    if (outcome === 'completed') {
+      // Claim-on-reopen: any proved channel's link now opens enrollment.
+      return context.json({
+        complete: true,
+        enrollmentToken: signup.enrollmentToken,
+        user: { name: signup.email, displayName: signup.displayName },
+      });
+    }
+
+    if (outcome === 'proved') {
+      markSignupProved(database, signup.id, channel, now);
+      state.provedAt[channel] = now;
+    }
+
+    if (!signupSatisfied(SIGNUP_CHANNELS, state)) {
+      return context.json({
+        complete: false,
+        proved: SIGNUP_CHANNELS.filter((required) => Boolean(state.provedAt[required])),
+        missing: signupMissing(SIGNUP_CHANNELS, state),
+      });
+    }
+
+    // Final proof landed: only now does the enrollment grant come to exist.
+    const existing = clientByEmail(database, signup.email);
+    if (existing?.role === 'administrator') {
+      return context.json(
+        { error: 'not_self_serve', message: 'This account cannot use self-serve signup.' },
+        409,
+      );
+    }
+    let clientId: string;
+    if (existing) {
+      // Recovery: both channels re-proved; revoke before issuing (documented order).
+      await authentication.revokeUserAuthentication(existing.id);
+      clientId = existing.id;
+    } else {
+      clientId = randomUUID();
+      database
+        .prepare(
+          `INSERT INTO demo_clients(
+             id, email, display_name, role, webauthn_user_handle, created_at
+           ) VALUES (?, ?, ?, 'client', ?, ?)`,
+        )
+        .run(clientId, signup.email, signup.displayName, createUserHandle(), now);
+    }
+    const enrollment = await authentication.issueEnrollment(clientId);
+    completeSignup(database, signup.id, {
+      clientId,
+      enrollmentToken: enrollment.enrollmentToken,
+      now,
+    });
+    return context.json({
+      complete: true,
+      enrollmentToken: enrollment.enrollmentToken,
+      user: { name: signup.email, displayName: signup.displayName },
+    });
+  });
+}
+
 export function createDemoApplication(database: DemoDatabase, options: DemoApplicationOptions) {
   const app = new Hono<DemoEnvironment>();
   const authentication = createDemoAuthentication(database, options.auth);
 
   app.use('/api/*', requireExpectedOrigin(options.auth));
   mountAuthenticationRoutes(app, authentication, options.auth);
+  mountSignupRoutes(app, database, authentication, options.auth);
 
   const authenticated = requireAuthentication(authentication, options.auth);
   const administrator: MiddlewareHandler<DemoEnvironment> = async (context, next) => {
@@ -347,6 +573,7 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
     const index = serveStatic({ root: options.staticRoot, path: 'index.html' });
     app.get('/', index);
     app.get('/enroll', index);
+    app.get('/signup', index);
   }
 
   app.notFound((context) =>

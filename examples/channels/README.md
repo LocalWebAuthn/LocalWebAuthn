@@ -12,6 +12,7 @@ external API can make these deployments send anything.
 | `twilio.ts`    | fetch-based Twilio sender, identical under Node and Workers                     |
 | `resend.ts`    | fetch-based Resend sender (the Workers email transport)                         |
 | `deliver.ts`   | `inviteAndDeliver`: issue grant → deliver → return **no link** to the caller    |
+| `signup.ts`    | Self-serve proofing state machine: capability-free proof links, claim-on-reopen |
 
 Because content is template-only, the blast radius of a leaked credential or a
 buggy caller is "our own enrollment/OTP copy, at our rate" — a cost problem,

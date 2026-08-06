@@ -20,6 +20,13 @@
   Twilio), and `examples/channels-cf` (fully Cloudflare: Workers + D1 issuing
   real grants, Resend + Twilio, bearer-guarded invite route, Miniflare tests of
   the bundled source). No live credentials required in CI.
+- **Self-serve signup proofing** (`channels-core` `signup.ts`): a shared state
+  machine issuing one capability-free proof link per channel; the enrollment
+  grant exists only after the last required proof, then any channel's link
+  claims the same single-use enrollment (claim-on-reopen). Channels are
+  open-ended (link-borne or host-attested). The lifecycle demo runs the whole
+  flow with simulated delivery, including recovery by re-proofing for
+  non-administrator accounts, covered by API tests and a Playwright spec.
 - **COMPARISON.md**: JS developer friction section and starter-kit roadmap.
 
 ### Changed

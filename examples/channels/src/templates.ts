@@ -89,3 +89,37 @@ export function otpEmail(params: OtpParams): EmailContent {
 export function otpSms(params: OtpParams): string {
   return `${params.appName} verification code: ${params.code}. Never share it.`;
 }
+
+export type SignupProofParams = {
+  appName: string;
+  /** Proof link from `signupProofUrl` — confirms one channel, grants nothing. */
+  url: string;
+};
+
+/** Email carrying a signup channel-proof link (capability-free until completion). */
+export function signupProofEmail(params: SignupProofParams): EmailContent {
+  const subject = `Confirm your email for ${params.appName}`;
+  const text = [
+    `Someone (hopefully you) is signing up for ${params.appName} with this address.`,
+    '',
+    'Open this link to confirm you control it:',
+    params.url,
+    '',
+    'Once every channel is confirmed, this same link opens your passkey setup —',
+    'use it on the device where you want to sign in. If this was not you, ignore',
+    'this message.',
+  ].join('\n');
+  const html = [
+    `<p>Someone (hopefully you) is signing up for <strong>${escapeHtml(params.appName)}</strong> with this address.</p>`,
+    `<p>Open this link to confirm you control it:</p>`,
+    `<p><a href="${escapeHtml(params.url)}">${escapeHtml(params.url)}</a></p>`,
+    `<p>Once every channel is confirmed, this same link opens your passkey setup —`,
+    ` use it on the device where you want to sign in. If this was not you, ignore this message.</p>`,
+  ].join('\n');
+  return { subject, text, html };
+}
+
+/** SMS carrying a signup channel-proof link (capability-free until completion). */
+export function signupProofSms(params: SignupProofParams): string {
+  return `${params.appName}: confirm this phone: ${params.url} - after all confirmations the same link sets up your passkey (ignore if not you)`;
+}

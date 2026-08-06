@@ -3,9 +3,24 @@ export {
   enrollmentSms,
   otpEmail,
   otpSms,
+  signupProofEmail,
+  signupProofSms,
   type EnrollmentParams,
   type OtpParams,
+  type SignupProofParams,
 } from './templates.js';
+export {
+  createSignupChallenge,
+  parseSignupFragment,
+  signupMissing,
+  signupProofUrl,
+  signupSatisfied,
+  verifySignupProof,
+  type ProofOutcome,
+  type SignupChallenge,
+  type SignupChannel,
+  type SignupProofState,
+} from './signup.js';
 export { assertE164, assertEmailAddress, parseAllowedPrefixes } from './validate.js';
 export { sendSms, type TwilioConfig } from './twilio.js';
 export { sendEmailResend, type ResendConfig } from './resend.js';

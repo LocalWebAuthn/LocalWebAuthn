@@ -567,16 +567,16 @@ the gap.
 Ordered by impact for JS developers (not by cryptographic purity). Status is
 tracked here as the kits land.
 
-| Priority | Kit                           | Intent                                                                                                   | Status                                                                                                                                     |
-| -------- | ----------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| **1**    | **Framework starters**        | Hono/Node (and later Next App Router) with the six routes, session guard, and origin check already wired | **Done** — `examples/starter-hono`; full UI remains `examples/demo`                                                                        |
-| **2**    | **Recovery starter kits**     | Admin re-enroll (revoke then issue) as a first-class action; dual-channel self-serve as runnable code    | Partial — demo **Re-enroll**; internal-only delivery in `examples/channels{,-node,-cf}` (SMTP/Resend + Twilio); full OTP signup still open |
-| **3**    | **Cookie + origin helpers**   | One place for Secure / HttpOnly / SameSite / `__Host-` names and exact-origin checks                     | **Done** — `@localwebauthn/server` (`authCookieNames`, `cookieAttributes`, `isExactOrigin`, …)                                             |
-| **4**    | **Signup state machine**      | Host-owned phases: user created → enrollment issued → exchanged → enrolled; next-step helper             | **Done** — `signupPhase` / `describeSignupPhase` on `@localwebauthn/server`                                                                |
-| **5**    | **Post-enroll UX kit**        | Prompt for a second passkey; clear lockout / last-credential messaging                                   | Partial — demo copy; no shared package yet                                                                                                 |
-| **6**    | **Ops snippets**              | Rate-limit examples, `onEvent` → log/table, `cleanup()` scheduler                                        | Not started                                                                                                                                |
-| **7**    | **Browser / support matrix**  | Platform vs security key vs synced passkey; common failure modes                                         | Not started (docs)                                                                                                                         |
-| **8**    | **“Don’t use us if…” wizard** | Up-front decision tree in README / COMPARISON                                                            | Partial — this section + target audience                                                                                                   |
+| Priority | Kit                           | Intent                                                                                                   | Status                                                                                                                                                            |
+| -------- | ----------------------------- | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1**    | **Framework starters**        | Hono/Node (and later Next App Router) with the six routes, session guard, and origin check already wired | **Done** — `examples/starter-hono`; full UI remains `examples/demo`                                                                                               |
+| **2**    | **Recovery starter kits**     | Admin re-enroll (revoke then issue) as a first-class action; dual-channel self-serve as runnable code    | **Done** — demo **Re-enroll** + simulated dual-channel signup/recovery; shared proofing state machine + internal-only delivery in `examples/channels{,-node,-cf}` |
+| **3**    | **Cookie + origin helpers**   | One place for Secure / HttpOnly / SameSite / `__Host-` names and exact-origin checks                     | **Done** — `@localwebauthn/server` (`authCookieNames`, `cookieAttributes`, `isExactOrigin`, …)                                                                    |
+| **4**    | **Signup state machine**      | Host-owned phases: user created → enrollment issued → exchanged → enrolled; next-step helper             | **Done** — `signupPhase` / `describeSignupPhase` on `@localwebauthn/server`                                                                                       |
+| **5**    | **Post-enroll UX kit**        | Prompt for a second passkey; clear lockout / last-credential messaging                                   | Partial — demo copy; no shared package yet                                                                                                                        |
+| **6**    | **Ops snippets**              | Rate-limit examples, `onEvent` → log/table, `cleanup()` scheduler                                        | Not started                                                                                                                                                       |
+| **7**    | **Browser / support matrix**  | Platform vs security key vs synced passkey; common failure modes                                         | Not started (docs)                                                                                                                                                |
+| **8**    | **“Don’t use us if…” wizard** | Up-front decision tree in README / COMPARISON                                                            | Partial — this section + target audience                                                                                                                          |
 
 #### Dual-channel (email + phone) delivery kit
 
@@ -600,9 +600,19 @@ bearer-guarded invite route, Miniflare tests of the bundled source). **No
 deployment exposes a send API** — anyone-can-POST `/send-email` routes are an
 open relay and were removed by design.
 
-**Still open:** end-to-end OTP verify → `issueEnrollment` glue (the `otp`
-templates and senders exist; the verification state machine is host policy).
-LocalWebAuthn core stays free of Twilio/Resend/nodemailer dependencies.
+**Signup proofing state machine** (`channels-core` `signup.ts`): each channel
+gets one capability-free proof link (`#signup=<id>&channel=…&otp=…`); pressing
+Confirm proves that channel; the enrollment grant is minted only when the last
+required channel lands, and from then on **any channel's link claims the same
+single-use enrollment** — finish on whichever device you prefer. Open proof
+pages cooperate on the one server-side machine (re-presenting their OTP as a
+poll) and flip to "create your passkey" when the final confirmation arrives.
+Channels are open-ended: link-borne ones (email, SMS, chat) carry OTPs, and
+host-attested ones (an existing-passkey assertion during recovery, TOTP) are
+proved by the host directly. The demo runs the whole flow with simulated
+delivery — including recovery by re-proofing for non-administrator accounts —
+and the Playwright suite drives it end to end. LocalWebAuthn core stays free
+of Twilio/Resend/nodemailer dependencies and of proofing policy.
 
 That kit closes friction **#1** and **#4** delivery for self-serve without
 reintroducing password reset. Prefer it over adding passwords to the core

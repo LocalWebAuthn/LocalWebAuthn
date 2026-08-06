@@ -261,6 +261,135 @@ describe('LocalWebAuthn demo application', () => {
     expect(other.status).toBe(401);
   });
 
+  it('runs simulated self-serve signup: proofs, claim-on-reopen, working enrollment', async () => {
+    const { app } = setup();
+    const headers = { Origin: publicOrigin, 'Content-Type': 'application/json' };
+
+    const started = await app.request('/api/signup/start', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        displayName: 'Ada Self',
+        email: 'self@example.test',
+        phone: '+15551230000',
+      }),
+    });
+    expect(started.status).toBe(201);
+    const startPayload = (await started.json()) as {
+      signupId: string;
+      recovery: boolean;
+      simulated: { channel: string; body: string }[];
+    };
+    expect(startPayload.recovery).toBe(false);
+
+    // Proof links are capability-free: no enrollment token exists yet.
+    const otps: Record<string, string> = {};
+    for (const message of startPayload.simulated) {
+      expect(message.body).toContain('/signup#signup=');
+      expect(message.body).not.toContain('enroll#token');
+      const url = new URL(/https?:\/\/\S+/u.exec(message.body)?.[0] ?? '');
+      const fragment = new URLSearchParams(url.hash.slice(1));
+      otps[fragment.get('channel') ?? ''] = fragment.get('otp') ?? '';
+    }
+    expect(Object.keys(otps).sort()).toEqual(['email', 'phone']);
+
+    const prove = (channel: string, otp: string) =>
+      app.request('/api/signup/prove', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ signupId: startPayload.signupId, channel, otp }),
+      });
+
+    expect((await prove('email', 'wrong-otp')).status).toBe(403);
+
+    const first = await prove('email', otps.email);
+    expect(first.status).toBe(200);
+    const firstPayload = (await first.json()) as Record<string, unknown>;
+    expect(firstPayload).toMatchObject({ complete: false, missing: ['phone'] });
+    expect(firstPayload).not.toHaveProperty('enrollmentToken');
+
+    // Re-presenting the same OTP pre-completion is the polling signal.
+    await expect((await prove('email', otps.email)).json()).resolves.toMatchObject({
+      complete: false,
+      missing: ['phone'],
+    });
+
+    const second = await prove('phone', otps.phone);
+    const secondPayload = (await second.json()) as { complete: boolean; enrollmentToken: string };
+    expect(secondPayload.complete).toBe(true);
+    expect(secondPayload.enrollmentToken).toMatch(/^[a-z2-7]{52}$/u);
+
+    // Claim-on-reopen: the other channel's OTP now claims the same enrollment.
+    await expect((await prove('email', otps.email)).json()).resolves.toMatchObject({
+      complete: true,
+      enrollmentToken: secondPayload.enrollmentToken,
+    });
+
+    // The token is a real, working enrollment.
+    const exchanged = await app.request('/api/auth/enrollment/exchange', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ token: secondPayload.enrollmentToken }),
+    });
+    expect(exchanged.status).toBe(200);
+  });
+
+  it('self-serve recovery re-proofs both channels for clients and refuses administrators', async () => {
+    const { app, database } = setup();
+    const subject = await authenticatedClient(database, 'client');
+    const administrator = await authenticatedClient(database, 'administrator');
+    const headers = { Origin: publicOrigin, 'Content-Type': 'application/json' };
+
+    const started = await app.request('/api/signup/start', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        displayName: 'Ignored For Recovery',
+        email: `client-${subject.id}@example.test`,
+        phone: '+15551230001',
+      }),
+    });
+    const startPayload = (await started.json()) as {
+      signupId: string;
+      recovery: boolean;
+      simulated: { body: string }[];
+    };
+    expect(startPayload.recovery).toBe(true);
+
+    const otps: Record<string, string> = {};
+    for (const message of startPayload.simulated) {
+      const url = new URL(/https?:\/\/\S+/u.exec(message.body)?.[0] ?? '');
+      const fragment = new URLSearchParams(url.hash.slice(1));
+      otps[fragment.get('channel') ?? ''] = fragment.get('otp') ?? '';
+    }
+    for (const channel of ['email', 'phone']) {
+      const response = await app.request('/api/signup/prove', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ signupId: startPayload.signupId, channel, otp: otps[channel] }),
+      });
+      expect(response.status).toBe(200);
+    }
+
+    // Recovery revoked the old credentials and sessions before issuing.
+    const oldSession = await app.request('/api/session', {
+      headers: { Cookie: subject.cookie, Origin: publicOrigin },
+    });
+    expect(oldSession.status).toBe(401);
+
+    // Administrator accounts are not self-serve recoverable.
+    const adminStart = await app.request('/api/signup/start', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        displayName: 'Nope',
+        email: `administrator-${administrator.id}@example.test`,
+        phone: '+15551230002',
+      }),
+    });
+    expect(adminStart.status).toBe(409);
+  });
+
   it('re-enrolls by revoking then issuing a recovery link', async () => {
     const { app, database } = setup();
     const administrator = await authenticatedClient(database, 'administrator');
