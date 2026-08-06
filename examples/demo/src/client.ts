@@ -1,4 +1,5 @@
 import { consumeEnrollmentToken, LocalWebAuthnBrowser } from '@localwebauthn/browser';
+import { parseSignupFragment } from '@localwebauthn/channels-core';
 import {
   Check,
   CirclePlus,
@@ -59,11 +60,52 @@ if (!root) {
 }
 const applicationRoot = root;
 
+type SimulatedMessage = {
+  channel: 'email' | 'phone';
+  to: string;
+  subject?: string;
+  body: string;
+};
+
+type SignupInbox = {
+  signupId: string;
+  recovery: boolean;
+  expiresAt: number;
+  messages: SimulatedMessage[];
+};
+
+type SignupProof = {
+  signupId: string;
+  channel: 'email' | 'phone';
+  otp: string;
+  /** From the link's display-only intent flag; the server enforces reality. */
+  recovery: boolean;
+  status: 'ready' | 'waiting' | 'pending' | 'claimable' | 'canceled';
+  missing?: string[];
+  claimableAt?: number;
+  enrollmentToken?: string;
+  user?: { name: string; displayName: string };
+};
+
+type ProveResult = {
+  complete: boolean;
+  canceled?: boolean;
+  pending?: boolean;
+  claimableAt?: number;
+  kind?: 'signup' | 'recovery';
+  enrollmentToken?: string;
+  user?: { name: string; displayName: string };
+  proved?: string[];
+  missing?: string[];
+};
+
 const state: {
   session?: Session;
   clients: DemoClient[];
   enrollment?: EnrollmentIdentity;
   issued?: IssuedEnrollment;
+  signup?: SignupInbox;
+  proof?: SignupProof;
   checking: boolean;
   busy: boolean;
   error: string;
@@ -154,6 +196,163 @@ function authScreen(): string {
             ${iconMarkup('key-round')}
             ${state.busy ? 'Waiting for passkey' : enrolling ? 'Create passkey' : 'Continue with passkey'}
           </button>
+          ${alerts()}
+        </section>
+        ${enrolling ? '' : signupSection()}
+      </main>
+    </div>
+  `;
+}
+
+/** Wrap the one URL in a simulated message body in a clickable new-tab link. */
+function linkifySimulated(body: string): string {
+  const match = /https?:\/\/\S+/u.exec(body);
+  if (!match) {
+    return escapeHtml(body);
+  }
+  const url = match[0];
+  const before = body.slice(0, match.index);
+  const after = body.slice(match.index + url.length);
+  return `${escapeHtml(before)}<a href="${escapeHtml(url)}" target="_blank">${escapeHtml(url)}</a>${escapeHtml(after)}`;
+}
+
+/**
+ * Self-serve signup with simulated delivery: the "inbox" below stands in for
+ * the person's real email and SMS. Each link opens a proof page (new tab);
+ * after every channel is confirmed, the same links open passkey setup.
+ */
+function signupSection(): string {
+  if (!state.signup) {
+    return `
+      <section class="auth-panel signup-panel" aria-labelledby="signup-title">
+        <h2 id="signup-title">Self-serve signup</h2>
+        <p class="auth-hint">Simulated delivery: the confirmation messages appear here instead of being
+          sent. One link per channel — confirm both, then the same links open passkey setup.
+          Re-using an existing (non-administrator) email demonstrates recovery by re-proofing.</p>
+        <form id="signup-form">
+          <label>Display name <input id="signup-name" maxlength="120" required /></label>
+          <label>Email <input id="signup-email" type="email" required /></label>
+          <label>Mobile phone <span class="field-note">(E.164, e.g. +15551234567)</span>
+            <input id="signup-phone" placeholder="+15551234567" required /></label>
+          <button class="button secondary" type="submit" ${state.busy ? 'disabled' : ''}>
+            Start signup
+          </button>
+        </form>
+      </section>
+    `;
+  }
+  const cards = state.signup.messages
+    .map(
+      (message) => `
+        <article class="sim-message">
+          <strong>${message.channel === 'email' ? 'Email' : 'SMS'} to ${escapeHtml(message.to)}</strong>
+          ${message.subject ? `<span class="sim-subject">${escapeHtml(message.subject)}</span>` : ''}
+          <p>${linkifySimulated(message.body)}</p>
+        </article>
+      `,
+    )
+    .join('');
+  return `
+    <section class="auth-panel signup-panel" aria-labelledby="sim-title">
+      <h2 id="sim-title">Simulated messages${state.signup.recovery ? ' (account recovery)' : ''}</h2>
+      <p class="auth-hint">Open each link in its own tab and confirm. Once both are confirmed, the
+        same links open passkey setup — finish on the device you prefer.</p>
+      <div class="sim-inbox">${cards}</div>
+    </section>
+  `;
+}
+
+/** One channel's proof page — a client of the server-side signup state machine. */
+function proofScreen(): string {
+  const proof = state.proof;
+  if (!proof) {
+    return '';
+  }
+  const channelLabel = proof.channel === 'email' ? 'email address' : 'phone number';
+  const cancelButton = `
+    <button class="button quiet danger-text" id="cancel-signup" type="button" ${state.busy ? 'disabled' : ''}>
+      This wasn&rsquo;t me &mdash; cancel it
+    </button>
+  `;
+  let body: string;
+  if (proof.status === 'ready') {
+    body = proof.recovery
+      ? `
+      <p class="auth-lede"><strong>Someone started re-enrollment</strong> for the account bound to
+        this ${channelLabel}. Confirming helps <strong>replace this account&rsquo;s passkeys</strong>.
+        Only continue if you started this yourself, moments ago.</p>
+      <button class="button primary auth-button" id="confirm-proof" type="button" ${state.busy ? 'disabled' : ''}>
+        ${iconMarkup('check')}
+        I started this &mdash; confirm
+      </button>
+      ${cancelButton}
+    `
+      : `
+      <p class="auth-lede">Someone is signing up with this ${channelLabel}. Press confirm if that
+        was you. Confirming proves you control this channel; setup finishes only after every
+        channel is confirmed.</p>
+      <button class="button primary auth-button" id="confirm-proof" type="button" ${state.busy ? 'disabled' : ''}>
+        ${iconMarkup('check')}
+        Confirm this ${proof.channel === 'email' ? 'email' : 'phone'}
+      </button>
+      ${cancelButton}
+    `;
+  } else if (proof.status === 'waiting') {
+    body = `
+      <p class="auth-lede">Confirmed. Still waiting for: <strong>${escapeHtml((proof.missing ?? []).join(', '))}</strong> —
+        open the link we sent there too. This page updates by itself when the last
+        confirmation lands.</p>
+      ${cancelButton}
+    `;
+  } else if (proof.status === 'pending') {
+    const seconds = Math.max(0, Math.ceil(((proof.claimableAt ?? 0) - Date.now()) / 1000));
+    body = `
+      <p class="auth-lede">All channels confirmed. Because this account already has passkeys,
+        re-enrollment waits <strong>${String(seconds)}s</strong> before it can finish. Nothing
+        changes until then — existing passkeys keep working, signing in with one cancels this,
+        and so does the button below.</p>
+      ${cancelButton}
+    `;
+  } else if (proof.status === 'canceled') {
+    body = `
+      <p class="auth-lede">This ${proof.recovery ? 're-enrollment' : 'signup'} was <strong>canceled</strong>.
+        The account is unchanged. If you did not start or cancel it, someone else has access to
+        one of your channels — review your email and phone security.</p>
+    `;
+  } else {
+    body = `
+      <p class="auth-lede">All channels confirmed. Create your passkey on this device — or open
+        the link from the other channel on the device you prefer. The setup link works once.</p>
+      <button class="button primary auth-button" id="claim-enroll" type="button" ${state.busy ? 'disabled' : ''}>
+        ${iconMarkup('key-round')}
+        Create my passkey here
+      </button>
+    `;
+  }
+  return `
+    <div class="auth-shell">
+      <header class="auth-brand">
+        <div class="brand-symbol">${iconMarkup('key-round', 26)}</div>
+        <div>
+          <strong>LocalWebAuthn</strong>
+          <span>Passkey lifecycle demo</span>
+        </div>
+      </header>
+      <main class="auth-main">
+        <section class="auth-panel" aria-labelledby="proof-title">
+          <div class="auth-icon">${iconMarkup('shield-check', 28)}</div>
+          <h1 id="proof-title">${
+            proof.status === 'claimable'
+              ? 'Create your passkey'
+              : proof.status === 'pending'
+                ? 'Re-enrollment is waiting'
+                : proof.status === 'canceled'
+                  ? proof.recovery
+                    ? 'Re-enrollment canceled'
+                    : 'Signup canceled'
+                  : `Confirm your ${channelLabel}`
+          }</h1>
+          ${body}
           ${alerts()}
         </section>
       </main>
@@ -404,9 +603,11 @@ function dashboard(): string {
 function render(): void {
   applicationRoot.innerHTML = state.checking
     ? `<main class="loading-state">${iconMarkup('refresh-cw', 22)}<span>Checking session</span></main>`
-    : state.session
-      ? dashboard()
-      : authScreen();
+    : state.proof
+      ? proofScreen()
+      : state.session
+        ? dashboard()
+        : authScreen();
   createIcons({
     icons: {
       Check,
@@ -439,6 +640,83 @@ async function refreshSession(): Promise<void> {
   }
 }
 
+let proofPoll: number | undefined;
+
+function stopProofPolling(): void {
+  if (proofPoll !== undefined) {
+    window.clearInterval(proofPoll);
+    proofPoll = undefined;
+  }
+}
+
+function applyProofResult(result: ProveResult): boolean {
+  const proof = state.proof;
+  if (!proof) {
+    return false;
+  }
+  const previousStatus = proof.status;
+  if (result.canceled) {
+    proof.status = 'canceled';
+    stopProofPolling();
+  } else if (result.complete && result.enrollmentToken) {
+    proof.status = 'claimable';
+    proof.enrollmentToken = result.enrollmentToken;
+    proof.user = result.user;
+    stopProofPolling();
+  } else if (result.pending) {
+    proof.status = 'pending';
+    proof.claimableAt = result.claimableAt;
+    startProofPolling();
+  } else {
+    proof.status = 'waiting';
+    proof.missing = result.missing ?? [];
+    startProofPolling();
+  }
+  // The pending countdown re-renders every poll tick.
+  return proof.status !== previousStatus || proof.status === 'pending';
+}
+
+async function presentProof(): Promise<ProveResult> {
+  const proof = state.proof;
+  if (!proof) {
+    throw new Error('No signup confirmation is in progress.');
+  }
+  return request<ProveResult>('/api/signup/prove', {
+    method: 'POST',
+    body: JSON.stringify({ signupId: proof.signupId, channel: proof.channel, otp: proof.otp }),
+  });
+}
+
+/**
+ * All open proof pages cooperate on one server-side state machine: this page
+ * re-presents its own OTP to observe progress, and flips to "create your
+ * passkey" the moment the final channel confirms (the `completed` claim).
+ */
+function startProofPolling(): void {
+  if (proofPoll !== undefined) {
+    return;
+  }
+  proofPoll = window.setInterval(() => {
+    void (async () => {
+      const status = state.proof?.status;
+      if (status !== 'waiting' && status !== 'pending') {
+        stopProofPolling();
+        return;
+      }
+      try {
+        if (applyProofResult(await presentProof())) {
+          render();
+        }
+      } catch (error) {
+        stopProofPolling();
+        state.proof = undefined;
+        state.error = error instanceof Error ? error.message : 'This signup expired. Start over.';
+        render();
+      }
+    })();
+  }, 2500);
+}
+
 async function perform(action: () => Promise<void>): Promise<void> {
   state.busy = true;
   state.error = '';
@@ -455,6 +733,65 @@ async function perform(action: () => Promise<void>): Promise<void> {
 }
 
 function bindEvents(): void {
+  document.querySelector<HTMLFormElement>('#signup-form')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const displayName = document.querySelector<HTMLInputElement>('#signup-name')?.value ?? '';
+    const email = document.querySelector<HTMLInputElement>('#signup-email')?.value ?? '';
+    const phone = document.querySelector<HTMLInputElement>('#signup-phone')?.value ?? '';
+    void perform(async () => {
+      const result = await request<{
+        signupId: string;
+        expiresAt: number;
+        recovery: boolean;
+        simulated: SimulatedMessage[];
+      }>('/api/signup/start', {
+        method: 'POST',
+        body: JSON.stringify({ displayName, email, phone }),
+      });
+      state.signup = {
+        signupId: result.signupId,
+        expiresAt: result.expiresAt,
+        recovery: result.recovery,
+        messages: result.simulated,
+      };
+    });
+  });
+  document.querySelector('#confirm-proof')?.addEventListener('click', () => {
+    void perform(async () => {
+      applyProofResult(await presentProof());
+    });
+  });
+  document.querySelector('#cancel-signup')?.addEventListener('click', () => {
+    void perform(async () => {
+      const proof = state.proof;
+      if (!proof) {
+        return;
+      }
+      stopProofPolling();
+      await request('/api/signup/cancel', {
+        method: 'POST',
+        body: JSON.stringify({ signupId: proof.signupId, channel: proof.channel, otp: proof.otp }),
+      });
+      proof.status = 'canceled';
+    });
+  });
+  document.querySelector('#claim-enroll')?.addEventListener('click', () => {
+    void perform(async () => {
+      const token = state.proof?.enrollmentToken;
+      if (!token) {
+        return;
+      }
+      stopProofPolling();
+      try {
+        state.enrollment = await auth.exchangeEnrollment(token);
+        state.proof = undefined;
+      } catch {
+        throw new Error(
+          'This setup link was already used or has expired. If that was not you, contact your administrator.',
+        );
+      }
+    });
+  });
   document.querySelector('#sign-in')?.addEventListener('click', () => {
     void perform(async () => {
       await auth.signIn();
@@ -628,6 +965,21 @@ function bindEvents(): void {
 }
 
 async function initialize(): Promise<void> {
+  const signupProof = parseSignupFragment(window.location.hash);
+  if (signupProof && (signupProof.channel === 'email' || signupProof.channel === 'phone')) {
+    // Same hygiene as enrollment fragments: take the OTP out of the URL bar.
+    window.history.replaceState(null, '', '/signup');
+    state.proof = {
+      signupId: signupProof.signupId,
+      channel: signupProof.channel,
+      otp: signupProof.otp,
+      recovery: signupProof.recovery,
+      status: 'ready',
+    };
+    state.checking = false;
+    render();
+    return;
+  }
   const enrollmentToken = consumeEnrollmentToken(window.location, window.history);
   if (enrollmentToken) {
     try {

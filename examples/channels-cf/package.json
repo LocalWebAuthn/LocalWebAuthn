@@ -1,0 +1,25 @@
+{
+  "name": "@localwebauthn/channels-cf",
+  "version": "2.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Fully-Cloudflare delivery example: Workers + D1 issuing enrollment grants and delivering them internally via Resend + Twilio",
+  "exports": {
+    ".": "./src/worker.ts"
+  },
+  "scripts": {
+    "build": "node -e \"process.exit(0)\"",
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@localwebauthn/channels-core": "2.2.0",
+    "@localwebauthn/server": "2.2.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.27.7",
+    "miniflare": "^4.20260722.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}

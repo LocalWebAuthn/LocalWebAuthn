@@ -1,5 +1,69 @@
 # Changelog
 
+## 2.2.0 - 2026-08-06
+
+Additive release: no changes are required for applications using the official
+adapters and the `LocalWebAuthn` service API. Custom `SqliteDatabase` drivers
+need one method; see [docs/MIGRATING.md](docs/MIGRATING.md#210--220).
+
+### Added
+
+- **HTTP adapter helpers** on `@localwebauthn/server`: `authCookieNames`,
+  `cookieAttributes`, `isExactOrigin`, `parseCookieHeader`, `serializeCookie`,
+  and related utilities so host apps share one Secure / `__Host-` / origin
+  implementation.
+- **Signup phase helpers**: `signupPhase`, `nextSignupStep`,
+  `describeSignupPhase`, and `SELF_SERVE_SIGNUP_STEPS` for host-owned enrollment
+  sequencing without inventing ad-hoc pending flags.
+- **Hono starter** at `examples/starter-hono` (six routes + invite + session
+  probe). Lifecycle demo uses the same cookie/origin helpers.
+- **Channel delivery examples** with internal-only sending — no deployment
+  exposes a send API. `examples/channels` (shared fixed templates, destination
+  validation, fetch-based Twilio/Resend senders, `inviteAndDeliver`),
+  `examples/channels-node` (traditional server: SMTP application password +
+  Twilio), and `examples/channels-cf` (fully Cloudflare: Workers + D1 issuing
+  real grants, Resend + Twilio, bearer-guarded invite route, Miniflare tests of
+  the bundled source). No live credentials required in CI.
+- **Self-serve signup proofing** (`channels-core` `signup.ts`): a shared state
+  machine issuing one capability-free proof link per channel; the enrollment
+  grant exists only after the last required proof, then any channel's link
+  claims the same single-use enrollment (claim-on-reopen). Channels are
+  open-ended (link-borne or host-attested). Recovery of existing accounts adds
+  the state-of-the-art controls: any valid channel OTP can veto ("this wasn't
+  me"), completion opens a waiting period during which the account is
+  untouched, and any successful passkey sign-in cancels live recoveries via
+  the `credential.authenticated` event. The lifecycle demo runs the whole flow
+  with simulated delivery, covered by API tests and a Playwright spec
+  including the sign-in veto.
+- **COMPARISON.md**: JS developer friction section and starter-kit roadmap.
+
+### Fixed
+
+- Store adapters no longer swallow unexpected storage errors in
+  `completeRegistration` / `completeAuthentication`. Real faults now propagate
+  to the host instead of being reported as lost authorization — which reached
+  the person enrolling as "your link expired" for what might be a database
+  problem, with nothing in any log. `false` is reserved for genuine
+  authorization or counter loss; the conformance suite pins the distinction on
+  all three adapters. (#6)
+- The SQLite adapter runs every transaction with `BEGIN IMMEDIATE`, removing
+  the read-then-write shape that WAL cannot retry after another connection
+  writes (`SQLITE_BUSY_SNAPSHOT`; `busy_timeout` does not apply there).
+  **Custom drivers** implementing the `SqliteDatabase` shape must expose
+  better-sqlite3's `transaction(fn).immediate()`.
+
+### Changed
+
+- `authCookieNames` and `cookieAttributes` now **throw** for a plain-HTTP
+  `publicOrigin` that is not loopback (`localhost`, `*.localhost`, `127.0.0.1`,
+  `[::1]`), instead of silently issuing non-`Secure` cookies. WebAuthn never
+  runs on such origins, so the value was always a misconfiguration.
+- `serializeCookie` validates the cookie name and value against RFC 6265 and
+  throws `TypeError` on characters that would corrupt or inject headers.
+- The channels Miniflare suite bundles and runs the real worker source
+  (esbuild) instead of an inline copy; the starter's `/api/invite` returns 409
+  for an already-invited email.
+
 ## 2.1.0 - 2026-08-05
 
 ### Added

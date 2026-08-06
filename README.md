@@ -23,7 +23,7 @@ Your application keeps its users and authorization. It does not keep passwords, 
 hashes, password reset tokens, TOTP seeds, or recovery codes. It stores public keys and
 hashed opaque tokens instead, and no database value can be replayed as a passkey.
 
-LocalWebAuthn is `2.1.0`. The service API, store interface, and database schema follow
+LocalWebAuthn is `2.2.0`. The service API, store interface, and database schema follow
 SemVer: breaking changes arrive only in a new major version, with upgrade notes in
 [docs/MIGRATING.md](docs/MIGRATING.md).
 
@@ -31,7 +31,7 @@ SemVer: breaking changes arrive only in a new major version, with upgrade notes 
 maintenance; see [the 2.0.0 migration notes](docs/MIGRATING.md).
 
 A stable API is not a long production track record. This is young software with a small
-user base, and it sits on the authentication path. Both packages together are about 3,500
+user base, and it sits on the authentication path. Both packages together are about 4,000
 lines of TypeScript, deliberately kept small enough to read — do that, and read
 [SECURITY.md](SECURITY.md), before you depend on it.
 
@@ -61,6 +61,18 @@ The same authenticated client can maintain multiple passkeys:
   >
 </p>
 
+Self-serve signup with **simulated delivery** — the two confirmation messages render as
+an on-screen inbox instead of being sent; each link proves its channel, and after both
+confirmations the same links open passkey setup:
+
+![Simulated dual-channel signup messages](docs/images/demo-signup-inbox.png)
+
+Re-enrolling an existing account is different: completion opens a waiting period during
+which nothing changes, any channel can veto it, and so does signing in with an existing
+passkey:
+
+![Recovery waiting period with veto](docs/images/demo-recovery-pending.png)
+
 Play the original terminal recording with `asciinema play docs/demo.cast`. The complete
 browser lifecycle is an executable Playwright test using Chromium virtual passkeys:
 
@@ -69,8 +81,10 @@ nix develop
 make demo-test
 ```
 
-The test bootstraps the administrator, creates a client, enrolls that client in a second
-browser context, adds another passkey, signs out, and signs back in.
+Two Playwright specs cover it: the lifecycle test bootstraps the administrator, creates a
+client, enrolls them in a second browser context, adds a passkey, ends sessions, and
+re-enrolls; the signup test drives the simulated dual-channel signup, the claim on the
+preferred device, and the recovery vetoes.
 
 ## Why Start With Passkeys?
 
@@ -346,10 +360,25 @@ app.use('/api/*', async (c, next) => {
 Throw a `LocalWebAuthnError` into your error mapper and it carries a `code` and an HTTP
 `status`, so failures become JSON responses without leaking why a ceremony failed.
 
-The [Hono demo adapter](examples/demo/src/auth.ts) implements all six routes, plus
-exact-origin enforcement and the enrollment flow. Your route layer owns origin checks,
-CSRF defenses, and rate limits. Production WebAuthn requires HTTPS, with a
-browser-defined exception for localhost development.
+Use package helpers so cookies and origins stay consistent across apps:
+
+```ts
+import {
+  authCookieNames,
+  cookieAttributes,
+  isExactOrigin,
+  signupPhase,
+} from '@localwebauthn/server';
+```
+
+The [Hono demo adapter](examples/demo/src/auth.ts) and the minimal
+[Hono starter](examples/starter-hono) implement all six routes with those helpers. Your route
+layer still owns CSRF defenses and rate limits. Production WebAuthn requires HTTPS, with a
+browser-defined exception for localhost development. Starter-kit roadmap:
+[docs/COMPARISON.md](docs/COMPARISON.md#starter-kit-roadmap). For SMS/email **delivery**
+(not login), see the channel examples — delivery is an internal function call, never
+a send API: [shared core](examples/channels), [Node SMTP + Twilio](examples/channels-node),
+and a [Workers + D1 + Resend + Twilio](examples/channels-cf) variant.
 
 ## What LocalWebAuthn Owns
 
@@ -497,10 +526,38 @@ It demonstrates:
 - Administrator-created users and enrollment links.
 - Enrollment in another browser or on another device.
 - Additional passkeys authorized by an authenticated session.
-- Individual credential and whole-user authentication revocation.
+- **Simulated self-serve signup and recovery**: one proof link per channel
+  (email + SMS shown as an on-screen "inbox"), cooperating proof pages, and —
+  for existing accounts — the recovery waiting period with "this wasn't me"
+  cancel and the passkey-sign-in veto.
+- Session control: sign out everywhere for a person, or your own other devices,
+  without touching passkeys.
+- Individual credential and whole-user authentication revocation (Re-enroll).
 
 See [examples/demo/README.md](examples/demo/README.md) for the code map and security
 boundary. See [docs/DEMO.md](docs/DEMO.md) to reproduce the recording and screenshots.
+
+## Find Your Example
+
+Every example is a complete, tested artifact; each README says how to run it. They share
+one security stance: enrollment links and signup OTPs ride URL fragments, message content
+comes only from fixed templates, and **delivery is an internal function call — no example
+exposes a "send email/SMS" API**.
+
+| You are building…                            | Start with                                         | What it gives you                                                                                                                        |
+| -------------------------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| A first look at the whole lifecycle          | [`examples/demo`](examples/demo)                   | Full UI: bootstrap, invite, multi-passkey, session sign-out, Re-enroll, simulated self-serve signup + recovery                           |
+| Your own server, wiring the six routes       | [`examples/starter-hono`](examples/starter-hono)   | Headless Hono/Node starter: routes, session guard, exact-origin check, invite endpoint — copy `auth-routes.ts`                           |
+| Email + SMS delivery on a traditional server | [`examples/channels-node`](examples/channels-node) | SMTP (application password) + Twilio, invoked in-process by your routes                                                                  |
+| A fully-Cloudflare app (no server)           | [`examples/channels-cf`](examples/channels-cf)     | Workers + D1 issuing real grants; Resend + Twilio; bearer-guarded invite flow                                                            |
+| The pieces both delivery shapes share        | [`examples/channels`](examples/channels)           | Fixed message templates, destination validation, fetch-based senders, `inviteAndDeliver`, and the signup/recovery proofing state machine |
+
+The signup/recovery **proofing state machine** ([`examples/channels/src/signup.ts`](examples/channels/src/signup.ts))
+is the piece to read if you are designing self-serve onboarding: capability-free proof
+links, claim-on-reopen so the person finishes on the device they prefer, and — for
+accounts that already have passkeys — a waiting period, "this wasn't me" vetoes from any
+channel, and cancellation on any successful passkey sign-in. The demo exercises all of it
+with simulated delivery; the channels examples supply the real senders.
 
 ## Good Fit
 
@@ -551,12 +608,20 @@ This repository is an npm workspace. Both public packages are versioned together
 
 ```console
 nix develop
-make check
-make demo-test
+make help
+make test              # unit + store adapters + channel examples (incl. Miniflare)
+pg-start && make test-postgres   # require a live Postgres (CI-style)
+make test-demo-install # once: Playwright Chromium
+make test-demo         # full browser lifecycle e2e
+make check             # typecheck, lint, format, coverage, package gates
 ```
 
-`make check` runs TypeScript, lint, formatting, unit and adapter conformance tests, package
-builds, `publint`, and `arethetypeswrong`. Releases use npm OIDC Trusted Publishing and do
-not require a long-lived npm write token. Publishing is triggered by a versioned GitHub
-Release, not by an ordinary branch push. See [docs/RELEASING.md](docs/RELEASING.md) and
-[CHANGELOG.md](CHANGELOG.md).
+Outside the flake shell, wrap any target: `make nix-test`, `make nix-check`.
+
+`make test` runs Vitest (server, browser, demo API) and the three channel example
+suites. PostgreSQL conformance is included when `pg-start` has been run
+(otherwise that adapter skips). `make check` adds typecheck, lint, format,
+coverage thresholds, `publint`, and `arethetypeswrong`. Releases use npm OIDC
+Trusted Publishing and do not require a long-lived npm write token. Publishing
+is triggered by a versioned GitHub Release, not by an ordinary branch push. See
+[docs/RELEASING.md](docs/RELEASING.md) and [CHANGELOG.md](CHANGELOG.md).

@@ -82,6 +82,165 @@ function isLocalWebAuthnError(value) {
   return value instanceof LocalWebAuthnError;
 }
 
+// src/http.ts
+function isHttpsPublicOrigin(publicOrigin) {
+  return new URL(publicOrigin).protocol === "https:";
+}
+function isLoopbackHost(hostname) {
+  return hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "127.0.0.1" || hostname === "[::1]";
+}
+function assertSupportedPublicOrigin(publicOrigin) {
+  const url = new URL(publicOrigin);
+  if (url.protocol !== "https:" && !isLoopbackHost(url.hostname)) {
+    throw new Error(`publicOrigin must be HTTPS (or loopback for development): ${url.origin}`);
+  }
+  return url;
+}
+function authCookieNames(publicOrigin, namespace = "lwa") {
+  const base = namespace.replaceAll(/[^a-z0-9_-]/giu, "") || "lwa";
+  const host = assertSupportedPublicOrigin(publicOrigin).protocol === "https:";
+  const prefix = host ? `__Host-${base}` : base;
+  return {
+    challenge: `${prefix}_challenge`,
+    enrollment: `${prefix}_enrollment`,
+    session: `${prefix}_session`
+  };
+}
+function cookieAttributes(options) {
+  const secure = assertSupportedPublicOrigin(options.publicOrigin).protocol === "https:";
+  const attributes = {
+    httpOnly: true,
+    path: "/",
+    sameSite: "Strict",
+    secure
+  };
+  if (options.expiresAt !== void 0) {
+    const now = options.now?.() ?? Date.now();
+    attributes.maxAge = Math.max(1, Math.ceil((options.expiresAt - now) / 1e3));
+  }
+  return attributes;
+}
+function isExactOrigin(requestOrigin, expectedOrigin) {
+  if (requestOrigin == null || requestOrigin === "") {
+    return false;
+  }
+  try {
+    return new URL(requestOrigin).origin === new URL(expectedOrigin).origin;
+  } catch {
+    return false;
+  }
+}
+function parseCookieHeader(header) {
+  if (!header) {
+    return {};
+  }
+  const cookies = {};
+  for (const part of header.split(";")) {
+    const trimmed = part.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const separator = trimmed.indexOf("=");
+    if (separator <= 0) {
+      continue;
+    }
+    const name = trimmed.slice(0, separator).trim();
+    const value = trimmed.slice(separator + 1).trim();
+    if (name && !(name in cookies)) {
+      cookies[name] = value;
+    }
+  }
+  return cookies;
+}
+var COOKIE_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u;
+var COOKIE_VALUE = /^[\u0021\u0023-\u002B\u002D-\u003A\u003C-\u005B\u005D-\u007E]*$/u;
+function serializeCookie(name, value, attributes) {
+  if (!COOKIE_NAME.test(name)) {
+    throw new TypeError(`Invalid cookie name: ${JSON.stringify(name)}`);
+  }
+  if (!COOKIE_VALUE.test(value)) {
+    throw new TypeError("Invalid cookie value: not RFC 6265 cookie-octets.");
+  }
+  const segments = [
+    `${name}=${value}`,
+    `Path=${attributes.path}`,
+    `SameSite=${attributes.sameSite}`
+  ];
+  segments.push("HttpOnly");
+  if (attributes.secure) {
+    segments.push("Secure");
+  }
+  if (attributes.maxAge !== void 0) {
+    segments.push(`Max-Age=${String(attributes.maxAge)}`);
+  }
+  return segments.join("; ");
+}
+function serializeClearedCookie(name, publicOrigin) {
+  return serializeCookie(name, "", {
+    ...cookieAttributes({ publicOrigin }),
+    maxAge: 0
+  });
+}
+
+// src/signup.ts
+function signupPhase(facts) {
+  if (facts.hasActiveCredential) {
+    return "enrolled";
+  }
+  if (facts.hasEnrollmentSession) {
+    return "enrollment_exchanged";
+  }
+  if (facts.hasPendingEnrollmentGrant) {
+    return "enrollment_issued";
+  }
+  return "created";
+}
+function nextSignupStep(phase) {
+  switch (phase) {
+    case "created":
+      return {
+        action: "issue_enrollment",
+        reason: "Create a one-time enrollment grant after your identity checks pass."
+      };
+    case "enrollment_issued":
+      return {
+        action: "deliver_enrollment_url",
+        reason: "Deliver the enrollment URL on a channel bound to the person; wait for exchange."
+      };
+    case "enrollment_exchanged":
+      return {
+        action: "register_passkey",
+        reason: "Browser should call register options/verify to create the first passkey."
+      };
+    case "enrolled":
+      return {
+        action: "done",
+        reason: "User has an active passkey; use session auth and optional additional passkeys."
+      };
+  }
+}
+function describeSignupPhase(phase) {
+  switch (phase) {
+    case "created":
+      return "User exists; no enrollment grant yet";
+    case "enrollment_issued":
+      return "Enrollment link outstanding; no passkey yet";
+    case "enrollment_exchanged":
+      return "Enrollment session active; passkey registration in progress";
+    case "enrolled":
+      return "At least one active passkey";
+  }
+}
+var SELF_SERVE_SIGNUP_STEPS = [
+  "Collect identifiers (e.g. email and phone) and rate-limit the form",
+  "Verify control of two independent channels before creating durable access",
+  "Insert application user with createUserHandle(); do not store a password",
+  "Call issueEnrollment(userId); store only the URL for delivery, never log the raw token long-term",
+  "Deliver the enrollment URL on a bound channel (not an attacker-supplied address)",
+  "User opens fragment \u2192 exchangeEnrollment \u2192 registerPasskey",
+  "Optionally prompt for a second passkey while the session is fresh"
+];
+
 // src/service.ts
 import {
   generateAuthenticationOptions,
@@ -365,7 +524,9 @@ var LocalWebAuthn = class {
    * authenticated session no longer authorizes this challenge — including when
    * the user is **inactive** as reported by the `getUser` provider; and
    * `registration_failed` (400, or 409 when authorization was lost at commit
-   * time) when the WebAuthn response does not verify.
+   * time) when the WebAuthn response does not verify. Unexpected storage
+   * failures propagate as thrown errors rather than being misreported as an
+   * expired authorization.
    */
   async verifyRegistration(input) {
     const now = this.#now();
@@ -828,13 +989,24 @@ var LocalWebAuthn = class {
 export {
   LocalWebAuthn,
   LocalWebAuthnError,
+  SELF_SERVE_SIGNUP_STEPS,
+  authCookieNames,
+  cookieAttributes,
   createEnrollmentToken,
   createOpaqueToken,
   createUserHandle,
   decodeBase64Url,
+  describeSignupPhase,
   encodeBase32,
   encodeBase64Url,
   equalBytes,
+  isExactOrigin,
+  isHttpsPublicOrigin,
   isLocalWebAuthnError,
-  sha256
+  nextSignupStep,
+  parseCookieHeader,
+  serializeClearedCookie,
+  serializeCookie,
+  sha256,
+  signupPhase
 };

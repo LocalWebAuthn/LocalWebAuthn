@@ -1,0 +1,26 @@
+{
+  "name": "@localwebauthn/channels-node",
+  "version": "2.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Traditional-server delivery example: SMTP (application password) + Twilio SMS, invoked internally by the host app",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "node -e \"process.exit(0)\"",
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@localwebauthn/channels-core": "2.2.0",
+    "nodemailer": "^7.0.13"
+  },
+  "devDependencies": {
+    "@localwebauthn/server": "2.2.0",
+    "@types/nodemailer": "^7.0.4",
+    "better-sqlite3": "^12.11.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}

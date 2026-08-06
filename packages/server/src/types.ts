@@ -257,8 +257,12 @@ export type LocalWebAuthnStore = {
    * and create the initial session.
    *
    * Must verify that the enrollment grant or authenticated session is still
-   * valid at commit time. Returns `true` on success, `false` if authorization
-   * was lost between challenge creation and verification.
+   * valid at commit time. Returns `true` on success, `false` **only** when
+   * authorization was lost between challenge creation and verification.
+   *
+   * Unexpected storage errors must propagate as thrown exceptions — never be
+   * reported as `false`. A swallowed exception here reaches the person
+   * enrolling as "your link expired", which is false and undiagnosable.
    */
   completeRegistration(input: CompleteRegistrationInput): Promise<boolean>;
 
@@ -268,7 +272,9 @@ export type LocalWebAuthnStore = {
    *
    * Must reject when the stored counter no longer equals `previousCounter`,
    * the credential is revoked, or the new counter is not a valid WebAuthn
-   * advance (strict increase, or 0→0). Returns `true` on success.
+   * advance (strict increase, or 0→0). Returns `true` on success; `false` is
+   * reserved for that lost compare-and-swap — unexpected storage errors must
+   * propagate as thrown exceptions.
    */
   completeAuthentication(input: CompleteAuthenticationInput): Promise<boolean>;
 

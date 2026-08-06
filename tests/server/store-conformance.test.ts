@@ -407,6 +407,43 @@ function storeConformance(
       }
     });
 
+    it('propagates real storage failures instead of reporting authorization loss', async () => {
+      const fixture = await createFixture();
+      try {
+        await exchangedGrant(fixture.store);
+        expect(await fixture.store.completeRegistration(registrationInput('grant-1'))).toBe(true);
+
+        // Registering the SAME credential id again under a fresh, valid grant
+        // is a genuine storage conflict (UNIQUE violation) — it must throw,
+        // not masquerade as "authorization lost" / an expired enrollment.
+        const grant2 = await exchangedGrant(fixture.store, 'grant-2', 10, 11);
+        if (!grant2) {
+          throw new Error('Second enrollment grant was not created.');
+        }
+        await expect(
+          fixture.store.completeRegistration({
+            ...registrationInput('grant-2'),
+            enrollmentSessionHash: grant2.sessionHash,
+            session: {
+              idHash: bytes(14),
+              userId: 'user-1',
+              credentialId: 'credential-1',
+              authenticatedAt: now,
+              expiresAt: now + 10_000,
+              lastSeenAt: now,
+            },
+          }),
+        ).rejects.toThrow();
+
+        // The authorization-lost case still reports `false`, not an error.
+        await expect(
+          fixture.store.completeRegistration(registrationInput('grant-1')),
+        ).resolves.toBe(false);
+      } finally {
+        await fixture.close();
+      }
+    });
+
     it('revokes only live user sessions, sparing an excepted one', async () => {
       const fixture = await createFixture();
       try {

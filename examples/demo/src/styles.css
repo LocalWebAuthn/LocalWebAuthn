@@ -760,3 +760,58 @@ dialog label {
     display: none;
   }
 }
+
+/* --- Self-serve signup (simulated) --- */
+
+.signup-panel {
+  margin-top: 18px;
+}
+
+.signup-panel form {
+  display: grid;
+  gap: 12px;
+  text-align: left;
+  margin-top: 14px;
+}
+
+.signup-panel form label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sim-inbox {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  text-align: left;
+}
+
+.sim-message {
+  border: 1px solid rgba(15, 40, 34, 0.14);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 13px;
+}
+
+.sim-message p {
+  white-space: pre-line;
+  word-break: break-word;
+  margin: 8px 0 0;
+}
+
+.sim-message a {
+  word-break: break-all;
+}
+
+.sim-subject {
+  display: block;
+  margin-top: 2px;
+  opacity: 0.75;
+}
+
+.danger-text {
+  color: #b3261e;
+  margin-top: 10px;
+}

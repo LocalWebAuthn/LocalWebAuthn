@@ -61,6 +61,20 @@ export async function migrateD1(database: D1DatabaseLike, now = Date.now()): Pro
   ]);
 }
 
+/**
+ * Whether a failed batch was stopped by the transaction guard — the CHECK row
+ * that fails when a step changed no rows, i.e. authorization or the counter
+ * compare-and-swap was lost mid-batch. That case reports `false`; every other
+ * exception is a real storage fault the host must see, not an expired
+ * enrollment. (#6)
+ */
+function guardTripped(error: unknown): false {
+  if (String(error).includes('CHECK constraint failed')) {
+    return false;
+  }
+  throw error;
+}
+
 function changes(result: D1ResultLike): number {
   return result.meta.changes ?? 0;
 }
@@ -230,8 +244,8 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
     try {
       await this.#database.batch(statements);
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      return guardTripped(error);
     }
   }
 
@@ -254,8 +268,8 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
         this.#database.prepare(D1_SQL.clearGuard),
       ]);
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      return guardTripped(error);
     }
   }
 

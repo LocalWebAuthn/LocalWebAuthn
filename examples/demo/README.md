@@ -47,10 +47,20 @@ http://localhost:4173/enroll#token=...
 2. Use **Add person** to invite someone; copy the enrollment URL.
 3. Open the URL in another browser profile or device; create their passkey.
 4. While signed in, **Add passkey** registers another device (no new link).
-5. **Sign out other devices** (your account) and the per-person **Sign out**
+5. **Self-serve signup (simulated)**: enter a name, email, and phone on the
+   sign-in page. The two confirmation messages appear on screen instead of
+   being sent; open each link and confirm. After both confirmations the same
+   links open passkey setup — on whichever device you prefer — and an open
+   proof page flips to "create your passkey" by itself. Re-using an existing
+   client email demonstrates **recovery by re-proofing**: completion opens a
+   ten-second waiting period during which nothing changes, every proof page
+   offers "this wasn't me — cancel it", and signing in with an existing
+   passkey cancels the recovery outright (administrators are refused
+   entirely).
+6. **Sign out other devices** (your account) and the per-person **Sign out**
    action end sessions only — passkeys stay valid and the person just signs in
    again. Use these when a session, not a credential, is the problem.
-6. **Re-enroll** revokes their passkeys and issues a recovery link (the
+7. **Re-enroll** revokes their passkeys and issues a recovery link (the
    documented recovery order).
 
 `make demo-reset` removes only `examples/demo/.data/localwebauthn-demo.db`.
@@ -71,12 +81,15 @@ Visiting `/` without a passkey shows sign-in help pointing at the enrollment URL
 ## Test
 
 ```console
-npx playwright install chromium
-make demo-test
+nix develop
+make test-demo-install   # once: Chromium for Playwright
+make test-demo           # or: make demo-test
+make test                # unit + channels; includes demo API tests
 ```
 
-`make check` also runs API tests under `tests/application.test.ts` (bootstrap,
-admin authorization, re-enroll).
+Outside the shell: `make nix-test-demo`. `make check` / `make nix-check` include
+demo API tests under `tests/application.test.ts` (bootstrap, admin authorization,
+re-enroll) as part of the main Vitest suite.
 
 ## Security boundary
 

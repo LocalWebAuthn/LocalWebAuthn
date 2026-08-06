@@ -3,13 +3,21 @@ import type {
   AuthUser,
   RegistrationVerificationInput,
 } from '@localwebauthn/server';
-import { isLocalWebAuthnError, LocalWebAuthn } from '@localwebauthn/server';
+import {
+  authCookieNames,
+  cookieAttributes,
+  isExactOrigin,
+  isLocalWebAuthnError,
+  LocalWebAuthn,
+} from '@localwebauthn/server';
 import { SqliteLocalWebAuthnStore } from '@localwebauthn/server/sqlite';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { Context, Hono, MiddlewareHandler } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 
 import type { DemoDatabase } from './database';
+
+import { cancelActiveRecoveries } from './database';
 
 export type DemoAuthConfig = {
   publicOrigin: string;
@@ -28,9 +36,8 @@ export type DemoAuthentication = LocalWebAuthn;
 type AuthenticationResponse = AuthenticationVerificationInput['response'];
 type RegistrationResponse = RegistrationVerificationInput['response'];
 
-const CHALLENGE_COOKIE = 'localwebauthn_demo_challenge';
-const ENROLLMENT_COOKIE = 'localwebauthn_demo_enrollment';
-const SESSION_COOKIE = 'localwebauthn_demo_session';
+/** Local HTTP demo namespace (not `__Host-`; see authCookieNames). */
+const cookiesFor = (publicOrigin: string) => authCookieNames(publicOrigin, 'lwa_demo');
 
 export function createDemoAuthentication(
   database: DemoDatabase,
@@ -70,17 +77,17 @@ export function createDemoAuthentication(
           : null;
       },
     },
+    // Signal-style activity veto: a successful passkey sign-in cancels any
+    // live self-serve recovery for that person — the owner is present, so
+    // nobody (including a channel-compromising attacker) needs re-enrollment.
+    // Events are best-effort observability; this is defense in depth on top
+    // of the cancel buttons and the recovery delay, not the only control.
+    onEvent: (event) => {
+      if (event.type === 'credential.authenticated') {
+        cancelActiveRecoveries(database, event.userId, Date.now());
+      }
+    },
   });
-}
-
-function cookieOptions(config: DemoAuthConfig, expiresAt?: number) {
-  return {
-    httpOnly: true,
-    path: '/',
-    sameSite: 'Strict' as const,
-    secure: new URL(config.publicOrigin).protocol === 'https:',
-    ...(expiresAt ? { maxAge: Math.max(1, Math.ceil((expiresAt - Date.now()) / 1000)) } : {}),
-  };
 }
 
 function setOpaqueCookie(
@@ -90,7 +97,12 @@ function setOpaqueCookie(
   value: string,
   expiresAt: number,
 ): void {
-  setCookie(context, name, value, cookieOptions(config, expiresAt));
+  setCookie(
+    context,
+    name,
+    value,
+    cookieAttributes({ publicOrigin: config.publicOrigin, expiresAt }),
+  );
 }
 
 function clearOpaqueCookie(
@@ -98,7 +110,7 @@ function clearOpaqueCookie(
   config: DemoAuthConfig,
   name: string,
 ): void {
-  deleteCookie(context, name, cookieOptions(config));
+  deleteCookie(context, name, cookieAttributes({ publicOrigin: config.publicOrigin }));
 }
 
 function authenticationError(context: Context<DemoEnvironment>, error: unknown): Response {
@@ -117,7 +129,10 @@ function authenticationError(context: Context<DemoEnvironment>, error: unknown):
 export function requireExpectedOrigin(config: DemoAuthConfig): MiddlewareHandler<DemoEnvironment> {
   return async (context, next) => {
     context.header('Cache-Control', 'no-store');
-    if (context.req.method !== 'GET' && context.req.header('Origin') !== config.publicOrigin) {
+    if (
+      context.req.method !== 'GET' &&
+      !isExactOrigin(context.req.header('Origin'), config.publicOrigin)
+    ) {
       return context.json(
         {
           error: 'invalid_origin',
@@ -134,15 +149,20 @@ export function requireExpectedOrigin(config: DemoAuthConfig): MiddlewareHandler
  * Raw session token from the request cookie, for routes that act on the
  * caller's own session (e.g. "sign out my other devices").
  */
-export function currentSessionToken(context: Context<DemoEnvironment>): string | undefined {
-  return getCookie(context, SESSION_COOKIE);
+export function currentSessionToken(
+  context: Context<DemoEnvironment>,
+  config: DemoAuthConfig,
+): string | undefined {
+  return getCookie(context, cookiesFor(config.publicOrigin).session);
 }
 
 export function requireAuthentication(
   authentication: DemoAuthentication,
+  config: DemoAuthConfig,
 ): MiddlewareHandler<DemoEnvironment> {
+  const names = cookiesFor(config.publicOrigin);
   return async (context, next) => {
-    const sessionToken = getCookie(context, SESSION_COOKIE);
+    const sessionToken = getCookie(context, names.session);
     const resolved = sessionToken ? await authentication.resolveSession(sessionToken) : null;
     if (!resolved) {
       return context.json(
@@ -163,6 +183,8 @@ export function mountAuthenticationRoutes(
   authentication: DemoAuthentication,
   config: DemoAuthConfig,
 ): void {
+  const names = cookiesFor(config.publicOrigin);
+
   app.post('/api/auth/enrollment/exchange', async (context) => {
     const body = await context.req.json<{ token?: string }>().catch((): { token?: string } => ({}));
     try {
@@ -170,7 +192,7 @@ export function mountAuthenticationRoutes(
       setOpaqueCookie(
         context,
         config,
-        ENROLLMENT_COOKIE,
+        names.enrollment,
         result.enrollmentSessionToken,
         result.expiresAt,
       );
@@ -183,10 +205,10 @@ export function mountAuthenticationRoutes(
   app.post('/api/auth/register/options', async (context) => {
     try {
       const result = await authentication.registrationOptions({
-        enrollmentSessionToken: getCookie(context, ENROLLMENT_COOKIE),
-        sessionToken: getCookie(context, SESSION_COOKIE),
+        enrollmentSessionToken: getCookie(context, names.enrollment),
+        sessionToken: getCookie(context, names.session),
       });
-      setOpaqueCookie(context, config, CHALLENGE_COOKIE, result.challengeToken, result.expiresAt);
+      setOpaqueCookie(context, config, names.challenge, result.challengeToken, result.expiresAt);
       return context.json(result.options);
     } catch (error) {
       return authenticationError(context, error);
@@ -200,19 +222,19 @@ export function mountAuthenticationRoutes(
     const label = typeof body.localWebAuthnLabel === 'string' ? body.localWebAuthnLabel : undefined;
     const response = { ...body };
     delete response.localWebAuthnLabel;
-    const challengeToken = getCookie(context, CHALLENGE_COOKIE) ?? '';
-    clearOpaqueCookie(context, config, CHALLENGE_COOKIE);
+    const challengeToken = getCookie(context, names.challenge) ?? '';
+    clearOpaqueCookie(context, config, names.challenge);
 
     try {
       const result = await authentication.verifyRegistration({
         response: response as unknown as RegistrationResponse,
         challengeToken,
-        enrollmentSessionToken: getCookie(context, ENROLLMENT_COOKIE),
-        sessionToken: getCookie(context, SESSION_COOKIE),
+        enrollmentSessionToken: getCookie(context, names.enrollment),
+        sessionToken: getCookie(context, names.session),
         label,
       });
-      clearOpaqueCookie(context, config, ENROLLMENT_COOKIE);
-      setOpaqueCookie(context, config, SESSION_COOKIE, result.sessionToken, result.expiresAt);
+      clearOpaqueCookie(context, config, names.enrollment);
+      setOpaqueCookie(context, config, names.session, result.sessionToken, result.expiresAt);
       return context.json({ verified: true }, 201);
     } catch (error) {
       return authenticationError(context, error);
@@ -222,7 +244,7 @@ export function mountAuthenticationRoutes(
   app.post('/api/auth/login/options', async (context) => {
     try {
       const result = await authentication.authenticationOptions();
-      setOpaqueCookie(context, config, CHALLENGE_COOKIE, result.challengeToken, result.expiresAt);
+      setOpaqueCookie(context, config, names.challenge, result.challengeToken, result.expiresAt);
       return context.json(result.options);
     } catch (error) {
       return authenticationError(context, error);
@@ -231,15 +253,15 @@ export function mountAuthenticationRoutes(
 
   app.post('/api/auth/login/verify', async (context) => {
     const response = await context.req.json<unknown>().catch(() => ({}));
-    const challengeToken = getCookie(context, CHALLENGE_COOKIE) ?? '';
-    clearOpaqueCookie(context, config, CHALLENGE_COOKIE);
+    const challengeToken = getCookie(context, names.challenge) ?? '';
+    clearOpaqueCookie(context, config, names.challenge);
 
     try {
       const result = await authentication.verifyAuthentication({
         response: response as AuthenticationResponse,
         challengeToken,
       });
-      setOpaqueCookie(context, config, SESSION_COOKIE, result.sessionToken, result.expiresAt);
+      setOpaqueCookie(context, config, names.session, result.sessionToken, result.expiresAt);
       return context.json({ verified: true });
     } catch (error) {
       return authenticationError(context, error);
@@ -247,11 +269,11 @@ export function mountAuthenticationRoutes(
   });
 
   app.post('/api/auth/logout', async (context) => {
-    const sessionToken = getCookie(context, SESSION_COOKIE);
+    const sessionToken = getCookie(context, names.session);
     if (sessionToken) {
       await authentication.revokeSession(sessionToken);
     }
-    clearOpaqueCookie(context, config, SESSION_COOKIE);
+    clearOpaqueCookie(context, config, names.session);
     return context.json({ signed_out: true });
   });
 }

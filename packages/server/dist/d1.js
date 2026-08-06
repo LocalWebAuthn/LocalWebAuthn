@@ -18,6 +18,12 @@ async function migrateD1(database, now = Date.now()) {
     database.prepare(SQL.insertMigration).bind(LOCALWEBAUTHN_SCHEMA_VERSION, now)
   ]);
 }
+function guardTripped(error) {
+  if (String(error).includes("CHECK constraint failed")) {
+    return false;
+  }
+  throw error;
+}
 function changes(result) {
   return result.meta.changes ?? 0;
 }
@@ -116,8 +122,8 @@ var D1LocalWebAuthnStore = class {
     try {
       await this.#database.batch(statements);
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      return guardTripped(error);
     }
   }
   async completeAuthentication(input) {
@@ -137,8 +143,8 @@ var D1LocalWebAuthnStore = class {
         this.#database.prepare(D1_SQL.clearGuard)
       ]);
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      return guardTripped(error);
     }
   }
   async resolveSession(idHash, now, idleExpiresBefore) {

@@ -61,6 +61,7 @@
           # Consumed by tests/server/store-conformance.test.ts. When the server
           # is not running the PostgreSQL suite skips instead of failing, so a
           # plain `make test` still works without `pg-start`.
+          # CI / `make test-postgres` set LOCALWEBAUTHN_REQUIRE_POSTGRES=1.
           LOCALWEBAUTHN_TEST_POSTGRES_URL = pgUrl;
 
           shellHook = ''
@@ -68,8 +69,10 @@
             echo ""
             printf "  %-12s %s\n" "node" "$(node --version 2>/dev/null)"
             printf "  %-12s %s\n" "npm" "$(npm --version 2>/dev/null)"
+            printf "  %-12s %s\n" "make" "$(make --version 2>/dev/null | head -1)"
             printf "  %-12s %s\n" "sqlite" "$(sqlite3 --version 2>/dev/null | cut -d' ' -f1)"
             printf "  %-12s %s\n" "postgres" "$(pg_ctl --version 2>/dev/null | awk '{print $NF}')"
+            printf "  %-12s %s\n" "PG URL" "${pgUrl}"
 
             if [ ! -d node_modules ] && [ -f package-lock.json ]; then
               echo ""
@@ -78,8 +81,16 @@
             fi
 
             echo ""
-            echo "Commands: make demo | make build | make test | make check"
-            echo "PostgreSQL tests: pg-start (then make test) | pg-stop"
+            echo "Make (run inside this shell, or: make nix-<target>):"
+            echo "  make help           list targets"
+            echo "  make test           unit + adapters + channel examples"
+            echo "  make test-postgres  require Postgres (pg-start first)"
+            echo "  make test-demo      Playwright e2e (make test-demo-install once)"
+            echo "  make check          full gate (typecheck, lint, coverage, packages)"
+            echo "  make demo           lifecycle UI demo"
+            echo "  make starter-hono   minimal Hono starter"
+            echo ""
+            echo "PostgreSQL: pg-start | pg-stop"
           '';
         };
       });

@@ -238,8 +238,13 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
         await this.#insertSession(tx, input.session);
         return true;
       });
-    } catch {
-      return false;
+    } catch (error) {
+      // Only the deliberate rollback reports `false`; real storage faults
+      // propagate instead of masquerading as lost authorization. (#6)
+      if (error instanceof Rollback) {
+        return false;
+      }
+      throw error;
     }
   }
 
@@ -260,8 +265,13 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
         await this.#insertSession(tx, input.session);
         return true;
       });
-    } catch {
-      return false;
+    } catch (error) {
+      // Only the deliberate rollback reports `false`; real storage faults
+      // propagate instead of masquerading as lost authorization. (#6)
+      if (error instanceof Rollback) {
+        return false;
+      }
+      throw error;
     }
   }
 

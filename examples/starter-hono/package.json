@@ -1,0 +1,20 @@
+{
+  "name": "@localwebauthn/starter-hono",
+  "version": "2.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node -e \"process.exit(0)\"",
+    "start": "node --import tsx src/server.ts",
+    "reset": "rm -f .data/starter.db"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.0.12",
+    "@localwebauthn/server": "2.2.0",
+    "better-sqlite3": "^12.11.1",
+    "hono": "^4.12.32"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.1"
+  }
+}

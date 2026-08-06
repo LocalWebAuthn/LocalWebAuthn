@@ -16,7 +16,7 @@ and a GitHub Release a maintainer chose to publish.
 1. Confirm the public `LocalWebAuthn/LocalWebAuthn` GitHub repository is available.
 2. Create the `localwebauthn` organization on npm.
 3. Enable publishing two-factor authentication on the maintainer npm account.
-4. Run `npm run release:check` from a clean checkout.
+4. From the flake shell, run `make release-check` (or `make nix-release-check`).
 5. Publish the first package records interactively:
 
    ```console
@@ -44,9 +44,12 @@ packages published from the public repository through this workflow.
 
 ## Regular Release
 
-1. Update both package versions to the same SemVer value.
+1. Update both package versions to the same SemVer value, and update the example
+   dependency pins (`examples/*/package.json` pin `@localwebauthn/*` exactly) so
+   examples copied out of the workspace install the release that actually has
+   the APIs they use.
 2. Update the changelog and migration notes.
-3. Run `npm install --package-lock-only` and `npm run release:check`.
+3. Run `npm install --package-lock-only` and `make release-check` (or `make nix-release-check`).
 4. Merge the release commit to the protected default branch.
 5. Tag that commit and publish a GitHub Release on the tag:
 

@@ -1,6 +1,6 @@
 {
   "name": "localwebauthn-workspace",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -16,8 +16,10 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
+    "test": "vitest run && npm test --workspace @localwebauthn/channels-core --workspace @localwebauthn/channels-node --workspace @localwebauthn/channels-cf",
+    "test:unit": "vitest run",
+    "test:channels": "npm test --workspace @localwebauthn/channels-core --workspace @localwebauthn/channels-node --workspace @localwebauthn/channels-cf",
+    "test:coverage": "vitest run --coverage && npm test --workspace @localwebauthn/channels-core --workspace @localwebauthn/channels-node --workspace @localwebauthn/channels-cf",
     "demo": "npm run build --workspace @localwebauthn/demo && npm run start --workspace @localwebauthn/demo",
     "demo:reset": "npm run reset --workspace @localwebauthn/demo",
     "demo:screenshots": "DEMO_SCREENSHOT_DIR=docs/images npm run test:demo:e2e",
