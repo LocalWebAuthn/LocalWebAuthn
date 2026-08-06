@@ -567,16 +567,16 @@ the gap.
 Ordered by impact for JS developers (not by cryptographic purity). Status is
 tracked here as the kits land.
 
-| Priority | Kit                           | Intent                                                                                                   | Status                                                                                                                        |
-| -------- | ----------------------------- | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| **1**    | **Framework starters**        | Hono/Node (and later Next App Router) with the six routes, session guard, and origin check already wired | **Done** — `examples/starter-hono`; full UI remains `examples/demo`                                                           |
-| **2**    | **Recovery starter kits**     | Admin re-enroll (revoke then issue) as a first-class action; dual-channel self-serve as runnable code    | Partial — demo **Re-enroll**; delivery worker in `examples/channels-cf-worker` (SMS + DKIM email); full OTP signup still open |
-| **3**    | **Cookie + origin helpers**   | One place for Secure / HttpOnly / SameSite / `__Host-` names and exact-origin checks                     | **Done** — `@localwebauthn/server` (`authCookieNames`, `cookieAttributes`, `isExactOrigin`, …)                                |
-| **4**    | **Signup state machine**      | Host-owned phases: user created → enrollment issued → exchanged → enrolled; next-step helper             | **Done** — `signupPhase` / `describeSignupPhase` on `@localwebauthn/server`                                                   |
-| **5**    | **Post-enroll UX kit**        | Prompt for a second passkey; clear lockout / last-credential messaging                                   | Partial — demo copy; no shared package yet                                                                                    |
-| **6**    | **Ops snippets**              | Rate-limit examples, `onEvent` → log/table, `cleanup()` scheduler                                        | Not started                                                                                                                   |
-| **7**    | **Browser / support matrix**  | Platform vs security key vs synced passkey; common failure modes                                         | Not started (docs)                                                                                                            |
-| **8**    | **“Don’t use us if…” wizard** | Up-front decision tree in README / COMPARISON                                                            | Partial — this section + target audience                                                                                      |
+| Priority | Kit                           | Intent                                                                                                   | Status                                                                                                                                     |
+| -------- | ----------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| **1**    | **Framework starters**        | Hono/Node (and later Next App Router) with the six routes, session guard, and origin check already wired | **Done** — `examples/starter-hono`; full UI remains `examples/demo`                                                                        |
+| **2**    | **Recovery starter kits**     | Admin re-enroll (revoke then issue) as a first-class action; dual-channel self-serve as runnable code    | Partial — demo **Re-enroll**; internal-only delivery in `examples/channels{,-node,-cf}` (SMTP/Resend + Twilio); full OTP signup still open |
+| **3**    | **Cookie + origin helpers**   | One place for Secure / HttpOnly / SameSite / `__Host-` names and exact-origin checks                     | **Done** — `@localwebauthn/server` (`authCookieNames`, `cookieAttributes`, `isExactOrigin`, …)                                             |
+| **4**    | **Signup state machine**      | Host-owned phases: user created → enrollment issued → exchanged → enrolled; next-step helper             | **Done** — `signupPhase` / `describeSignupPhase` on `@localwebauthn/server`                                                                |
+| **5**    | **Post-enroll UX kit**        | Prompt for a second passkey; clear lockout / last-credential messaging                                   | Partial — demo copy; no shared package yet                                                                                                 |
+| **6**    | **Ops snippets**              | Rate-limit examples, `onEvent` → log/table, `cleanup()` scheduler                                        | Not started                                                                                                                                |
+| **7**    | **Browser / support matrix**  | Platform vs security key vs synced passkey; common failure modes                                         | Not started (docs)                                                                                                                         |
+| **8**    | **“Don’t use us if…” wizard** | Up-front decision tree in README / COMPARISON                                                            | Partial — this section + target audience                                                                                                   |
 
 #### Dual-channel (email + phone) delivery kit
 
@@ -589,14 +589,20 @@ and enrollment messages without making email/SMS a standing authenticator:
 4. `issueEnrollment()` and deliver the fragment URL on a **bound** channel.
 5. User registers a passkey; email/SMS are **not** kept as login methods.
 
-**Shipped (minimal):** `examples/channels-cf-worker` — a Cloudflare Worker that
-sends **Twilio SMS** and **Resend email** (DKIM when the domain is verified in
-Resend). Testable with Vitest + Miniflare; outbound APIs are injectable /
-mockable so CI never needs real credentials.
+**Shipped:** internal-only delivery for both app shapes, sharing one core.
+`examples/channels` holds the fixed message templates (the only content
+source), destination validation (`SMS_ALLOWED_PREFIXES`), fetch-based Twilio /
+Resend senders, and `inviteAndDeliver` (issue grant → deliver → return **no
+link**). `examples/channels-node` is the traditional-server variant (SMTP with
+an application password + Twilio); `examples/channels-cf` is the
+fully-Cloudflare variant (Workers + D1 issuing real grants, Resend + Twilio,
+bearer-guarded invite route, Miniflare tests of the bundled source). **No
+deployment exposes a send API** — anyone-can-POST `/send-email` routes are an
+open relay and were removed by design.
 
-**Still open:** end-to-end OTP verify → `issueEnrollment` glue (compose the
-worker with `starter-hono` or the demo). LocalWebAuthn core stays free of
-Twilio/Resend SDKs.
+**Still open:** end-to-end OTP verify → `issueEnrollment` glue (the `otp`
+templates and senders exist; the verification state machine is host policy).
+LocalWebAuthn core stays free of Twilio/Resend/nodemailer dependencies.
 
 That kit closes friction **#1** and **#4** delivery for self-serve without
 reintroducing password reset. Prefer it over adding passwords to the core
@@ -626,21 +632,22 @@ lint.
 
 | #   | Severity | Finding                                                        | Where                            |
 | --- | -------- | -------------------------------------------------------------- | -------------------------------- |
-| 1   | **High** | Channels worker is an unauthenticated SMS / email relay        | `examples/channels-cf-worker`    |
+| 1   | **High** | Channels worker is an unauthenticated SMS / email relay        | resolved: `examples/channels*`   |
 | 2   | Medium   | Miniflare test runs a hand-copied script, not the real worker  | `tests/worker.miniflare.test.ts` |
 | 3   | Medium   | `SignupFacts` are not observable through the package API       | store contract + both consumers  |
 | 4   | Low      | Starter invite authorization, duplicate-email 500, README gaps | `examples/starter-hono`          |
 | 5   | Low      | HTTP helper polish (validation, `http://` downgrade, types)    | `packages/server/src/http.ts`    |
 | 6   | Low      | Docs and release hygiene (links, version pins, Make vs npm)    | repo-wide                        |
 
-**Status (August 2026):** #2, #5, and #6 are **done** on this branch (Miniflare
-bundles the real source; helpers reject non-loopback HTTP and validate cookie
-octets; SECURITY.md links the helpers, `make check` delegates to `npm run
-check`, RELEASING.md pins example versions at release). #4 is done except the
-`basePath` parameter (mount-order note added instead). #1 and #3 remain open:
-the worker hardening is pending a design discussion (auth token vs service
-binding, template-only sends, SMTP-vs-API), and the grant-read store API is
-2.2.0 contract work.
+**Status (August 2026):** #1 is **resolved by architecture** — the standalone
+send-API worker was replaced by internal-only delivery (`examples/channels`,
+`-node`, `-cf`): fixed templates, no send routes, bearer-guarded app flow,
+country-prefix allowlists. #2, #5, and #6 are **done** (Miniflare bundles the
+real source; helpers reject non-loopback HTTP and validate cookie octets;
+SECURITY.md links the helpers, `make check` delegates to `npm run check`,
+RELEASING.md pins example versions at release). #4 is done except the
+`basePath` parameter (mount-order note added instead). #3 — the grant-read
+store API — remains open as 2.2.0 contract work.
 
 #### 1. Channels worker must ship secure by default (high)
 

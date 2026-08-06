@@ -13,9 +13,13 @@
   sequencing without inventing ad-hoc pending flags.
 - **Hono starter** at `examples/starter-hono` (six routes + invite + session
   probe). Lifecycle demo uses the same cookie/origin helpers.
-- **Channels Cloudflare Worker** at `examples/channels-cf-worker`: Twilio SMS +
-  Resend email delivery, Vitest + Miniflare tests with mock API origin (no live
-  credentials required in CI).
+- **Channel delivery examples** with internal-only sending — no deployment
+  exposes a send API. `examples/channels` (shared fixed templates, destination
+  validation, fetch-based Twilio/Resend senders, `inviteAndDeliver`),
+  `examples/channels-node` (traditional server: SMTP application password +
+  Twilio), and `examples/channels-cf` (fully Cloudflare: Workers + D1 issuing
+  real grants, Resend + Twilio, bearer-guarded invite route, Miniflare tests of
+  the bundled source). No live credentials required in CI.
 - **COMPARISON.md**: JS developer friction section and starter-kit roadmap.
 
 ### Changed
@@ -26,9 +30,9 @@
   runs on such origins, so the value was always a misconfiguration.
 - `serializeCookie` validates the cookie name and value against RFC 6265 and
   throws `TypeError` on characters that would corrupt or inject headers.
-- The channels worker's Miniflare suite bundles and runs the real
-  `src/index.ts` (esbuild) instead of an inline copy; the starter's
-  `/api/invite` returns 409 for an already-invited email.
+- The channels Miniflare suite bundles and runs the real worker source
+  (esbuild) instead of an inline copy; the starter's `/api/invite` returns 409
+  for an already-invited email.
 
 ## 2.1.0 - 2026-08-05
 

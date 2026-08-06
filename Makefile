@@ -31,9 +31,9 @@ help:
 		'' \
 		'  make install          npm ci' \
 		'  make build            build all workspaces' \
-		'  make test             unit + store + channels-cf-worker tests' \
+		'  make test             unit + store + channels example tests' \
 		'  make test-unit        vitest (server/browser/demo API; PG suite skips if down)' \
-		'  make test-channels    channels Cloudflare worker (Miniflare)' \
+		'  make test-channels    channel examples (core, node SMTP, CF worker)' \
 		'  make test-demo        Playwright lifecycle e2e' \
 		'  make test-demo-install  playwright install chromium' \
 		'  make test-all         test + demo e2e' \
@@ -72,9 +72,9 @@ fmt-check:
 test-unit:
 	npx vitest run
 
-# Twilio/Resend delivery worker (mock fetch + Miniflare).
+# Delivery examples: shared core, Node SMTP+Twilio, Cloudflare Worker (Miniflare).
 test-channels:
-	npm test --workspace @localwebauthn/channels-cf-worker
+	npm test --workspace @localwebauthn/channels-core --workspace @localwebauthn/channels-node --workspace @localwebauthn/channels-cf
 
 # Default developer test entry: everything that does not need Playwright browsers.
 test: test-unit test-channels

@@ -7,7 +7,9 @@ export default defineConfig({
       ...configDefaults.exclude,
       'examples/demo/e2e/**',
       // Own vitest config / workspace package tests.
-      'examples/channels-cf-worker/**',
+      'examples/channels/**',
+      'examples/channels-node/**',
+      'examples/channels-cf/**',
       'examples/starter-hono/**',
     ],
     coverage: {

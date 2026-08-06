@@ -83,7 +83,7 @@
             echo ""
             echo "Make (run inside this shell, or: make nix-<target>):"
             echo "  make help           list targets"
-            echo "  make test           unit + adapters + channels worker (Miniflare)"
+            echo "  make test           unit + adapters + channel examples"
             echo "  make test-postgres  require Postgres (pg-start first)"
             echo "  make test-demo      Playwright e2e (make test-demo-install once)"
             echo "  make check          full gate (typecheck, lint, coverage, packages)"

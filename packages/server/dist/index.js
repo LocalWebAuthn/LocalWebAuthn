@@ -166,9 +166,7 @@ function serializeCookie(name, value, attributes) {
     `Path=${attributes.path}`,
     `SameSite=${attributes.sameSite}`
   ];
-  if (attributes.httpOnly) {
-    segments.push("HttpOnly");
-  }
+  segments.push("HttpOnly");
   if (attributes.secure) {
     segments.push("Secure");
   }
