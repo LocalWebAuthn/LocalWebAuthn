@@ -26,6 +26,12 @@ The command resets its isolated database and replaces:
 - `docs/images/demo-enrollment.png`
 - `docs/images/demo-administration.png`
 - `docs/images/demo-passkeys-mobile.png`
+- `docs/images/demo-signup-inbox.png`
+- `docs/images/demo-recovery-pending.png`
+
+The signup screenshots contain proof-link OTPs from the throwaway e2e database; by the
+end of the capturing run that signup's enrollment is claimed and exchanged and the
+recovery is canceled, so no captured link is live.
 
 Enrollment fragments are consumed before Playwright captures a page. The administration
 screenshot is taken after the issued link is dismissed and the client has enrolled, so

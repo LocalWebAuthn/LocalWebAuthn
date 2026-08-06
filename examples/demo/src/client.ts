@@ -341,7 +341,17 @@ function proofScreen(): string {
       <main class="auth-main">
         <section class="auth-panel" aria-labelledby="proof-title">
           <div class="auth-icon">${iconMarkup('shield-check', 28)}</div>
-          <h1 id="proof-title">${proof.status === 'claimable' ? 'Create your passkey' : `Confirm your ${channelLabel}`}</h1>
+          <h1 id="proof-title">${
+            proof.status === 'claimable'
+              ? 'Create your passkey'
+              : proof.status === 'pending'
+                ? 'Re-enrollment is waiting'
+                : proof.status === 'canceled'
+                  ? proof.recovery
+                    ? 'Re-enrollment canceled'
+                    : 'Signup canceled'
+                  : `Confirm your ${channelLabel}`
+          }</h1>
           ${body}
           ${alerts()}
         </section>

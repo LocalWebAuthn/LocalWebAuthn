@@ -61,6 +61,18 @@ The same authenticated client can maintain multiple passkeys:
   >
 </p>
 
+Self-serve signup with **simulated delivery** — the two confirmation messages render as
+an on-screen inbox instead of being sent; each link proves its channel, and after both
+confirmations the same links open passkey setup:
+
+![Simulated dual-channel signup messages](docs/images/demo-signup-inbox.png)
+
+Re-enrolling an existing account is different: completion opens a waiting period during
+which nothing changes, any channel can veto it, and so does signing in with an existing
+passkey:
+
+![Recovery waiting period with veto](docs/images/demo-recovery-pending.png)
+
 Play the original terminal recording with `asciinema play docs/demo.cast`. The complete
 browser lifecycle is an executable Playwright test using Chromium virtual passkeys:
 

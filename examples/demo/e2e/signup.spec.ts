@@ -1,6 +1,21 @@
 import type { BrowserContext, Page } from '@playwright/test';
 
 import { expect, test } from '@playwright/test';
+import { mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+async function capture(page: Page, name: string): Promise<void> {
+  const screenshotDirectory = process.env.DEMO_SCREENSHOT_DIR;
+  if (!screenshotDirectory) {
+    return;
+  }
+  const directory = resolve(screenshotDirectory);
+  mkdirSync(directory, { recursive: true });
+  await page.screenshot({
+    path: resolve(directory, name),
+    fullPage: true,
+  });
+}
 
 async function addVirtualPasskey(context: BrowserContext, page: Page) {
   const client = await context.newCDPSession(page);
@@ -30,6 +45,7 @@ test('self-serve signup: channel proofs cooperate, then the claimed link enrolls
   await page.getByLabel(/Mobile phone/u).fill('+15550009999');
   await page.getByRole('button', { name: 'Start signup' }).click();
   await expect(page.getByRole('heading', { name: 'Simulated messages' })).toBeVisible();
+  await capture(page, 'demo-signup-inbox.png');
 
   // Two proof links, both capability-free (no enrollment token exists yet).
   const links = await page
@@ -103,13 +119,16 @@ test('self-serve signup: channel proofs cooperate, then the claimed link enrolls
   await proofPage2.goto(recoveryLinks.find((link) => link.includes('channel=phone')) ?? '');
   await proofPage2.getByRole('button', { name: 'I started this' }).click();
   await expect(proofPage2.getByText(/re-enrollment waits/u)).toBeVisible();
+  await capture(proofPage2, 'demo-recovery-pending.png');
 
   // Existing passkeys keep working during the window — and signing in with
   // one vetoes the recovery. The waiting proof pages flip to canceled.
   await phonePage.getByRole('button', { name: 'Sign out', exact: true }).click();
   await phonePage.getByRole('button', { name: 'Continue with passkey' }).click();
   await expect(phonePage.getByRole('heading', { name: 'Your access' })).toBeVisible();
-  await expect(proofPage2.getByText(/canceled/u)).toBeVisible({ timeout: 10_000 });
+  await expect(proofPage2.getByRole('heading', { name: 'Re-enrollment canceled' })).toBeVisible({
+    timeout: 10_000,
+  });
   await expect(proofPage2.getByText(/account is unchanged/u)).toBeVisible();
 
   await proofPage.close();
