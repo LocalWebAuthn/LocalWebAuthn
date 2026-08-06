@@ -78,14 +78,21 @@ type SignupProof = {
   signupId: string;
   channel: 'email' | 'phone';
   otp: string;
-  status: 'ready' | 'waiting' | 'claimable';
+  /** From the link's display-only intent flag; the server enforces reality. */
+  recovery: boolean;
+  status: 'ready' | 'waiting' | 'pending' | 'claimable' | 'canceled';
   missing?: string[];
+  claimableAt?: number;
   enrollmentToken?: string;
   user?: { name: string; displayName: string };
 };
 
 type ProveResult = {
   complete: boolean;
+  canceled?: boolean;
+  pending?: boolean;
+  claimableAt?: number;
+  kind?: 'signup' | 'recovery';
   enrollmentToken?: string;
   user?: { name: string; displayName: string };
   proved?: string[];
@@ -262,9 +269,25 @@ function proofScreen(): string {
     return '';
   }
   const channelLabel = proof.channel === 'email' ? 'email address' : 'phone number';
+  const cancelButton = `
+    <button class="button quiet danger-text" id="cancel-signup" type="button" ${state.busy ? 'disabled' : ''}>
+      This wasn&rsquo;t me &mdash; cancel it
+    </button>
+  `;
   let body: string;
   if (proof.status === 'ready') {
-    body = `
+    body = proof.recovery
+      ? `
+      <p class="auth-lede"><strong>Someone started re-enrollment</strong> for the account bound to
+        this ${channelLabel}. Confirming helps <strong>replace this account&rsquo;s passkeys</strong>.
+        Only continue if you started this yourself, moments ago.</p>
+      <button class="button primary auth-button" id="confirm-proof" type="button" ${state.busy ? 'disabled' : ''}>
+        ${iconMarkup('check')}
+        I started this &mdash; confirm
+      </button>
+      ${cancelButton}
+    `
+      : `
       <p class="auth-lede">Someone is signing up with this ${channelLabel}. Press confirm if that
         was you. Confirming proves you control this channel; setup finishes only after every
         channel is confirmed.</p>
@@ -272,12 +295,29 @@ function proofScreen(): string {
         ${iconMarkup('check')}
         Confirm this ${proof.channel === 'email' ? 'email' : 'phone'}
       </button>
+      ${cancelButton}
     `;
   } else if (proof.status === 'waiting') {
     body = `
       <p class="auth-lede">Confirmed. Still waiting for: <strong>${escapeHtml((proof.missing ?? []).join(', '))}</strong> —
         open the link we sent there too. This page updates by itself when the last
         confirmation lands.</p>
+      ${cancelButton}
+    `;
+  } else if (proof.status === 'pending') {
+    const seconds = Math.max(0, Math.ceil(((proof.claimableAt ?? 0) - Date.now()) / 1000));
+    body = `
+      <p class="auth-lede">All channels confirmed. Because this account already has passkeys,
+        re-enrollment waits <strong>${String(seconds)}s</strong> before it can finish. Nothing
+        changes until then — existing passkeys keep working, signing in with one cancels this,
+        and so does the button below.</p>
+      ${cancelButton}
+    `;
+  } else if (proof.status === 'canceled') {
+    body = `
+      <p class="auth-lede">This ${proof.recovery ? 're-enrollment' : 'signup'} was <strong>canceled</strong>.
+        The account is unchanged. If you did not start or cancel it, someone else has access to
+        one of your channels — review your email and phone security.</p>
     `;
   } else {
     body = `
@@ -605,17 +645,25 @@ function applyProofResult(result: ProveResult): boolean {
     return false;
   }
   const previousStatus = proof.status;
-  if (result.complete && result.enrollmentToken) {
+  if (result.canceled) {
+    proof.status = 'canceled';
+    stopProofPolling();
+  } else if (result.complete && result.enrollmentToken) {
     proof.status = 'claimable';
     proof.enrollmentToken = result.enrollmentToken;
     proof.user = result.user;
     stopProofPolling();
+  } else if (result.pending) {
+    proof.status = 'pending';
+    proof.claimableAt = result.claimableAt;
+    startProofPolling();
   } else {
     proof.status = 'waiting';
     proof.missing = result.missing ?? [];
     startProofPolling();
   }
-  return proof.status !== previousStatus;
+  // The pending countdown re-renders every poll tick.
+  return proof.status !== previousStatus || proof.status === 'pending';
 }
 
 async function presentProof(): Promise<ProveResult> {
@@ -640,7 +688,8 @@ function startProofPolling(): void {
   }
   proofPoll = window.setInterval(() => {
     void (async () => {
-      if (state.proof?.status !== 'waiting') {
+      const status = state.proof?.status;
+      if (status !== 'waiting' && status !== 'pending') {
         stopProofPolling();
         return;
       }
@@ -700,6 +749,20 @@ function bindEvents(): void {
   document.querySelector('#confirm-proof')?.addEventListener('click', () => {
     void perform(async () => {
       applyProofResult(await presentProof());
+    });
+  });
+  document.querySelector('#cancel-signup')?.addEventListener('click', () => {
+    void perform(async () => {
+      const proof = state.proof;
+      if (!proof) {
+        return;
+      }
+      stopProofPolling();
+      await request('/api/signup/cancel', {
+        method: 'POST',
+        body: JSON.stringify({ signupId: proof.signupId, channel: proof.channel, otp: proof.otp }),
+      });
+      proof.status = 'canceled';
     });
   });
   document.querySelector('#claim-enroll')?.addEventListener('click', () => {
@@ -900,6 +963,7 @@ async function initialize(): Promise<void> {
       signupId: signupProof.signupId,
       channel: signupProof.channel,
       otp: signupProof.otp,
+      recovery: signupProof.recovery,
       status: 'ready',
     };
     state.checking = false;

@@ -609,10 +609,22 @@ pages cooperate on the one server-side machine (re-presenting their OTP as a
 poll) and flip to "create your passkey" when the final confirmation arrives.
 Channels are open-ended: link-borne ones (email, SMS, chat) carry OTPs, and
 host-attested ones (an existing-passkey assertion during recovery, TOTP) are
-proved by the host directly. The demo runs the whole flow with simulated
-delivery — including recovery by re-proofing for non-administrator accounts —
-and the Playwright suite drives it end to end. LocalWebAuthn core stays free
-of Twilio/Resend/nodemailer dependencies and of proofing policy.
+proved by the host directly.
+
+**Recovery is not signup.** An attacker holding one compromised channel could
+initiate re-enrollment and socially engineer the owner into confirming the
+other — and the initiator is unknowable. The machine therefore restructures
+authority and time rather than guessing: any valid channel OTP can **veto**
+(terminal cancel, "this wasn't me" beside every Confirm); recovery completion
+opens a **waiting period** during which the account is untouched and every
+open proof page shows the countdown with a cancel; and — Signal-style — **any
+successful sign-in with an existing passkey cancels** live recoveries (wired
+through the `credential.authenticated` audit event). Only a mature, uncanceled
+claim performs revoke-then-issue. The demo runs all of it with simulated
+delivery, a ten-second demo window, and Playwright coverage of both the veto
+and the sign-in cancel; administrators are excluded from self-serve recovery
+entirely. LocalWebAuthn core stays free of Twilio/Resend/nodemailer
+dependencies and of proofing policy.
 
 That kit closes friction **#1** and **#4** delivery for self-serve without
 reintroducing password reset. Prefer it over adding passwords to the core

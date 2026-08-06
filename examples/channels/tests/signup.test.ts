@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  canCancelSignup,
   createSignupChallenge,
   parseSignupFragment,
   signupMissing,
@@ -44,6 +45,7 @@ describe('signup proofing state machine', () => {
       signupId: created.signupId,
       channel: 'email',
       otp: created.otps.email,
+      recovery: false,
     });
     expect(parseSignupFragment('#token=abc')).toBeNull();
   });
@@ -102,6 +104,59 @@ describe('signup proofing state machine', () => {
         created.expiresAt,
       ),
     ).resolves.toBe('expired');
+  });
+
+  it('gates recovery behind the delay and lets any valid OTP veto', async () => {
+    const created = await challenge();
+    const completed = {
+      expiresAt: created.expiresAt + 60_000,
+      provedAt: { email: now, phone: now + 1 },
+      consumedAt: now + 1,
+      otpHashes: created.otpHashes,
+    };
+
+    // Recovery: pending until claimableAt passes, then claimable.
+    const pending = { ...completed, claimableAt: now + 10_000 };
+    await expect(
+      verifySignupProof(pending, { channel: 'email', otp: created.otps.email }, now + 2),
+    ).resolves.toBe('pending');
+    await expect(
+      verifySignupProof(pending, { channel: 'phone', otp: created.otps.phone }, now + 10_000),
+    ).resolves.toBe('completed');
+
+    // A veto is terminal and visible to every valid holder; invalid OTPs
+    // still learn nothing.
+    const canceled = { ...pending, canceledAt: now + 3 };
+    await expect(
+      verifySignupProof(canceled, { channel: 'email', otp: created.otps.email }, now + 4),
+    ).resolves.toBe('canceled');
+    await expect(
+      verifySignupProof(canceled, { channel: 'email', otp: 'wrong' }, now + 4),
+    ).resolves.toBe('invalid');
+
+    // Cancel authority: any live, valid presentation — never invalid/expired.
+    for (const outcome of [
+      'proved',
+      'already_proved',
+      'pending',
+      'completed',
+      'canceled',
+    ] as const) {
+      expect(canCancelSignup(outcome)).toBe(true);
+    }
+    expect(canCancelSignup('invalid')).toBe(false);
+    expect(canCancelSignup('expired')).toBe(false);
+
+    // Recovery links carry a display-only intent flag for consent copy.
+    const url = signupProofUrl(
+      'https://app.example.test',
+      created.signupId,
+      'email',
+      created.otps.email,
+      undefined,
+      { recovery: true },
+    );
+    expect(parseSignupFragment(new URL(url).hash)).toMatchObject({ recovery: true });
   });
 
   it('renders capability-free proof copy', async () => {

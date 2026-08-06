@@ -52,8 +52,11 @@ http://localhost:4173/enroll#token=...
    being sent; open each link and confirm. After both confirmations the same
    links open passkey setup — on whichever device you prefer — and an open
    proof page flips to "create your passkey" by itself. Re-using an existing
-   client email demonstrates recovery by re-proofing (administrators are
-   refused).
+   client email demonstrates **recovery by re-proofing**: completion opens a
+   ten-second waiting period during which nothing changes, every proof page
+   offers "this wasn't me — cancel it", and signing in with an existing
+   passkey cancels the recovery outright (administrators are refused
+   entirely).
 6. **Sign out other devices** (your account) and the per-person **Sign out**
    action end sessions only — passkeys stay valid and the person just signs in
    again. Use these when a session, not a credential, is the problem.

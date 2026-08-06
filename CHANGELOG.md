@@ -24,9 +24,13 @@
   machine issuing one capability-free proof link per channel; the enrollment
   grant exists only after the last required proof, then any channel's link
   claims the same single-use enrollment (claim-on-reopen). Channels are
-  open-ended (link-borne or host-attested). The lifecycle demo runs the whole
-  flow with simulated delivery, including recovery by re-proofing for
-  non-administrator accounts, covered by API tests and a Playwright spec.
+  open-ended (link-borne or host-attested). Recovery of existing accounts adds
+  the state-of-the-art controls: any valid channel OTP can veto ("this wasn't
+  me"), completion opens a waiting period during which the account is
+  untouched, and any successful passkey sign-in cancels live recoveries via
+  the `credential.authenticated` event. The lifecycle demo runs the whole flow
+  with simulated delivery, covered by API tests and a Playwright spec
+  including the sign-in veto.
 - **COMPARISON.md**: JS developer friction section and starter-kit roadmap.
 
 ### Changed

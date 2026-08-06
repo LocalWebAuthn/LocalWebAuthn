@@ -17,6 +17,8 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 
 import type { DemoDatabase } from './database';
 
+import { cancelActiveRecoveries } from './database';
+
 export type DemoAuthConfig = {
   publicOrigin: string;
   rpId: string;
@@ -74,6 +76,16 @@ export function createDemoAuthentication(
             }
           : null;
       },
+    },
+    // Signal-style activity veto: a successful passkey sign-in cancels any
+    // live self-serve recovery for that person — the owner is present, so
+    // nobody (including a channel-compromising attacker) needs re-enrollment.
+    // Events are best-effort observability; this is defense in depth on top
+    // of the cancel buttons and the recovery delay, not the only control.
+    onEvent: (event) => {
+      if (event.type === 'credential.authenticated') {
+        cancelActiveRecoveries(database, event.userId, Date.now());
+      }
     },
   });
 }

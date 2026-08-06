@@ -10,6 +10,7 @@ export {
   type SignupProofParams,
 } from './templates.js';
 export {
+  canCancelSignup,
   createSignupChallenge,
   parseSignupFragment,
   signupMissing,

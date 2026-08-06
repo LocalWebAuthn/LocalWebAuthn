@@ -15,6 +15,7 @@ import type { DemoClient, DemoDatabase, DemoSignup } from './database';
 
 import {
   assertE164,
+  canCancelSignup,
   createSignupChallenge,
   signupMissing,
   signupProofEmail,
@@ -33,18 +34,29 @@ import {
   requireExpectedOrigin,
 } from './auth';
 import {
+  cancelSignup,
   clientByEmail,
   clientById,
   completeSignup,
   insertSignup,
   listClients,
+  markSignupPending,
   markSignupProved,
   signupById,
+  storeSignupClaim,
 } from './database';
 
 export type DemoApplicationOptions = {
   auth: DemoAuthConfig;
   staticRoot?: string;
+  /**
+   * Recovery waiting period before a completed re-enrollment becomes
+   * claimable. Real deployments use hours or days; the demo defaults to ten
+   * seconds so the flow is watchable.
+   */
+  recoveryDelayMs?: number;
+  /** How long a matured recovery claim stays available. */
+  recoveryClaimWindowMs?: number;
 };
 
 type ClientPayload = DemoClient & {
@@ -122,6 +134,8 @@ function signupProofState(signup: DemoSignup): SignupProofState & {
   return {
     expiresAt: signup.expiresAt,
     consumedAt: signup.consumedAt,
+    canceledAt: signup.canceledAt,
+    claimableAt: signup.claimableAt,
     provedAt: { email: signup.emailProvedAt, phone: signup.phoneProvedAt },
     otpHashes: { email: signup.otpEmailHash, phone: signup.otpPhoneHash },
   };
@@ -143,7 +157,47 @@ function mountSignupRoutes(
   database: DemoDatabase,
   authentication: DemoAuthentication,
   config: DemoAuthConfig,
+  delays: { recoveryDelayMs: number; recoveryClaimWindowMs: number },
 ): void {
+  /**
+   * First mature claim of a completed recovery: only here — after the waiting
+   * period passed uncanceled — does the account change. Revoke-then-issue,
+   * store the token so every channel's link claims the same one. (Demo-grade
+   * concurrency: better-sqlite3 serializes statements in-process.)
+   */
+  async function claimRecovery(signupId: string): Promise<Response | string> {
+    const signup = signupById(database, signupId);
+    if (!signup) {
+      return 'missing';
+    }
+    if (signup.enrollmentToken) {
+      return signup.enrollmentToken;
+    }
+    const existing = clientByEmail(database, signup.email);
+    if (existing?.role === 'administrator') {
+      return 'administrator';
+    }
+    let clientId: string;
+    if (existing) {
+      await authentication.revokeUserAuthentication(existing.id);
+      clientId = existing.id;
+    } else {
+      clientId = randomUUID();
+      database
+        .prepare(
+          `INSERT INTO demo_clients(
+             id, email, display_name, role, webauthn_user_handle, created_at
+           ) VALUES (?, ?, ?, 'client', ?, ?)`,
+        )
+        .run(clientId, signup.email, signup.displayName, createUserHandle(), Date.now());
+    }
+    const enrollment = await authentication.issueEnrollment(clientId);
+    storeSignupClaim(database, signup.id, {
+      clientId,
+      enrollmentToken: enrollment.enrollmentToken,
+    });
+    return signupById(database, signup.id)?.enrollmentToken ?? enrollment.enrollmentToken;
+  }
   app.post('/api/signup/start', async (context) => {
     const body = await context.req
       .json<{ email?: unknown; phone?: unknown; displayName?: unknown }>()
@@ -180,29 +234,36 @@ function mountSignupRoutes(
       );
     }
 
+    const kind = existing ? 'recovery' : 'signup';
     const challenge = await createSignupChallenge(SIGNUP_CHANNELS);
     insertSignup(database, {
       id: challenge.signupId,
       email,
       phone,
       displayName: existing?.displayName ?? displayName,
+      kind,
       otpEmailHash: challenge.otpHashes.email,
       otpPhoneHash: challenge.otpHashes.phone,
       expiresAt: challenge.expiresAt,
     });
 
     const appName = config.rpName;
+    const recovery = kind === 'recovery';
     const emailUrl = signupProofUrl(
       config.publicOrigin,
       challenge.signupId,
       'email',
       challenge.otps.email,
+      undefined,
+      { recovery },
     );
     const phoneUrl = signupProofUrl(
       config.publicOrigin,
       challenge.signupId,
       'phone',
       challenge.otps.phone,
+      undefined,
+      { recovery },
     );
     return context.json(
       {
@@ -246,6 +307,7 @@ function mountSignupRoutes(
     const now = Date.now();
     const state = signupProofState(signup);
     const outcome = await verifySignupProof(state, { channel, otp }, now);
+    const identity = { name: signup.email, displayName: signup.displayName };
 
     if (outcome === 'invalid') {
       return context.json(
@@ -259,13 +321,34 @@ function mountSignupRoutes(
         410,
       );
     }
-    if (outcome === 'completed') {
-      // Claim-on-reopen: any proved channel's link now opens enrollment.
+    if (outcome === 'canceled') {
+      return context.json({ complete: false, canceled: true });
+    }
+    if (outcome === 'pending') {
       return context.json({
-        complete: true,
-        enrollmentToken: signup.enrollmentToken,
-        user: { name: signup.email, displayName: signup.displayName },
+        complete: false,
+        pending: true,
+        claimableAt: signup.claimableAt,
+        kind: signup.kind,
       });
+    }
+    if (outcome === 'completed') {
+      // Claim-on-reopen: any proved channel's link opens enrollment. For a
+      // matured recovery, the first claim performs revoke-then-issue here.
+      const claimed = await claimRecovery(signup.id);
+      if (claimed === 'administrator') {
+        return context.json(
+          { error: 'not_self_serve', message: 'This account cannot use self-serve signup.' },
+          409,
+        );
+      }
+      if (claimed === 'missing') {
+        return context.json(
+          { error: 'invalid_proof', message: 'This confirmation link is not valid.' },
+          403,
+        );
+      }
+      return context.json({ complete: true, enrollmentToken: claimed, user: identity });
     }
 
     if (outcome === 'proved') {
@@ -278,32 +361,34 @@ function mountSignupRoutes(
         complete: false,
         proved: SIGNUP_CHANNELS.filter((required) => Boolean(state.provedAt[required])),
         missing: signupMissing(SIGNUP_CHANNELS, state),
+        kind: signup.kind,
       });
     }
 
-    // Final proof landed: only now does the enrollment grant come to exist.
-    const existing = clientByEmail(database, signup.email);
-    if (existing?.role === 'administrator') {
-      return context.json(
-        { error: 'not_self_serve', message: 'This account cannot use self-serve signup.' },
-        409,
-      );
+    if (signup.kind === 'recovery') {
+      // Recovery is not signup: completion opens a waiting period during
+      // which the account is untouched, every open proof page shows the
+      // countdown with a cancel, and any passkey sign-in vetoes the whole
+      // thing. Real hosts also notify every channel here.
+      const claimableAt = now + delays.recoveryDelayMs;
+      markSignupPending(database, signup.id, {
+        claimableAt,
+        expiresAt: claimableAt + delays.recoveryClaimWindowMs,
+        now,
+      });
+      return context.json({ complete: false, pending: true, claimableAt, kind: signup.kind });
     }
-    let clientId: string;
-    if (existing) {
-      // Recovery: both channels re-proved; revoke before issuing (documented order).
-      await authentication.revokeUserAuthentication(existing.id);
-      clientId = existing.id;
-    } else {
-      clientId = randomUUID();
-      database
-        .prepare(
-          `INSERT INTO demo_clients(
-             id, email, display_name, role, webauthn_user_handle, created_at
-           ) VALUES (?, ?, ?, 'client', ?, ?)`,
-        )
-        .run(clientId, signup.email, signup.displayName, createUserHandle(), now);
-    }
+
+    // Plain signup: no prior credentials, no waiting period. Only now does
+    // the enrollment grant come to exist.
+    const clientId = randomUUID();
+    database
+      .prepare(
+        `INSERT INTO demo_clients(
+           id, email, display_name, role, webauthn_user_handle, created_at
+         ) VALUES (?, ?, ?, 'client', ?, ?)`,
+      )
+      .run(clientId, signup.email, signup.displayName, createUserHandle(), now);
     const enrollment = await authentication.issueEnrollment(clientId);
     completeSignup(database, signup.id, {
       clientId,
@@ -313,8 +398,39 @@ function mountSignupRoutes(
     return context.json({
       complete: true,
       enrollmentToken: enrollment.enrollmentToken,
-      user: { name: signup.email, displayName: signup.displayName },
+      user: identity,
     });
+  });
+
+  /**
+   * The veto: any valid channel OTP cancels, terminally, from any state —
+   * before completion, during the recovery waiting period, even after a
+   * plain-signup completion (harmless once the token was claimed). A false
+   * cancel costs a restart; a false confirm could cost the account.
+   */
+  app.post('/api/signup/cancel', async (context) => {
+    const body = await context.req
+      .json<{ signupId?: unknown; channel?: unknown; otp?: unknown }>()
+      .catch((): { signupId?: unknown; channel?: unknown; otp?: unknown } => ({}));
+    const signupId = typeof body.signupId === 'string' ? body.signupId : '';
+    const otp = typeof body.otp === 'string' ? body.otp : '';
+    const channel = SIGNUP_CHANNELS.find((candidate) => candidate === body.channel);
+    const signup = signupId ? signupById(database, signupId) : null;
+    if (!signup || !channel || !otp) {
+      return context.json(
+        { error: 'invalid_proof', message: 'This confirmation link is not valid.' },
+        403,
+      );
+    }
+    const outcome = await verifySignupProof(signupProofState(signup), { channel, otp }, Date.now());
+    if (!canCancelSignup(outcome)) {
+      return context.json(
+        { error: 'invalid_proof', message: 'This confirmation link is not valid.' },
+        outcome === 'expired' ? 410 : 403,
+      );
+    }
+    cancelSignup(database, signup.id, Date.now());
+    return context.json({ canceled: true });
   });
 }
 
@@ -324,7 +440,10 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
 
   app.use('/api/*', requireExpectedOrigin(options.auth));
   mountAuthenticationRoutes(app, authentication, options.auth);
-  mountSignupRoutes(app, database, authentication, options.auth);
+  mountSignupRoutes(app, database, authentication, options.auth, {
+    recoveryDelayMs: options.recoveryDelayMs ?? 10_000,
+    recoveryClaimWindowMs: options.recoveryClaimWindowMs ?? 15 * 60_000,
+  });
 
   const authenticated = requireAuthentication(authentication, options.auth);
   const administrator: MiddlewareHandler<DemoEnvironment> = async (context, next) => {

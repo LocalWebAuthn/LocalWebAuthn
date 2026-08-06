@@ -6,12 +6,12 @@ import { createOpaqueToken, createUserHandle, sha256 } from '@localwebauthn/serv
 import { randomUUID } from 'node:crypto';
 
 import { createDemoApplication, ensureBootstrapAdministrator } from '../src/application';
-import { openDemoDatabase } from '../src/database';
+import { cancelActiveRecoveries, openDemoDatabase } from '../src/database';
 
 const publicOrigin = 'http://localhost:4173';
 const databases: DemoDatabase[] = [];
 
-function setup() {
+function setup(options: { recoveryDelayMs?: number; recoveryClaimWindowMs?: number } = {}) {
   const database = openDemoDatabase(':memory:');
   databases.push(database);
   const application = createDemoApplication(database, {
@@ -20,6 +20,7 @@ function setup() {
       rpId: 'localhost',
       rpName: 'LocalWebAuthn Test',
     },
+    ...options,
   });
   return { database, ...application };
 }
@@ -78,6 +79,30 @@ async function additionalSession(database: DemoDatabase, userId: string): Promis
     )
     .run(await sha256(sessionToken), userId, credential.id, now, now + 60_000, now);
   return sessionToken;
+}
+
+/** Start a signup and harvest the per-channel OTPs from the simulated inbox. */
+async function startSignup(
+  app: { request: (path: string, init?: RequestInit) => Response | Promise<Response> },
+  input: { displayName: string; email: string; phone: string },
+): Promise<{ signupId: string; recovery: boolean; otps: Record<string, string> }> {
+  const started = await app.request('/api/signup/start', {
+    method: 'POST',
+    headers: { Origin: publicOrigin, 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const payload = (await started.json()) as {
+    signupId: string;
+    recovery: boolean;
+    simulated: { body: string }[];
+  };
+  const otps: Record<string, string> = {};
+  for (const message of payload.simulated) {
+    const url = new URL(/https?:\/\/\S+/u.exec(message.body)?.[0] ?? '');
+    const fragment = new URLSearchParams(url.hash.slice(1));
+    otps[fragment.get('channel') ?? ''] = fragment.get('otp') ?? '';
+  }
+  return { signupId: payload.signupId, recovery: payload.recovery, otps };
 }
 
 afterEach(() => {
@@ -334,48 +359,55 @@ describe('LocalWebAuthn demo application', () => {
     expect(exchanged.status).toBe(200);
   });
 
-  it('self-serve recovery re-proofs both channels for clients and refuses administrators', async () => {
-    const { app, database } = setup();
+  it('recovery waits out the delay, touches nothing meanwhile, and refuses administrators', async () => {
+    const { app, database } = setup({ recoveryDelayMs: 100, recoveryClaimWindowMs: 60_000 });
     const subject = await authenticatedClient(database, 'client');
     const administrator = await authenticatedClient(database, 'administrator');
     const headers = { Origin: publicOrigin, 'Content-Type': 'application/json' };
+    const sessionCheck = () =>
+      app.request('/api/session', { headers: { Cookie: subject.cookie, Origin: publicOrigin } });
 
-    const started = await app.request('/api/signup/start', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        displayName: 'Ignored For Recovery',
-        email: `client-${subject.id}@example.test`,
-        phone: '+15551230001',
-      }),
+    const { signupId, otps, recovery } = await startSignup(app, {
+      displayName: 'Ignored For Recovery',
+      email: `client-${subject.id}@example.test`,
+      phone: '+15551230001',
     });
-    const startPayload = (await started.json()) as {
-      signupId: string;
-      recovery: boolean;
-      simulated: { body: string }[];
-    };
-    expect(startPayload.recovery).toBe(true);
-
-    const otps: Record<string, string> = {};
-    for (const message of startPayload.simulated) {
-      const url = new URL(/https?:\/\/\S+/u.exec(message.body)?.[0] ?? '');
-      const fragment = new URLSearchParams(url.hash.slice(1));
-      otps[fragment.get('channel') ?? ''] = fragment.get('otp') ?? '';
-    }
-    for (const channel of ['email', 'phone']) {
-      const response = await app.request('/api/signup/prove', {
+    expect(recovery).toBe(true);
+    const prove = (channel: string) =>
+      app.request('/api/signup/prove', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ signupId: startPayload.signupId, channel, otp: otps[channel] }),
+        body: JSON.stringify({ signupId, channel, otp: otps[channel] }),
       });
-      expect(response.status).toBe(200);
-    }
 
-    // Recovery revoked the old credentials and sessions before issuing.
-    const oldSession = await app.request('/api/session', {
-      headers: { Cookie: subject.cookie, Origin: publicOrigin },
+    await expect((await prove('email')).json()).resolves.toMatchObject({ complete: false });
+    const completed = (await (await prove('phone')).json()) as {
+      complete: boolean;
+      pending?: boolean;
+      claimableAt?: number;
+    };
+    // Recovery is not signup: completion opens a waiting period instead of
+    // releasing a token, and the account is untouched during it.
+    expect(completed).toMatchObject({ complete: false, pending: true });
+    expect(completed.claimableAt).toBeGreaterThan(Date.now());
+    expect((await sessionCheck()).status).toBe(200);
+    await expect((await prove('email')).json()).resolves.toMatchObject({ pending: true });
+
+    // After the window, any channel's OTP claims; only now is the account
+    // revoked and the fresh enrollment issued.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const claimed = (await (await prove('email')).json()) as {
+      complete: boolean;
+      enrollmentToken: string;
+    };
+    expect(claimed.complete).toBe(true);
+    expect((await sessionCheck()).status).toBe(401);
+    const exchanged = await app.request('/api/auth/enrollment/exchange', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ token: claimed.enrollmentToken }),
     });
-    expect(oldSession.status).toBe(401);
+    expect(exchanged.status).toBe(200);
 
     // Administrator accounts are not self-serve recoverable.
     const adminStart = await app.request('/api/signup/start', {
@@ -388,6 +420,59 @@ describe('LocalWebAuthn demo application', () => {
       }),
     });
     expect(adminStart.status).toBe(409);
+  });
+
+  it('any valid channel OTP vetoes a recovery, and a passkey sign-in vetoes it too', async () => {
+    const { app, database } = setup({ recoveryDelayMs: 60_000 });
+    const subject = await authenticatedClient(database, 'client');
+    const headers = { Origin: publicOrigin, 'Content-Type': 'application/json' };
+    const email = `client-${subject.id}@example.test`;
+
+    // Veto during the pending window, from a channel that never confirmed
+    // anything: cancel authority does not require a prior proof.
+    const first = await startSignup(app, { displayName: 'X', email, phone: '+15551230003' });
+    const prove = (id: string, otps: Record<string, string>, channel: string) =>
+      app.request('/api/signup/prove', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ signupId: id, channel, otp: otps[channel] }),
+      });
+    await prove(first.signupId, first.otps, 'email');
+    await expect((await prove(first.signupId, first.otps, 'phone')).json()).resolves.toMatchObject({
+      pending: true,
+    });
+    const cancel = await app.request('/api/signup/cancel', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        signupId: first.signupId,
+        channel: 'email',
+        otp: first.otps.email,
+      }),
+    });
+    await expect(cancel.json()).resolves.toEqual({ canceled: true });
+    await expect((await prove(first.signupId, first.otps, 'phone')).json()).resolves.toMatchObject({
+      canceled: true,
+      complete: false,
+    });
+    // The account never changed.
+    expect(
+      (
+        await app.request('/api/session', {
+          headers: { Cookie: subject.cookie, Origin: publicOrigin },
+        })
+      ).status,
+    ).toBe(200);
+
+    // Signal-style activity veto: a passkey sign-in cancels a live recovery.
+    // (The hook fires on the credential.authenticated event; the e2e drives a
+    // real sign-in — here we exercise the same helper the hook calls.)
+    const second = await startSignup(app, { displayName: 'X', email, phone: '+15551230003' });
+    await prove(second.signupId, second.otps, 'email');
+    expect(cancelActiveRecoveries(database, subject.id, Date.now())).toBe(1);
+    await expect(
+      (await prove(second.signupId, second.otps, 'phone')).json(),
+    ).resolves.toMatchObject({ canceled: true, complete: false });
   });
 
   it('re-enrolls by revoking then issuing a recovery link', async () => {

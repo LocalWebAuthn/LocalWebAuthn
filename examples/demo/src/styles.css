@@ -810,3 +810,8 @@ dialog label {
   margin-top: 2px;
   opacity: 0.75;
 }
+
+.danger-text {
+  color: #b3261e;
+  margin-top: 10px;
+}

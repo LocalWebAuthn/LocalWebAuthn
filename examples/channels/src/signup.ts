@@ -30,6 +30,24 @@
  * exchange (token already spent) is therefore a loud support signal, never a
  * silent loss. Claims end at the signup's expiry.
  *
+ * **Recovery is not signup.** When the account already has credentials, an
+ * attacker holding one compromised channel could initiate re-enrollment and
+ * socially engineer the owner into confirming the other. The initiator is
+ * unknowable, so the machine restructures authority and time instead:
+ *
+ * - **Veto from anywhere:** any valid channel OTP may cancel (`canceledAt`),
+ *   terminally, from any state — and the host should also cancel on stronger
+ *   signals, e.g. any successful sign-in with an existing passkey. Canceling
+ *   is strong authority; confirming is weak.
+ * - **Delay before claim:** recovery completion sets `claimableAt`; until it
+ *   passes, valid OTPs see `'pending'` and nothing about the account changes
+ *   (no revocation, no grant). The host extends `expiresAt` to cover the
+ *   window, notifies every channel that recovery will complete, and performs
+ *   revoke + issue only at the first mature claim.
+ * - **Informed consent:** proof pages must say what confirming does and put
+ *   "this wasn't me" beside it. Post-claim quarantine (notify + undo window)
+ *   is the next layer and lives with the host.
+ *
  * This module is pure logic + crypto: the host owns the storage (one table)
  * and the routes. See `examples/demo` for a complete simulated flow.
  */
@@ -52,8 +70,15 @@ export type SignupProofState = {
   expiresAt: number;
   /** Unix ms per channel once proved, else null/absent. */
   provedAt: Partial<Record<SignupChannel, number | null>>;
-  /** Set when enrollment was issued; from then on valid OTPs claim it. */
+  /** Set when every required proof landed; from then on valid OTPs claim it. */
   consumedAt: number | null;
+  /** Terminal veto: set by any valid channel OTP or a host-side signal. */
+  canceledAt?: number | null;
+  /**
+   * Recovery delay gate: valid OTPs see `'pending'` until this passes.
+   * Null/absent means immediately claimable (plain signup).
+   */
+  claimableAt?: number | null;
 };
 
 const TOKEN_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
@@ -123,9 +148,11 @@ export function signupProofUrl(
   channel: SignupChannel,
   otp: string,
   path = '/signup',
+  options: { recovery?: boolean } = {},
 ): string {
   const url = new URL(path, publicOrigin);
-  url.hash = `signup=${signupId}&channel=${encodeURIComponent(channel)}&otp=${otp}`;
+  const intent = options.recovery ? '&intent=recovery' : '';
+  url.hash = `signup=${signupId}&channel=${encodeURIComponent(channel)}&otp=${otp}${intent}`;
   return url.toString();
 }
 
@@ -136,7 +163,7 @@ export function signupProofUrl(
  */
 export function parseSignupFragment(
   hash: string,
-): { signupId: string; channel: SignupChannel; otp: string } | null {
+): { signupId: string; channel: SignupChannel; otp: string; recovery: boolean } | null {
   const parameters = new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : hash);
   const signupId = parameters.get('signup');
   const channel = parameters.get('channel');
@@ -144,10 +171,12 @@ export function parseSignupFragment(
   if (!signupId || !channel || !otp) {
     return null;
   }
-  return { signupId, channel, otp };
+  // `intent` shapes the consent copy only; the server never trusts it.
+  return { signupId, channel, otp, recovery: parameters.get('intent') === 'recovery' };
 }
 
-export type ProofOutcome = 'proved' | 'already_proved' | 'invalid' | 'expired' | 'completed';
+export type ProofOutcome =
+  'proved' | 'already_proved' | 'invalid' | 'expired' | 'completed' | 'pending' | 'canceled';
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   let difference = left.length === right.length ? 0 : 1;
@@ -180,13 +209,35 @@ export async function verifySignupProof(
   if (!expected || !bytesEqual(await sha256(presented.otp), expected)) {
     return 'invalid';
   }
+  if (stored.canceledAt) {
+    return 'canceled';
+  }
   if (stored.consumedAt !== null) {
+    if (stored.claimableAt && now < stored.claimableAt) {
+      return 'pending';
+    }
     return 'completed';
   }
   if (stored.provedAt[presented.channel]) {
     return 'already_proved';
   }
   return 'proved';
+}
+
+/**
+ * Whether a proof presentation with this outcome may cancel the signup: any
+ * valid, live OTP — proved or not, before or after completion — carries veto
+ * authority. Invalid and expired presentations learn and change nothing;
+ * canceling an already-canceled signup is a harmless no-op for the host.
+ */
+export function canCancelSignup(outcome: ProofOutcome): boolean {
+  return (
+    outcome === 'proved' ||
+    outcome === 'already_proved' ||
+    outcome === 'pending' ||
+    outcome === 'completed' ||
+    outcome === 'canceled'
+  );
 }
 
 /** True when every required channel (link-borne or host-attested) is proved. */
