@@ -11,12 +11,14 @@ import {
 } from "./chunk-6NWV3XTI.js";
 
 // src/sqlite.ts
+var Rollback = class extends Error {
+};
 function migrateSqlite(database, now = Date.now()) {
   database.exec("PRAGMA foreign_keys = ON");
   database.transaction(() => {
     database.exec(LOCALWEBAUTHN_SCHEMA_SQL);
     database.prepare(SQL.insertMigration).run(LOCALWEBAUTHN_SCHEMA_VERSION, now);
-  })();
+  }).immediate();
 }
 var SqliteLocalWebAuthnStore = class {
   #database;
@@ -36,7 +38,7 @@ var SqliteLocalWebAuthnStore = class {
         record.createdAt
       );
       return revoked.map((row) => row.id);
-    })();
+    }).immediate();
   }
   async exchangeEnrollment(tokenHash, sessionHash, sessionExpiresAt, now) {
     const row = this.#database.prepare(SQL.exchangeEnrollment).get(now, sessionHash, sessionExpiresAt, tokenHash, now);
@@ -91,36 +93,35 @@ var SqliteLocalWebAuthnStore = class {
         if (input.challenge.grantId) {
           const completion = this.#database.prepare(SQL.completeEnrollmentGrant).run(input.now, input.challenge.grantId, input.enrollmentSessionHash, input.now);
           if (completion.changes !== 1) {
-            throw new Error("Enrollment grant changed during registration.");
+            throw new Rollback();
           }
         }
         this.#insertSession(input.session);
         return true;
-      })();
-    } catch {
-      return false;
+      }).immediate();
+    } catch (error) {
+      if (error instanceof Rollback) {
+        return false;
+      }
+      throw error;
     }
   }
   async completeAuthentication(input) {
-    try {
-      return this.#database.transaction(() => {
-        const advanced = this.#database.prepare(SQL.advanceCredentialCounter).run(
-          input.newCounter,
-          input.now,
-          input.credentialId,
-          input.previousCounter,
-          input.newCounter,
-          input.newCounter
-        );
-        if (advanced.changes !== 1) {
-          return false;
-        }
-        this.#insertSession(input.session);
-        return true;
-      })();
-    } catch {
-      return false;
-    }
+    return this.#database.transaction(() => {
+      const advanced = this.#database.prepare(SQL.advanceCredentialCounter).run(
+        input.newCounter,
+        input.now,
+        input.credentialId,
+        input.previousCounter,
+        input.newCounter,
+        input.newCounter
+      );
+      if (advanced.changes !== 1) {
+        return false;
+      }
+      this.#insertSession(input.session);
+      return true;
+    }).immediate();
   }
   async resolveSession(idHash, now, idleExpiresBefore) {
     const row = this.#database.prepare(SQL.selectSession).get(idHash, now, idleExpiresBefore);
@@ -151,7 +152,7 @@ var SqliteLocalWebAuthnStore = class {
         return "last_credential";
       }
       return "not_found";
-    })();
+    }).immediate();
   }
   async revokeUserAuthentication(userId, now) {
     this.#database.transaction(() => {
@@ -159,7 +160,7 @@ var SqliteLocalWebAuthnStore = class {
       this.#database.prepare(SQL.revokeUserSessions).run(now, userId);
       this.#database.prepare(SQL.revokeUserGrants).run(now, userId);
       this.#database.prepare(SQL.consumeUserChallenges).run(now, userId);
-    })();
+    }).immediate();
   }
   async cleanup(now) {
     return this.#database.transaction(() => {
@@ -167,7 +168,7 @@ var SqliteLocalWebAuthnStore = class {
       const enrollmentGrants = this.#database.prepare(SQL.deleteFinishedGrants).run(now).changes;
       const challenges = this.#database.prepare(SQL.deleteFinishedChallenges).run(now).changes;
       return { enrollmentGrants, challenges, sessions };
-    })();
+    }).immediate();
   }
   /** Re-check the authorizing grant or session at commit time. */
   #registrationIsAuthorized(input) {

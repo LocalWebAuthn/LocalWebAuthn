@@ -1,4 +1,4 @@
-import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, g as RevokeCredentialResult, h as CleanupResult } from './types-CDh1Rr6m.js';
+import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, g as RevokeCredentialResult, h as CleanupResult } from './types-Cne4CLO3.js';
 import '@simplewebauthn/server';
 
 type SqliteRunResult = {
@@ -9,19 +9,22 @@ type SqliteStatement = {
     get(...parameters: unknown[]): unknown;
     all(...parameters: unknown[]): unknown[];
 };
+/**
+ * better-sqlite3's transaction function: callable (BEGIN DEFERRED) with an
+ * `immediate()` variant (BEGIN IMMEDIATE). The adapter always uses
+ * `immediate()`: a deferred transaction that reads before writing cannot be
+ * retried by `busy_timeout` under WAL once another connection has written
+ * (`SQLITE_BUSY_SNAPSHOT`), and every transaction here writes.
+ */
+type SqliteTransaction<T> = {
+    (): T;
+    immediate(): T;
+};
 type SqliteDatabase = {
     exec(sql: string): unknown;
     prepare(sql: string): SqliteStatement;
-    transaction<T>(operation: () => T): () => T;
+    transaction<T>(operation: () => T): SqliteTransaction<T>;
 };
-/**
- * Create or update the `localwebauthn_*` tables. Idempotent — safe to call on
- * every start.
- *
- * Enables `PRAGMA foreign_keys = ON` on this connection. SQLite does not enforce
- * foreign keys unless that pragma is set; keep using the same connection for
- * the store so the schema constraints remain active.
- */
 declare function migrateSqlite(database: SqliteDatabase, now?: number): void;
 /**
  * {@link LocalWebAuthnStore} backed by better-sqlite3 (or any driver with the
@@ -54,4 +57,4 @@ declare class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
     cleanup(now: number): Promise<CleanupResult>;
 }
 
-export { type SqliteDatabase, SqliteLocalWebAuthnStore, type SqliteRunResult, type SqliteStatement, migrateSqlite };
+export { type SqliteDatabase, SqliteLocalWebAuthnStore, type SqliteRunResult, type SqliteStatement, type SqliteTransaction, migrateSqlite };

@@ -1,5 +1,5 @@
-import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsResult, m as RegistrationVerificationInput, n as RegistrationVerificationResult, A as AuthenticationOptionsResult, o as AuthenticationVerificationInput, p as AuthenticationVerificationResult, q as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-CDh1Rr6m.js';
-export { r as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, s as LocalWebAuthnDurations, t as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, u as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-CDh1Rr6m.js';
+import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsResult, m as RegistrationVerificationInput, n as RegistrationVerificationResult, A as AuthenticationOptionsResult, o as AuthenticationVerificationInput, p as AuthenticationVerificationResult, q as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-Cne4CLO3.js';
+export { r as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, s as LocalWebAuthnDurations, t as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, u as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-Cne4CLO3.js';
 export { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 declare function defaultRandomBytes(length: number): Uint8Array;
@@ -283,7 +283,9 @@ declare class LocalWebAuthn {
      * authenticated session no longer authorizes this challenge — including when
      * the user is **inactive** as reported by the `getUser` provider; and
      * `registration_failed` (400, or 409 when authorization was lost at commit
-     * time) when the WebAuthn response does not verify.
+     * time) when the WebAuthn response does not verify. Unexpected storage
+     * failures propagate as thrown errors rather than being misreported as an
+     * expired authorization.
      */
     verifyRegistration(input: RegistrationVerificationInput): Promise<RegistrationVerificationResult>;
     /**

@@ -33,6 +33,21 @@
   including the sign-in veto.
 - **COMPARISON.md**: JS developer friction section and starter-kit roadmap.
 
+### Fixed
+
+- Store adapters no longer swallow unexpected storage errors in
+  `completeRegistration` / `completeAuthentication`. Real faults now propagate
+  to the host instead of being reported as lost authorization — which reached
+  the person enrolling as "your link expired" for what might be a database
+  problem, with nothing in any log. `false` is reserved for genuine
+  authorization or counter loss; the conformance suite pins the distinction on
+  all three adapters. (#6)
+- The SQLite adapter runs every transaction with `BEGIN IMMEDIATE`, removing
+  the read-then-write shape that WAL cannot retry after another connection
+  writes (`SQLITE_BUSY_SNAPSHOT`; `busy_timeout` does not apply there).
+  **Custom drivers** implementing the `SqliteDatabase` shape must expose
+  better-sqlite3's `transaction(fn).immediate()`.
+
 ### Changed
 
 - `authCookieNames` and `cookieAttributes` now **throw** for a plain-HTTP

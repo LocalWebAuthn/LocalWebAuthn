@@ -38,10 +38,22 @@ export type SqliteStatement = {
   all(...parameters: unknown[]): unknown[];
 };
 
+/**
+ * better-sqlite3's transaction function: callable (BEGIN DEFERRED) with an
+ * `immediate()` variant (BEGIN IMMEDIATE). The adapter always uses
+ * `immediate()`: a deferred transaction that reads before writing cannot be
+ * retried by `busy_timeout` under WAL once another connection has written
+ * (`SQLITE_BUSY_SNAPSHOT`), and every transaction here writes.
+ */
+export type SqliteTransaction<T> = {
+  (): T;
+  immediate(): T;
+};
+
 export type SqliteDatabase = {
   exec(sql: string): unknown;
   prepare(sql: string): SqliteStatement;
-  transaction<T>(operation: () => T): () => T;
+  transaction<T>(operation: () => T): SqliteTransaction<T>;
 };
 
 /**
@@ -52,12 +64,17 @@ export type SqliteDatabase = {
  * foreign keys unless that pragma is set; keep using the same connection for
  * the store so the schema constraints remain active.
  */
+/** Thrown inside a transaction to roll it back and report `false`. */
+class Rollback extends Error {}
+
 export function migrateSqlite(database: SqliteDatabase, now = Date.now()): void {
   database.exec('PRAGMA foreign_keys = ON');
-  database.transaction(() => {
-    database.exec(LOCALWEBAUTHN_SCHEMA_SQL);
-    database.prepare(SQL.insertMigration).run(LOCALWEBAUTHN_SCHEMA_VERSION, now);
-  })();
+  database
+    .transaction(() => {
+      database.exec(LOCALWEBAUTHN_SCHEMA_SQL);
+      database.prepare(SQL.insertMigration).run(LOCALWEBAUTHN_SCHEMA_VERSION, now);
+    })
+    .immediate();
 }
 
 /**
@@ -77,22 +94,24 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
   }
 
   async replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]> {
-    return this.#database.transaction(() => {
-      const revoked = this.#database
-        .prepare(SQL.revokePendingGrants)
-        .all(record.createdAt, record.userId) as { id: string }[];
-      this.#database
-        .prepare(SQL.insertEnrollmentGrant)
-        .run(
-          record.id,
-          record.userId,
-          record.tokenHash,
-          record.expiresAt,
-          record.approvedByUserId,
-          record.createdAt,
-        );
-      return revoked.map((row) => row.id);
-    })();
+    return this.#database
+      .transaction(() => {
+        const revoked = this.#database
+          .prepare(SQL.revokePendingGrants)
+          .all(record.createdAt, record.userId) as { id: string }[];
+        this.#database
+          .prepare(SQL.insertEnrollmentGrant)
+          .run(
+            record.id,
+            record.userId,
+            record.tokenHash,
+            record.expiresAt,
+            record.approvedByUserId,
+            record.createdAt,
+          );
+        return revoked.map((row) => row.id);
+      })
+      .immediate();
   }
 
   async exchangeEnrollment(
@@ -158,47 +177,57 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
 
   async completeRegistration(input: CompleteRegistrationInput): Promise<boolean> {
     try {
-      return this.#database.transaction(() => {
-        if (!this.#registrationIsAuthorized(input)) {
-          return false;
-        }
-
-        const credential = input.credential;
-        this.#database
-          .prepare(SQL.insertCredential)
-          .run(
-            credential.id,
-            credential.userId,
-            credential.publicKey,
-            credential.counter,
-            JSON.stringify(credential.transports),
-            credential.deviceType,
-            credential.backedUp ? 1 : 0,
-            credential.label,
-            credential.createdAt,
-          );
-
-        if (input.challenge.grantId) {
-          const completion = this.#database
-            .prepare(SQL.completeEnrollmentGrant)
-            .run(input.now, input.challenge.grantId, input.enrollmentSessionHash, input.now);
-          if (completion.changes !== 1) {
-            // Roll the whole registration back: the grant moved under us.
-            throw new Error('Enrollment grant changed during registration.');
+      return this.#database
+        .transaction(() => {
+          if (!this.#registrationIsAuthorized(input)) {
+            return false;
           }
-        }
 
-        this.#insertSession(input.session);
-        return true;
-      })();
-    } catch {
-      return false;
+          const credential = input.credential;
+          this.#database
+            .prepare(SQL.insertCredential)
+            .run(
+              credential.id,
+              credential.userId,
+              credential.publicKey,
+              credential.counter,
+              JSON.stringify(credential.transports),
+              credential.deviceType,
+              credential.backedUp ? 1 : 0,
+              credential.label,
+              credential.createdAt,
+            );
+
+          if (input.challenge.grantId) {
+            const completion = this.#database
+              .prepare(SQL.completeEnrollmentGrant)
+              .run(input.now, input.challenge.grantId, input.enrollmentSessionHash, input.now);
+            if (completion.changes !== 1) {
+              // Roll the whole registration back: the grant moved under us.
+              throw new Rollback();
+            }
+          }
+
+          this.#insertSession(input.session);
+          return true;
+        })
+        .immediate();
+    } catch (error) {
+      // Only the deliberate rollback reports `false` (authorization lost).
+      // Anything else is a real storage fault the host must see — swallowing
+      // it here told enrollees their valid link had expired. (#6)
+      if (error instanceof Rollback) {
+        return false;
+      }
+      throw error;
     }
   }
 
   async completeAuthentication(input: CompleteAuthenticationInput): Promise<boolean> {
-    try {
-      return this.#database.transaction(() => {
+    // `false` means the counter compare-and-swap was lost; storage faults
+    // propagate rather than masquerading as a failed authentication. (#6)
+    return this.#database
+      .transaction(() => {
         const advanced = this.#database
           .prepare(SQL.advanceCredentialCounter)
           .run(
@@ -214,10 +243,8 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
         }
         this.#insertSession(input.session);
         return true;
-      })();
-    } catch {
-      return false;
-    }
+      })
+      .immediate();
   }
 
   async resolveSession(
@@ -262,43 +289,49 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
     now: number,
     options: { allowLastCredential?: boolean } = {},
   ): Promise<RevokeCredentialResult> {
-    return this.#database.transaction(() => {
-      const allowLast = options.allowLastCredential ? 1 : 0;
-      const revoked = this.#database
-        .prepare(SQL.revokeCredential)
-        .run(now, credentialId, userId, allowLast, userId, credentialId);
-      if (revoked.changes === 1) {
-        this.#database.prepare(SQL.revokeSessionsForCredential).run(now, credentialId);
-        return 'revoked';
-      }
-      if (
-        !options.allowLastCredential &&
-        this.#database
-          .prepare(SQL.isLastActiveCredential)
-          .get(credentialId, userId, userId, credentialId)
-      ) {
-        return 'last_credential';
-      }
-      return 'not_found';
-    })();
+    return this.#database
+      .transaction(() => {
+        const allowLast = options.allowLastCredential ? 1 : 0;
+        const revoked = this.#database
+          .prepare(SQL.revokeCredential)
+          .run(now, credentialId, userId, allowLast, userId, credentialId);
+        if (revoked.changes === 1) {
+          this.#database.prepare(SQL.revokeSessionsForCredential).run(now, credentialId);
+          return 'revoked';
+        }
+        if (
+          !options.allowLastCredential &&
+          this.#database
+            .prepare(SQL.isLastActiveCredential)
+            .get(credentialId, userId, userId, credentialId)
+        ) {
+          return 'last_credential';
+        }
+        return 'not_found';
+      })
+      .immediate();
   }
 
   async revokeUserAuthentication(userId: string, now: number): Promise<void> {
-    this.#database.transaction(() => {
-      this.#database.prepare(SQL.revokeUserCredentials).run(now, userId);
-      this.#database.prepare(SQL.revokeUserSessions).run(now, userId);
-      this.#database.prepare(SQL.revokeUserGrants).run(now, userId);
-      this.#database.prepare(SQL.consumeUserChallenges).run(now, userId);
-    })();
+    this.#database
+      .transaction(() => {
+        this.#database.prepare(SQL.revokeUserCredentials).run(now, userId);
+        this.#database.prepare(SQL.revokeUserSessions).run(now, userId);
+        this.#database.prepare(SQL.revokeUserGrants).run(now, userId);
+        this.#database.prepare(SQL.consumeUserChallenges).run(now, userId);
+      })
+      .immediate();
   }
 
   async cleanup(now: number): Promise<CleanupResult> {
-    return this.#database.transaction(() => {
-      const sessions = this.#database.prepare(SQL.deleteExpiredSessions).run(now).changes;
-      const enrollmentGrants = this.#database.prepare(SQL.deleteFinishedGrants).run(now).changes;
-      const challenges = this.#database.prepare(SQL.deleteFinishedChallenges).run(now).changes;
-      return { enrollmentGrants, challenges, sessions };
-    })();
+    return this.#database
+      .transaction(() => {
+        const sessions = this.#database.prepare(SQL.deleteExpiredSessions).run(now).changes;
+        const enrollmentGrants = this.#database.prepare(SQL.deleteFinishedGrants).run(now).changes;
+        const challenges = this.#database.prepare(SQL.deleteFinishedChallenges).run(now).changes;
+        return { enrollmentGrants, challenges, sessions };
+      })
+      .immediate();
   }
 
   /** Re-check the authorizing grant or session at commit time. */

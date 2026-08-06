@@ -524,7 +524,9 @@ var LocalWebAuthn = class {
    * authenticated session no longer authorizes this challenge — including when
    * the user is **inactive** as reported by the `getUser` provider; and
    * `registration_failed` (400, or 409 when authorization was lost at commit
-   * time) when the WebAuthn response does not verify.
+   * time) when the WebAuthn response does not verify. Unexpected storage
+   * failures propagate as thrown errors rather than being misreported as an
+   * expired authorization.
    */
   async verifyRegistration(input) {
     const now = this.#now();

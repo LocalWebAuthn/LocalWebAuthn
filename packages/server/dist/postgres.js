@@ -143,8 +143,11 @@ var PostgresLocalWebAuthnStore = class {
         await this.#insertSession(tx, input.session);
         return true;
       });
-    } catch {
-      return false;
+    } catch (error) {
+      if (error instanceof Rollback) {
+        return false;
+      }
+      throw error;
     }
   }
   async completeAuthentication(input) {
@@ -164,8 +167,11 @@ var PostgresLocalWebAuthnStore = class {
         await this.#insertSession(tx, input.session);
         return true;
       });
-    } catch {
-      return false;
+    } catch (error) {
+      if (error instanceof Rollback) {
+        return false;
+      }
+      throw error;
     }
   }
   async resolveSession(idHash, now, idleExpiresBefore) {
