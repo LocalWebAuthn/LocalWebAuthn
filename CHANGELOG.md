@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 2.2.0 - 2026-08-06
+
+Additive release: no changes are required for applications using the official
+adapters and the `LocalWebAuthn` service API. Custom `SqliteDatabase` drivers
+need one method; see [docs/MIGRATING.md](docs/MIGRATING.md#210--220).
 
 ### Added
 

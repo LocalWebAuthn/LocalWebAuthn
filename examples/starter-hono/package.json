@@ -1,6 +1,6 @@
 {
   "name": "@localwebauthn/starter-hono",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.0.12",
-    "@localwebauthn/server": "2.1.0",
+    "@localwebauthn/server": "2.2.0",
     "better-sqlite3": "^12.11.1",
     "hono": "^4.12.32"
   },

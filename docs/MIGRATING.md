@@ -1,5 +1,27 @@
 # Migrating LocalWebAuthn
 
+## 2.1.0 → 2.2.0
+
+No changes are required for applications using the official SQLite, PostgreSQL,
+or D1 adapters and the `LocalWebAuthn` service API. Two things to know:
+
+**Custom `SqliteDatabase` drivers must expose `transaction(fn).immediate()`.**
+The SQLite adapter now opens every transaction with `BEGIN IMMEDIATE`, so
+concurrent connections queue at the write lock instead of failing with an
+unretryable `SQLITE_BUSY_SNAPSHOT` mid-transaction. better-sqlite3 provides
+this already; a hand-written driver must add it. Set `PRAGMA busy_timeout` on
+the connection you pass so a contended `BEGIN` waits rather than erroring.
+
+**Storage faults now propagate instead of being reported as lost
+authorization.** `completeRegistration` and `completeAuthentication` previously
+turned _any_ exception into `false`, which the service rendered as
+`registration_failed` — telling people their valid enrollment link had expired
+and leaving nothing in any log. `false` is now reserved for genuine
+authorization or counter-CAS loss; everything else throws. If your route
+handler only mapped `LocalWebAuthnError`, an unexpected storage error will now
+surface as an unhandled exception (a 500 in most frameworks) rather than a 409
+— which is the point, but check that your error middleware logs it.
+
 ## 2.0.0 → 2.1.0
 
 No changes are required for applications using the official SQLite, PostgreSQL,
