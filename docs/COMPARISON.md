@@ -68,7 +68,7 @@ not fit is treating a mailbox as a standing credential.
   first-class policy (see
   [Designing Recovery](../README.md#designing-recovery)).
 - Operators who care that the authentication path is **small enough to read**
-  (~3,500 lines of lifecycle code on top of SimpleWebAuthn).
+  (~4,000 lines of lifecycle code on top of SimpleWebAuthn).
 
 ### Who is not
 
@@ -357,18 +357,18 @@ policy.
 
 ### What is deliberately different
 
-| Dimension           | Typical framework / IdP             | LocalWebAuthn                                                  |
-| ------------------- | ----------------------------------- | -------------------------------------------------------------- |
-| Primary factor      | Password + optional passkey / OAuth | Passkey only                                                   |
-| First credential    | Self-serve signup or email link     | Invitation / bootstrap grant                                   |
-| User table          | Often owned by the auth product     | Owned by the host app                                          |
-| Ceremony crypto     | Various                             | SimpleWebAuthn (swappable)                                     |
-| Persistence         | ORM schemas or remote service       | Official SQLite / PostgreSQL / D1 stores + store interface     |
-| Sessions            | Framework cookies / JWTs            | Opaque hashed tokens; host sets cookies                        |
-| Recovery            | Email reset, SMS, support tools     | Host policy + re-enrollment; documented social-engineering bar |
-| Size / auditability | Large surface                       | ~3,500 lines of lifecycle code, shared SQL module              |
-| HTTP framework      | Often Next.js-shaped                | Framework-neutral service + thin browser client                |
-| Maturity            | Varies; some battle-tested          | Young (`2.x`) with a small user base, and says so              |
+| Dimension           | Typical framework / IdP             | LocalWebAuthn                                                                                        |
+| ------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Primary factor      | Password + optional passkey / OAuth | Passkey only                                                                                         |
+| First credential    | Self-serve signup or email link     | Invitation / bootstrap grant                                                                         |
+| User table          | Often owned by the auth product     | Owned by the host app                                                                                |
+| Ceremony crypto     | Various                             | SimpleWebAuthn (swappable)                                                                           |
+| Persistence         | ORM schemas or remote service       | Official SQLite / PostgreSQL / D1 stores + store interface                                           |
+| Sessions            | Framework cookies / JWTs            | Opaque hashed tokens; host sets cookies                                                              |
+| Recovery            | Email reset, SMS, support tools     | Host policy + re-enrollment; runnable dual-channel machine with waiting period and vetoes (examples) |
+| Size / auditability | Large surface                       | ~4,000 lines of lifecycle code, shared SQL module                                                    |
+| HTTP framework      | Often Next.js-shaped                | Framework-neutral service + thin browser client                                                      |
+| Maturity            | Varies; some battle-tested          | Young (`2.x`) with a small user base, and says so                                                    |
 
 ### What is _not_ unique (and should not be sold as unique)
 
@@ -400,21 +400,23 @@ policy.
 
 ## Feature comparison (JS/TS-focused)
 
-| Capability                          | SimpleWebAuthn | passwordless-id | Better Auth + passkey |   Auth.js passkey    |   SuperTokens    |      Hanko       |   **LocalWebAuthn**   |
-| ----------------------------------- | :------------: | :-------------: | :-------------------: | :------------------: | :--------------: | :--------------: | :-------------------: |
-| Ceremony generate/verify            |      Yes       |       Yes       |  Via SimpleWebAuthn   |  Via SimpleWebAuthn  |       Yes        |       Yes        |  Via SimpleWebAuthn   |
-| Browser helper                      |      Yes       |       Yes       |          Yes          |         Yes          |       Yes        |       Yes        | Yes (protocol client) |
-| Passkey-only mode                   |      N/A       |       N/A       |       Possible        |       Possible       |   Configurable   |   Configurable   |  **Default / only**   |
-| Invitation enrollment grants        |       No       |       No        |       App-built       |      App-built       |  App / product   |  Product flows   |        **Yes**        |
-| Hashed challenge + session tokens   |       No       |       No        |  Framework sessions   |  Framework sessions  | Service sessions | Service sessions |        **Yes**        |
-| Atomic challenge consume            |      App       |       App       |       Framework       |      Framework       |     Service      |     Service      |    **Yes (store)**    |
-| Additional passkey via session      |      App       |       App       |          Yes          |         Yes          |       Yes        |       Yes        |        **Yes**        |
-| Credential counter CAS              |      App       |       App       |     Plugin/store      |       Adapter        |     Service      |     Service      |        **Yes**        |
-| Official SQLite / PG / D1           |       No       |       No        |    Adapters (ORM)     |       Adapters       |    Own stack     |    Own stack     |        **Yes**        |
-| In-process library (no auth daemon) |      Yes       |       Yes       |          Yes          |         Yes          |    No (core)     |        No        |        **Yes**        |
-| OAuth / password / email OTP        |       No       |       No        |          Yes          |         Yes          |       Yes        |       Yes        |        **No**         |
-| Production maturity                 |      High      |     Medium      |     Growing fast      | Passkey experimental |       High       |   Medium–high    |    **Low (young)**    |
-| Federation / enterprise IdP         |       No       |       No        |        Limited        |     OAuth focus      |       Yes        |       Yes        |        **No**         |
+| Capability                          | SimpleWebAuthn | passwordless-id | Better Auth + passkey |   Auth.js passkey    |   SuperTokens    |      Hanko       |        **LocalWebAuthn**        |
+| ----------------------------------- | :------------: | :-------------: | :-------------------: | :------------------: | :--------------: | :--------------: | :-----------------------------: |
+| Ceremony generate/verify            |      Yes       |       Yes       |  Via SimpleWebAuthn   |  Via SimpleWebAuthn  |       Yes        |       Yes        |       Via SimpleWebAuthn        |
+| Browser helper                      |      Yes       |       Yes       |          Yes          |         Yes          |       Yes        |       Yes        |      Yes (protocol client)      |
+| Passkey-only mode                   |      N/A       |       N/A       |       Possible        |       Possible       |   Configurable   |   Configurable   |       **Default / only**        |
+| Invitation enrollment grants        |       No       |       No        |       App-built       |      App-built       |  App / product   |  Product flows   |             **Yes**             |
+| Hashed challenge + session tokens   |       No       |       No        |  Framework sessions   |  Framework sessions  | Service sessions | Service sessions |             **Yes**             |
+| Atomic challenge consume            |      App       |       App       |       Framework       |      Framework       |     Service      |     Service      |         **Yes (store)**         |
+| Additional passkey via session      |      App       |       App       |          Yes          |         Yes          |       Yes        |       Yes        |             **Yes**             |
+| Credential counter CAS              |      App       |       App       |     Plugin/store      |       Adapter        |     Service      |     Service      |             **Yes**             |
+| Official SQLite / PG / D1           |       No       |       No        |    Adapters (ORM)     |       Adapters       |    Own stack     |    Own stack     |             **Yes**             |
+| Cookie / origin helpers             |       No       |       No        |  Framework internals  | Framework internals  | Service sessions | Service sessions |             **Yes**             |
+| Signup + recovery proofing flow     |      App       |       App       |  Multi-method flows   |         App          |  Product flows   |  Product flows   | **Example kits (passkey-only)** |
+| In-process library (no auth daemon) |      Yes       |       Yes       |          Yes          |         Yes          |    No (core)     |        No        |             **Yes**             |
+| OAuth / password / email OTP        |       No       |       No        |          Yes          |         Yes          |       Yes        |       Yes        |             **No**              |
+| Production maturity                 |      High      |     Medium      |     Growing fast      | Passkey experimental |       High       |   Medium–high    |         **Low (young)**         |
+| Federation / enterprise IdP         |       No       |       No        |        Limited        |     OAuth focus      |       Yes        |       Yes        |             **No**              |
 
 "App" means you implement it. "Product flows" means the platform's UX, not a
 small typed API in your process.
@@ -492,9 +494,10 @@ interface stability is not a long production track record.
    SECURITY.md; treat it as young software on the auth path.
 2. **No multi-method story.** Peers win when passkeys must coexist with
    passwords or social login.
-3. **Host must build HTTP correctly.** Cookies, exact origin, rate limits remain
-   yours. Frameworks paper over more of that — mitigated over time by the
-   [starter kit](#starter-kit-roadmap) below.
+3. **The host still owns HTTP, but no longer alone.** Cookie flags, `__Host-`
+   names, and exact-origin checks ship as helpers, and the
+   [starter](../examples/starter-hono) arrives with the six routes wired; rate
+   limiting and bot defense remain yours. Frameworks still paper over more.
 4. **No hosted control plane.** No dashboard SaaS, no multi-tenant admin UI out
    of the box (the demo is an example, not a product).
 5. **Ceremony is not differentiated.** Crypto quality tracks SimpleWebAuthn; do
@@ -502,56 +505,67 @@ interface stability is not a long production track record.
 6. **D1 non-atomicity** is a real adapter limit (documented); SQLite/Postgres are
    preferred when available.
 7. **Recovery is operational, not automatic.** Replacing passwords removes the
-   familiar reset email; someone must still prove identity out of band.
+   familiar reset email; someone must still prove identity out of band. The
+   [signup/recovery proofing machine](#dual-channel-email--phone-delivery-kit)
+   now ships that flow as runnable example code — with a waiting period and
+   vetoes — but operating it, and its abuse handling, is still your product.
 
 ---
 
-## JS developer friction (why teams still ship passwords)
+## JS developer friction (and what now closes it)
 
 LocalWebAuthn solves the hard **ceremony + lifecycle middle**. A typical JS web
 app developer (Vite/Next + Hono/Express/Fastify, used to Auth.js, Better Auth,
 Clerk, or “bcrypt + cookie”) does **not** abandon passkeys because option
 generation is hard. They abandon them when the **rest of a shippable product**
-is still empty — and password ecosystems have decades of copy-paste defaults
-for that rest.
+is still empty — password ecosystems have decades of copy-paste defaults for
+that rest. This section was originally written as a gap analysis; the starter
+kits it called for have since shipped, so it now records what exists and what
+deliberately remains yours.
 
-### What is already easy
+### What the packages and examples provide
 
-If the problem is “I don’t want raw WebAuthn,” LocalWebAuthn is already ahead
-of SimpleWebAuthn alone: grants, hashed tokens, challenge consume, counters,
-sessions, multi-passkey, revocation, SQLite/Postgres/D1, and a readable HTTP
-adapter pattern. The bounce is not crypto; it is product and ops.
+Beyond the lifecycle core (grants, hashed tokens, atomic challenge consume,
+counters, sessions, multi-passkey, revocation, SQLite/Postgres/D1): cookie and
+origin helpers on `@localwebauthn/server`, a wired six-route
+[Hono starter](../examples/starter-hono), internal-only email/SMS delivery for
+both app shapes ([`channels-node`](../examples/channels-node) for a
+traditional server, [`channels-cf`](../examples/channels-cf) for Workers + D1),
+and a [signup/recovery proofing state machine](#dual-channel-email--phone-delivery-kit)
+the demo runs end to end. The bounce was never crypto; it was product and ops —
+and most of the product half is now runnable code.
 
-### Ranked friction
+### Ranked friction, revisited
 
-| #   | Friction                              | Password / multi-method stack         | LocalWebAuthn today                                                    |
-| --- | ------------------------------------- | ------------------------------------- | ---------------------------------------------------------------------- |
-| 1   | **Recovery product**                  | “Forgot password” is a form + email   | Host designs proofing + re-enrollment; correct, but no default widget  |
-| 2   | **Framework drop-in**                 | `getServerSession()`, providers       | Six routes, cookies, origin checks are host code                       |
-| 3   | **Cookie / origin details**           | Often framework defaults              | Easy to get wrong once (`__Host-`, Secure, preview URLs)               |
-| 4   | **Signup state machine**              | Email + password + session            | Create user → prove channels → `issueEnrollment` → exchange → register |
-| 5   | **Cross-device / lockout fear**       | Form works anywhere                   | Multi-passkey + recovery playbook required                             |
-| 6   | **Ops** (rate limits, audit, cleanup) | Tutorials often skip; vendors include | SECURITY.md assigns them to the host (honest, more perceived work)     |
-| 7   | **OAuth / growth**                    | Plugins everywhere                    | Out of scope by design — path of least resistance becomes Better Auth  |
-| 8   | **Maturity / blame**                  | Familiar stack to point at            | Young package on the auth path                                         |
+| #   | Friction                              | Password / multi-method stack         | LocalWebAuthn now                                                                                            |
+| --- | ------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 1   | **Recovery product**                  | “Forgot password” is a form + email   | Runnable: admin re-enroll (demo) + self-serve re-proofing machine with waiting period and vetoes (examples)  |
+| 2   | **Framework drop-in**                 | `getServerSession()`, providers       | `starter-hono`: six routes, session guard, origin check wired; copy `auth-routes.ts`                         |
+| 3   | **Cookie / origin details**           | Often framework defaults              | `authCookieNames` / `cookieAttributes` / `isExactOrigin`; non-loopback `http://` refuses loudly              |
+| 4   | **Signup state machine**              | Email + password + session            | `signupPhase` vocabulary + full proofing machine (`channels` `signup.ts`), demo-simulated end to end         |
+| 5   | **Cross-device / lockout fear**       | Form works anywhere                   | Claim-on-reopen finishes enrollment on the preferred device; demo prompts a second passkey; copy kit partial |
+| 6   | **Ops** (rate limits, audit, cleanup) | Tutorials often skip; vendors include | `onEvent` wiring demonstrated (sign-in cancels recovery); rate limits + `cleanup()` scheduling still yours   |
+| 7   | **OAuth / growth**                    | Plugins everywhere                    | Out of scope by design — if you need OAuth, use Better Auth or an IdP                                        |
+| 8   | **Maturity / blame**                  | Familiar stack to point at            | Young package on the auth path; unchanged, and says so                                                       |
 
 **Complexity map**
 
 ```text
-  Easy path (password ecosystem)          LocalWebAuthn path
-  ----------------------------            ------------------
+  Easy path (password ecosystem)          LocalWebAuthn path (now)
+  ----------------------------            ------------------------
   npm i auth-framework                    npm i @localwebauthn/*
-  enable EmailProvider                    design enrollment delivery
-  enable Credentials                      write 6 routes + cookies + origin
-  copy LoginForm                          map users + createUserHandle
-  "Forgot password" included              design recovery ops
+  enable EmailProvider                    copy starter-hono routes (wired)
+  enable Credentials                      cookie/origin helpers (one import)
+  copy LoginForm                          crib the demo UI
+  "Forgot password" included              signup/recovery machine (examples)
   OAuth button                            (out of scope — leave)
-  ship                                    rate limits, audit, multi-passkey UX
+  ship                                    rate limits + delivery credentials
 ```
 
-The crypto column is easier with LocalWebAuthn. The “ship login this sprint”
-column is still heavier than mediocre password auth unless starter kits close
-the gap.
+The crypto column was always easier with LocalWebAuthn; the “ship login this
+sprint” column is now comparable for the passkey-only shape. What stays
+heavier than mediocre password auth is deliberate: recovery is proofing you
+operate, and abuse handling is yours.
 
 ### Decision tree (when not to force passkey-only)
 
@@ -567,16 +581,16 @@ the gap.
 Ordered by impact for JS developers (not by cryptographic purity). Status is
 tracked here as the kits land.
 
-| Priority | Kit                           | Intent                                                                                                   | Status                                                                                                                                                            |
-| -------- | ----------------------------- | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1**    | **Framework starters**        | Hono/Node (and later Next App Router) with the six routes, session guard, and origin check already wired | **Done** — `examples/starter-hono`; full UI remains `examples/demo`                                                                                               |
-| **2**    | **Recovery starter kits**     | Admin re-enroll (revoke then issue) as a first-class action; dual-channel self-serve as runnable code    | **Done** — demo **Re-enroll** + simulated dual-channel signup/recovery; shared proofing state machine + internal-only delivery in `examples/channels{,-node,-cf}` |
-| **3**    | **Cookie + origin helpers**   | One place for Secure / HttpOnly / SameSite / `__Host-` names and exact-origin checks                     | **Done** — `@localwebauthn/server` (`authCookieNames`, `cookieAttributes`, `isExactOrigin`, …)                                                                    |
-| **4**    | **Signup state machine**      | Host-owned phases: user created → enrollment issued → exchanged → enrolled; next-step helper             | **Done** — `signupPhase` / `describeSignupPhase` on `@localwebauthn/server`                                                                                       |
-| **5**    | **Post-enroll UX kit**        | Prompt for a second passkey; clear lockout / last-credential messaging                                   | Partial — demo copy; no shared package yet                                                                                                                        |
-| **6**    | **Ops snippets**              | Rate-limit examples, `onEvent` → log/table, `cleanup()` scheduler                                        | Not started                                                                                                                                                       |
-| **7**    | **Browser / support matrix**  | Platform vs security key vs synced passkey; common failure modes                                         | Not started (docs)                                                                                                                                                |
-| **8**    | **“Don’t use us if…” wizard** | Up-front decision tree in README / COMPARISON                                                            | Partial — this section + target audience                                                                                                                          |
+| Priority | Kit                           | Intent                                                                                                   | Status                                                                                                                                                                                                          |
+| -------- | ----------------------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1**    | **Framework starters**        | Hono/Node (and later Next App Router) with the six routes, session guard, and origin check already wired | **Done** — `examples/starter-hono`; full UI remains `examples/demo`                                                                                                                                             |
+| **2**    | **Recovery starter kits**     | Admin re-enroll (revoke then issue) as a first-class action; dual-channel self-serve as runnable code    | **Done** — demo **Re-enroll** + simulated dual-channel signup/recovery; shared proofing state machine + internal-only delivery in `examples/channels{,-node,-cf}`                                               |
+| **3**    | **Cookie + origin helpers**   | One place for Secure / HttpOnly / SameSite / `__Host-` names and exact-origin checks                     | **Done** — `@localwebauthn/server` (`authCookieNames`, `cookieAttributes`, `isExactOrigin`, …)                                                                                                                  |
+| **4**    | **Signup state machine**      | Host-owned phases: user created → enrollment issued → exchanged → enrolled; next-step helper             | **Done** — `signupPhase` helpers + the proofing machine in `examples/channels`; a grant-read store API (`listEnrollmentGrants`) is planned for 2.2.0 so phase facts derive from the store instead of host flags |
+| **5**    | **Post-enroll UX kit**        | Prompt for a second passkey; clear lockout / last-credential messaging                                   | Partial — demo copy + claim-on-reopen device choice; no shared package yet                                                                                                                                      |
+| **6**    | **Ops snippets**              | Rate-limit examples, `onEvent` → log/table, `cleanup()` scheduler                                        | Partial — demo wires `onEvent` (`credential.authenticated` cancels live recoveries); rate limits and `cleanup()` scheduling still open                                                                          |
+| **7**    | **Browser / support matrix**  | Platform vs security key vs synced passkey; common failure modes                                         | Not started (docs)                                                                                                                                                                                              |
+| **8**    | **“Don’t use us if…” wizard** | Up-front decision tree in README / COMPARISON                                                            | Partial — this section + target audience                                                                                                                                                                        |
 
 #### Dual-channel (email + phone) delivery kit
 
@@ -632,159 +646,27 @@ package.
 
 ### Bottom line for JS developers
 
-- LocalWebAuthn is **not** missing WebAuthn.
-- It was missing the **product shell** password ecosystems normalize: recovery
-  defaults, framework glue, cookie helpers, signup sequencing, ops snippets.
-- Helpers and starters shrink that shell; dual-channel examples shrink recovery
-  and signup fear. OAuth and multi-method growth remain deliberately elsewhere.
+- LocalWebAuthn is **not** missing WebAuthn — and no longer missing most of the
+  **product shell** password ecosystems normalize: cookie/origin helpers, a
+  wired starter, signup sequencing, and runnable recovery are in the box.
+- What remains yours is deliberate: rate limiting and bot defense, delivery
+  credentials, and the operation of recovery proofing.
+- OAuth and multi-method growth remain deliberately elsewhere; if you need
+  them, pick a framework or IdP rather than bolting them onto this package.
 
-### Review Findings
+### Review findings — implemented
 
-A full review (August 2026) of the first starter-kit branch — HTTP/signup
-helpers (kits #3/#4), the Hono starter (#1), and the delivery worker (part of
-#2) — recorded these findings to direct the next development sessions. The
-review verified a green baseline first, all inside the flake shell:
-`make nix-check` (typecheck, lint, format, coverage thresholds, publint,
-arethetypeswrong) and `make nix-test-demo` (Playwright lifecycle e2e) pass; the
-channels worker suite passes; committed `dist/` matches a fresh rebuild; the
-starter's routes match the `@localwebauthn/browser` defaults (`/api/auth`
-base path, `{ token }` exchange body); tokens are lowercase base32, so raw
-cookie round-trips are safe; `examples/**` is covered by root typecheck and
-lint.
-
-| #   | Severity | Finding                                                        | Where                            |
-| --- | -------- | -------------------------------------------------------------- | -------------------------------- |
-| 1   | **High** | Channels worker is an unauthenticated SMS / email relay        | resolved: `examples/channels*`   |
-| 2   | Medium   | Miniflare test runs a hand-copied script, not the real worker  | `tests/worker.miniflare.test.ts` |
-| 3   | Medium   | `SignupFacts` are not observable through the package API       | store contract + both consumers  |
-| 4   | Low      | Starter invite authorization, duplicate-email 500, README gaps | `examples/starter-hono`          |
-| 5   | Low      | HTTP helper polish (validation, `http://` downgrade, types)    | `packages/server/src/http.ts`    |
-| 6   | Low      | Docs and release hygiene (links, version pins, Make vs npm)    | repo-wide                        |
-
-**Status (August 2026):** #1 is **resolved by architecture** — the standalone
-send-API worker was replaced by internal-only delivery (`examples/channels`,
-`-node`, `-cf`): fixed templates, no send routes, bearer-guarded app flow,
-country-prefix allowlists. #2, #5, and #6 are **done** (Miniflare bundles the
-real source; helpers reject non-loopback HTTP and validate cookie octets;
-SECURITY.md links the helpers, `make check` delegates to `npm run check`,
-RELEASING.md pins example versions at release). #4 is done except the
-`basePath` parameter (mount-order note added instead). #3 — the grant-read
-store API — remains open as 2.2.0 contract work.
-
-#### 1. Channels worker must ship secure by default (high)
-
-`POST /send-sms` and `POST /send-email` accept requests from **anyone** — no
-caller authentication of any kind — and the README's deploy sketch publishes
-the worker with `wrangler deploy`. Deployed as-is it is SMS-pumping fraud
-infrastructure (scripted sends to premium-rate numbers on the host's Twilio
-bill) and a phishing relay from the DKIM-verified `RESEND_FROM` domain. The
-existing caveat ("do not accept an attacker-supplied address") assumes an
-honest caller — the wrong attacker. Direction:
-
-- Require a `CHANNELS_AUTH_TOKEN` secret binding, checked with a timing-safe
-  compare against `Authorization: Bearer …`; fail closed (401, and refuse to
-  serve when the binding is unset).
-- README: a prominent "Protect this endpoint" section — Cloudflare service
-  bindings or Access (never internet-reachable), rate limits, destination
-  country allowlist, and the cost blast radius of getting this wrong.
-- Stop relaying upstream Twilio/Resend response bodies and thrown
-  `error.message`s (which name missing bindings) verbatim to untrusted
-  callers.
-
-#### 2. Miniflare test must execute the real worker (medium)
-
-`worker.miniflare.test.ts` feeds Miniflare a hand-copied inline script ("same
-public contract as `src/`") — and it has already drifted: the inline copy
-returns upstream responses verbatim while `src/index.ts` re-wraps them with
-its own `Content-Type` / `Cache-Control` headers. The shipped source is only
-exercised in-process under Node, so edits to `src/` cannot fail the Miniflare
-test. Direction: bundle the real source (one esbuild call in `beforeAll`) or
-adopt `@cloudflare/vitest-pool-workers` so tests run the actual module inside
-workerd; otherwise soften the "Miniflare-tested" claims here and in the
-worker README.
-
-#### 3. Make `SignupFacts` observable (medium — API gap)
-
-`signupPhase` warns against ad-hoc pending flags, but the store contract has
-no grant **read** (`replaceEnrollmentGrant` is write-only), so both consumers
-on this branch invent exactly those flags:
-
-- The demo feeds `hasPendingEnrollmentGrant: passkeyCount === 0` — degenerate
-  (only 2 of 4 phases are reachable), and the demo UI never renders the new
-  `signupPhase` / `signupPhaseLabel` payload fields.
-- The starter's `pending_enrollment` column is set on issue but never cleared
-  when the invitee enrolls, and goes wrong after grant expiry or
-  `revokeUserAuthentication`.
-
-Direction (either): add `hasPendingEnrollment(userId)` or
-`listEnrollmentGrants(userId)` (metadata only — issuedAt / expiresAt /
-approvedBy, never token material) to the service and store contract, enabling
-a `signupPhaseFor(auth, userId)` convenience; or wire the starter's flag to
-`onEvent` (`enrollment.completed`, `enrollment.revoked`,
-`user.authentication_revoked` already exist), which doubles as the roadmap #6
-ops snippet. Until one lands, roadmap #4 above is honestly **Partial —
-vocabulary shipped; facts not yet derivable from the store**, and the
-CHANGELOG's "without inventing ad-hoc pending flags" oversells.
-
-#### 4. Starter hardening (low, but it is the copy-paste artifact)
-
-- `/api/invite`: **any** authenticated session can mint users and enrollment
-  grants (the demo gates on administrator; the starter has no roles). Add a
-  loud comment ("add your role check here") and a README bullet.
-- Re-inviting an existing email hits the `UNIQUE` constraint and surfaces as
-  an unhandled 500; catch it and return 409.
-- README gaps: POSTs require an `Origin: http://localhost:4180` header (there
-  is no UI — people will curl and hit `invalid_origin` with no hint);
-  restarting with zero credentials revokes the old bootstrap link and prints a
-  fresh one (nice property — say it); the `127.0.0.1` bind plus
-  `STARTER_PUBLIC_ORIGIN`-derived `Secure` cookies is exactly right behind a
-  TLS-terminating proxy — one sentence would market the helpers' best feature.
-- `mountPasskeyAuth` hardcodes `'/api/*'` while the browser client takes a
-  `basePath`; parameterize it, and note that the origin middleware must be
-  mounted before any host routes it should protect.
-
-#### 5. HTTP helper polish (low)
-
-- `serializeCookie` interpolates name and value unvalidated — safe for base32
-  tokens, but it is exported general-purpose API: assert RFC 6265
-  cookie-octets (or document "LocalWebAuthn tokens only").
-- `parseCookieHeader` does no percent-decoding while Hono's `setCookie`
-  percent-encodes; add a doc line so nobody uses it as a general cookie
-  parser.
-- `isHttpsPublicOrigin` silently downgrades **any** `http://` origin — not
-  just loopback — to plain, non-`Secure` cookie names, though the docstring
-  frames plain names as a localhost concession. Warn or throw on non-loopback
-  `http://` so a misconfigured `publicOrigin` fails loudly.
-- `AuthCookieKind` is exported but unused: define
-  `AuthCookieNames = Record<AuthCookieKind, string>` or drop it.
-- `serializeCookie` hardcodes `HttpOnly` / `SameSite=Strict` instead of
-  deriving them from its argument — consistent while the type pins them,
-  brittle if `CookieAttributes` ever loosens.
-
-#### 6. Documentation and release hygiene (low)
-
-- SECURITY.md's host-duty bullets (cookies, exact origin) now have first-party
-  implementations — link `authCookieNames` / `cookieAttributes` /
-  `isExactOrigin` there. `http.ts` already points at SECURITY.md; make the
-  pointer bidirectional.
-- Both examples pin `"@localwebauthn/server": "2.0.0"` but import unreleased
-  APIs; that resolves in-workspace and breaks when an example is copied out.
-  Bump the pins at release (checklist item in docs/RELEASING.md) or note it in
-  the example READMEs until the next version ships.
-- `make check` re-lists the package.json `check` steps and inserts
-  `ensure-postgres`; two sources of truth will drift — have one delegate to
-  the other.
-
-#### What held up under review
-
-The demo refactor is a real dedup and a behavioral improvement (normalized
-exact-origin comparison instead of string equality, so
-`https://app.example.com:443` now matches). `__Host-` naming honors Hono's
-prefix validation (Secure, `Path=/`); challenge cookies are cleared before
-verification; `serializeClearedCookie` and the `maxAge >= 1` clamp are
-correct. The injectable-`fetch` provider tests keep credentials out of CI.
-The Makefile/flake tiers (`test`, `test-postgres`, `test-channels`,
-`test-demo`, `nix-%`) work as documented.
+An adversarial review of the first starter-kit iteration (August 2026) drove
+this section's work. All of its findings are resolved: the anyone-can-POST
+send-API worker was **replaced by the internal-only delivery architecture**
+above; Miniflare suites run the **bundled real source**; the HTTP helpers
+**refuse non-loopback `http://`** and validate cookie names/values against
+RFC 6265; the starter gained authorization warnings, a duplicate-invite 409,
+and deployment notes; SECURITY.md links the helpers it used to only describe;
+and example version pins are bumped at release (RELEASING.md). One item
+remains open by design and is tracked on the roadmap above: a grant-read store
+API so `signupPhase` facts derive from the store (2.2.0). The full findings
+live in this file's git history.
 
 ---
 

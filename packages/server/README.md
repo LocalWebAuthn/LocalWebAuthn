@@ -68,7 +68,12 @@ Schedule periodic `cleanup()` on any adapter (every few minutes is fine). It rea
 grants, finished challenges, and dead sessions. Credentials are not part of cleanup.
 
 The SQLite adapter enables `PRAGMA foreign_keys = ON` on the connection it is given and uses
-`UPDATE ... RETURNING` (SQLite 3.35 or newer).
+`UPDATE ... RETURNING` (SQLite 3.35 or newer). Every transaction runs `BEGIN IMMEDIATE`, so
+concurrent connections (a test harness, a migration, a bootstrap script alongside the
+server) queue at the write lock instead of failing mid-transaction with an unretryable
+`SQLITE_BUSY_SNAPSHOT`. Set `PRAGMA busy_timeout` on the connection you pass (the demo uses
+5000 ms) so that queueing waits instead of erroring; writers still execute one at a time —
+that is SQLite's model, not a limitation this adapter adds.
 
 ### HTTP and signup helpers
 

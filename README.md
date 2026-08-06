@@ -31,7 +31,7 @@ SemVer: breaking changes arrive only in a new major version, with upgrade notes 
 maintenance; see [the 2.0.0 migration notes](docs/MIGRATING.md).
 
 A stable API is not a long production track record. This is young software with a small
-user base, and it sits on the authentication path. Both packages together are about 3,500
+user base, and it sits on the authentication path. Both packages together are about 4,000
 lines of TypeScript, deliberately kept small enough to read — do that, and read
 [SECURITY.md](SECURITY.md), before you depend on it.
 
@@ -69,8 +69,10 @@ nix develop
 make demo-test
 ```
 
-The test bootstraps the administrator, creates a client, enrolls that client in a second
-browser context, adds another passkey, signs out, and signs back in.
+Two Playwright specs cover it: the lifecycle test bootstraps the administrator, creates a
+client, enrolls them in a second browser context, adds a passkey, ends sessions, and
+re-enrolls; the signup test drives the simulated dual-channel signup, the claim on the
+preferred device, and the recovery vetoes.
 
 ## Why Start With Passkeys?
 
@@ -512,10 +514,38 @@ It demonstrates:
 - Administrator-created users and enrollment links.
 - Enrollment in another browser or on another device.
 - Additional passkeys authorized by an authenticated session.
-- Individual credential and whole-user authentication revocation.
+- **Simulated self-serve signup and recovery**: one proof link per channel
+  (email + SMS shown as an on-screen "inbox"), cooperating proof pages, and —
+  for existing accounts — the recovery waiting period with "this wasn't me"
+  cancel and the passkey-sign-in veto.
+- Session control: sign out everywhere for a person, or your own other devices,
+  without touching passkeys.
+- Individual credential and whole-user authentication revocation (Re-enroll).
 
 See [examples/demo/README.md](examples/demo/README.md) for the code map and security
 boundary. See [docs/DEMO.md](docs/DEMO.md) to reproduce the recording and screenshots.
+
+## Find Your Example
+
+Every example is a complete, tested artifact; each README says how to run it. They share
+one security stance: enrollment links and signup OTPs ride URL fragments, message content
+comes only from fixed templates, and **delivery is an internal function call — no example
+exposes a "send email/SMS" API**.
+
+| You are building…                            | Start with                                         | What it gives you                                                                                                                        |
+| -------------------------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| A first look at the whole lifecycle          | [`examples/demo`](examples/demo)                   | Full UI: bootstrap, invite, multi-passkey, session sign-out, Re-enroll, simulated self-serve signup + recovery                           |
+| Your own server, wiring the six routes       | [`examples/starter-hono`](examples/starter-hono)   | Headless Hono/Node starter: routes, session guard, exact-origin check, invite endpoint — copy `auth-routes.ts`                           |
+| Email + SMS delivery on a traditional server | [`examples/channels-node`](examples/channels-node) | SMTP (application password) + Twilio, invoked in-process by your routes                                                                  |
+| A fully-Cloudflare app (no server)           | [`examples/channels-cf`](examples/channels-cf)     | Workers + D1 issuing real grants; Resend + Twilio; bearer-guarded invite flow                                                            |
+| The pieces both delivery shapes share        | [`examples/channels`](examples/channels)           | Fixed message templates, destination validation, fetch-based senders, `inviteAndDeliver`, and the signup/recovery proofing state machine |
+
+The signup/recovery **proofing state machine** ([`examples/channels/src/signup.ts`](examples/channels/src/signup.ts))
+is the piece to read if you are designing self-serve onboarding: capability-free proof
+links, claim-on-reopen so the person finishes on the device they prefer, and — for
+accounts that already have passkeys — a waiting period, "this wasn't me" vetoes from any
+channel, and cancellation on any successful passkey sign-in. The demo exercises all of it
+with simulated delivery; the channels examples supply the real senders.
 
 ## Good Fit
 
@@ -567,7 +597,7 @@ This repository is an npm workspace. Both public packages are versioned together
 ```console
 nix develop
 make help
-make test              # unit + store adapters + channels worker (Miniflare)
+make test              # unit + store adapters + channel examples (incl. Miniflare)
 pg-start && make test-postgres   # require a live Postgres (CI-style)
 make test-demo-install # once: Playwright Chromium
 make test-demo         # full browser lifecycle e2e
@@ -576,8 +606,8 @@ make check             # typecheck, lint, format, coverage, package gates
 
 Outside the flake shell, wrap any target: `make nix-test`, `make nix-check`.
 
-`make test` runs Vitest (server, browser, demo API) and the channels Cloudflare
-worker suite. PostgreSQL conformance is included when `pg-start` has been run
+`make test` runs Vitest (server, browser, demo API) and the three channel example
+suites. PostgreSQL conformance is included when `pg-start` has been run
 (otherwise that adapter skips). `make check` adds typecheck, lint, format,
 coverage thresholds, `publint`, and `arethetypeswrong`. Releases use npm OIDC
 Trusted Publishing and do not require a long-lived npm write token. Publishing
