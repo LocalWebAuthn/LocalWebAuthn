@@ -40,6 +40,10 @@ var SqliteLocalWebAuthnStore = class {
       return revoked.map((row) => row.id);
     }).immediate();
   }
+  async revokePendingEnrollmentGrants(userId, now) {
+    const revoked = this.#database.prepare(SQL.revokePendingGrants).all(now, userId);
+    return revoked.map((row) => row.id);
+  }
   async exchangeEnrollment(tokenHash, sessionHash, sessionExpiresAt, now) {
     const row = this.#database.prepare(SQL.exchangeEnrollment).get(now, sessionHash, sessionExpiresAt, tokenHash, now);
     return row ? enrollmentSessionFromRow(row) : null;

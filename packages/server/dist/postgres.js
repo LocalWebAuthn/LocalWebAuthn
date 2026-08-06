@@ -57,6 +57,10 @@ var PostgresLocalWebAuthnStore = class {
       return revoked.rows.map((row) => row.id);
     });
   }
+  async revokePendingEnrollmentGrants(userId, now) {
+    const revoked = await this.#pool.query(PG.revokePendingGrants, [now, userId]);
+    return revoked.rows.map((row) => row.id);
+  }
   async exchangeEnrollment(tokenHash, sessionHash, sessionExpiresAt, now) {
     const result = await this.#pool.query(PG.exchangeEnrollment, [
       now,

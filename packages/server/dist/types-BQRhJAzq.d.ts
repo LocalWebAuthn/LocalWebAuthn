@@ -184,6 +184,14 @@ type LocalWebAuthnStore = {
      */
     replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]>;
     /**
+     * Revoke every pending (uncompleted, unrevoked) enrollment grant for a user
+     * without inserting a replacement. Used when a newly issued grant must be
+     * abandoned — e.g. delivery of the enrollment URL failed on every channel.
+     *
+     * Does **not** touch credentials or sessions. @returns IDs revoked.
+     */
+    revokePendingEnrollmentGrants(userId: string, now: number): Promise<string[]>;
+    /**
      * Atomically consume an enrollment token, creating an enrollment session.
      *
      * Must be single-use: the first call with a given `tokenHash` succeeds;

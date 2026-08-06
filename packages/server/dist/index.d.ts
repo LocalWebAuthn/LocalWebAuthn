@@ -1,5 +1,5 @@
-import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsResult, m as RegistrationVerificationInput, n as RegistrationVerificationResult, A as AuthenticationOptionsResult, o as AuthenticationVerificationInput, p as AuthenticationVerificationResult, q as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-Cne4CLO3.js';
-export { r as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, s as LocalWebAuthnDurations, t as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, u as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-Cne4CLO3.js';
+import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsResult, m as RegistrationVerificationInput, n as RegistrationVerificationResult, A as AuthenticationOptionsResult, o as AuthenticationVerificationInput, p as AuthenticationVerificationResult, q as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-BQRhJAzq.js';
+export { r as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, s as LocalWebAuthnDurations, t as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, u as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-BQRhJAzq.js';
 export { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 declare function defaultRandomBytes(length: number): Uint8Array;
@@ -367,6 +367,17 @@ declare class LocalWebAuthn {
     revokeCredential(userId: string, credentialId: string, options?: {
         allowLastCredential?: boolean;
     }): Promise<boolean>;
+    /**
+     * Revoke every pending enrollment grant for a user without touching
+     * credentials or sessions.
+     *
+     * Use when a grant was issued but must be abandoned — for example every
+     * delivery channel rejected the enrollment message. Prefer this over
+     * {@link revokeUserAuthentication} when the user may already have passkeys.
+     *
+     * @returns IDs of grants that were revoked (for audit trails).
+     */
+    revokePendingEnrollments(userId: string): Promise<string[]>;
     /**
      * Revoke all of a user's credentials, sessions, pending enrollment grants,
      * and unconsumed challenges — the recovery reset.

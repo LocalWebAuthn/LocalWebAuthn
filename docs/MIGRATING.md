@@ -1,5 +1,28 @@
 # Migrating LocalWebAuthn
 
+## 2.2.0 → unreleased (invite delivery cleanup)
+
+### Custom store implementers
+
+Add:
+
+```ts
+revokePendingEnrollmentGrants(userId: string, now: number): Promise<string[]>;
+```
+
+Revoke every pending grant for the user (`completed_at` and `revoked_at` null),
+return the revoked IDs, leave credentials and sessions alone. Official adapters
+use the existing `revokePendingGrants` SQL. The service method
+`revokePendingEnrollments` calls this and emits `enrollment.revoked`.
+
+### `inviteAndDeliver` (channels examples)
+
+When **no** delivery channel accepts the enrollment message, the helper now
+calls `revokePendingEnrollments` so an undelivered grant cannot be exchanged
+later. Partial success (at least one channel `ok`) keeps the grant live.
+`InviteOutcome` gains `anyDelivered`, `grantId`, `grantStatus`, and
+`revokedGrantIds`.
+
 ## 2.1.0 → 2.2.0
 
 No changes are required for applications using the official SQLite, PostgreSQL,

@@ -29,6 +29,7 @@ export {
   inviteAndDeliver,
   type Destination,
   type EnrollmentDelivery,
+  type EnrollmentIssuer,
   type InviteOutcome,
 } from './deliver.js';
 export type { DeliveryResult, EmailContent, FetchLike } from './types.js';
