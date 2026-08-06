@@ -18,8 +18,18 @@ async function migrateD1(database, now = Date.now()) {
     database.prepare(SQL.insertMigration).bind(LOCALWEBAUTHN_SCHEMA_VERSION, now)
   ]);
 }
+function isD1TransactionGuardFailure(error) {
+  const text = error instanceof Error ? `${error.name}: ${error.message}` : typeof error === "string" ? error : String(error);
+  if (text.includes("localwebauthn_transaction_guard")) {
+    return true;
+  }
+  if (/CHECK constraint failed/iu.test(text) && /(?:value\s*=\s*1|: value\b|\bvalue\b.*CHECK|CHECK.*\bvalue\b)/iu.test(text)) {
+    return true;
+  }
+  return false;
+}
 function guardTripped(error) {
-  if (String(error).includes("CHECK constraint failed")) {
+  if (isD1TransactionGuardFailure(error)) {
     return false;
   }
   throw error;
@@ -232,5 +242,6 @@ var D1LocalWebAuthnStore = class {
 };
 export {
   D1LocalWebAuthnStore,
+  isD1TransactionGuardFailure,
   migrateD1
 };

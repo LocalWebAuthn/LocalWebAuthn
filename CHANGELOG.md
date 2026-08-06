@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **D1 guard classification:** mid-batch authorization/CAS loss is detected via the
+  `localwebauthn_transaction_guard` table name or the guard’s `value = 1` CHECK
+  expression, not every `CHECK constraint failed` string. Unrelated schema CHECKs
+  and UNIQUE/FK errors continue to propagate as storage faults (#6).
+
+### Documentation
+
+- Channels core README: integration map and signup/recovery sequence diagrams.
+- SECURITY.md: how D1 batch guard failures are classified.
+
 ## 2.2.0 - 2026-08-06
 
 Additive release: no changes are required for applications using the official

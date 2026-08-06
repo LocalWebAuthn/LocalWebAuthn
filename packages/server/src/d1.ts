@@ -62,14 +62,52 @@ export async function migrateD1(database: D1DatabaseLike, now = Date.now()): Pro
 }
 
 /**
- * Whether a failed batch was stopped by the transaction guard — the CHECK row
- * that fails when a step changed no rows, i.e. authorization or the counter
- * compare-and-swap was lost mid-batch. That case reports `false`; every other
- * exception is a real storage fault the host must see, not an expired
- * enrollment. (#6)
+ * Detect a mid-batch failure of the D1 transaction guard table
+ * (`localwebauthn_transaction_guard`, `CHECK (value = 1)`).
+ *
+ * That table exists only so a zero-row step can fail the batch. Authorization
+ * or counter CAS loss must report `false` from complete* methods. Every other
+ * storage fault — including other CHECK constraints such as `counter >= 0` —
+ * must rethrow so hosts do not see a database problem as "your link expired".
+ *
+ * Match the **guard table name** first. Fall back only to the guard's specific
+ * CHECK expression (`value = 1` / `: value`), never a bare
+ * `CHECK constraint failed`, which other schema CHECKs also produce.
+ *
+ * Exported for unit tests; hosts should not need this.
+ */
+export function isD1TransactionGuardFailure(error: unknown): boolean {
+  const text =
+    error instanceof Error
+      ? `${error.name}: ${error.message}`
+      : typeof error === 'string'
+        ? error
+        : String(error);
+
+  // Primary: SQLite/D1 include the table when the CHECK is table-level.
+  if (text.includes('localwebauthn_transaction_guard')) {
+    return true;
+  }
+
+  // Some engines only quote the CHECK expression (the guard column is `value`
+  // with `CHECK (value = 1)`). Require both CHECK failure and that expression
+  // so UNIQUE/FK/other CHECK faults still propagate.
+  if (
+    /CHECK constraint failed/iu.test(text) &&
+    /(?:value\s*=\s*1|: value\b|\bvalue\b.*CHECK|CHECK.*\bvalue\b)/iu.test(text)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Map a failed batch to `false` only when the transaction guard tripped.
+ * Real storage faults rethrow. (#6)
  */
 function guardTripped(error: unknown): false {
-  if (String(error).includes('CHECK constraint failed')) {
+  if (isD1TransactionGuardFailure(error)) {
     return false;
   }
   throw error;

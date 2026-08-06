@@ -544,13 +544,13 @@ one security stance: enrollment links and signup OTPs ride URL fragments, messag
 comes only from fixed templates, and **delivery is an internal function call — no example
 exposes a "send email/SMS" API**.
 
-| You are building…                            | Start with                                         | What it gives you                                                                                                                        |
-| -------------------------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| A first look at the whole lifecycle          | [`examples/demo`](examples/demo)                   | Full UI: bootstrap, invite, multi-passkey, session sign-out, Re-enroll, simulated self-serve signup + recovery                           |
-| Your own server, wiring the six routes       | [`examples/starter-hono`](examples/starter-hono)   | Headless Hono/Node starter: routes, session guard, exact-origin check, invite endpoint — copy `auth-routes.ts`                           |
-| Email + SMS delivery on a traditional server | [`examples/channels-node`](examples/channels-node) | SMTP (application password) + Twilio, invoked in-process by your routes                                                                  |
-| A fully-Cloudflare app (no server)           | [`examples/channels-cf`](examples/channels-cf)     | Workers + D1 issuing real grants; Resend + Twilio; bearer-guarded invite flow                                                            |
-| The pieces both delivery shapes share        | [`examples/channels`](examples/channels)           | Fixed message templates, destination validation, fetch-based senders, `inviteAndDeliver`, and the signup/recovery proofing state machine |
+| You are building…                            | Start with                                         | What it gives you                                                                                                                                        |
+| -------------------------------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A first look at the whole lifecycle          | [`examples/demo`](examples/demo)                   | Full UI: bootstrap, invite, multi-passkey, session sign-out, Re-enroll, simulated self-serve signup + recovery                                           |
+| Your own server, wiring the six routes       | [`examples/starter-hono`](examples/starter-hono)   | Headless Hono/Node starter: routes, session guard, exact-origin check, invite endpoint — copy `auth-routes.ts`                                           |
+| Email + SMS delivery on a traditional server | [`examples/channels-node`](examples/channels-node) | SMTP (application password) + Twilio, invoked in-process by your routes                                                                                  |
+| A fully-Cloudflare app (no server)           | [`examples/channels-cf`](examples/channels-cf)     | Workers + D1 issuing real grants; Resend + Twilio; bearer-guarded invite flow                                                                            |
+| The pieces both delivery shapes share        | [`examples/channels`](examples/channels)           | Fixed templates, validation, senders, `inviteAndDeliver`, proofing machine; [sequence diagrams](examples/channels/README.md#signup-vs-recovery-sequence) |
 
 The signup/recovery **proofing state machine** ([`examples/channels/src/signup.ts`](examples/channels/src/signup.ts))
 is the piece to read if you are designing self-serve onboarding: capability-free proof

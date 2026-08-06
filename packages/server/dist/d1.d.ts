@@ -25,6 +25,22 @@ type D1DatabaseLike = {
  */
 declare function migrateD1(database: D1DatabaseLike, now?: number): Promise<void>;
 /**
+ * Detect a mid-batch failure of the D1 transaction guard table
+ * (`localwebauthn_transaction_guard`, `CHECK (value = 1)`).
+ *
+ * That table exists only so a zero-row step can fail the batch. Authorization
+ * or counter CAS loss must report `false` from complete* methods. Every other
+ * storage fault — including other CHECK constraints such as `counter >= 0` —
+ * must rethrow so hosts do not see a database problem as "your link expired".
+ *
+ * Match the **guard table name** first. Fall back only to the guard's specific
+ * CHECK expression (`value = 1` / `: value`), never a bare
+ * `CHECK constraint failed`, which other schema CHECKs also produce.
+ *
+ * Exported for unit tests; hosts should not need this.
+ */
+declare function isD1TransactionGuardFailure(error: unknown): boolean;
+/**
  * {@link LocalWebAuthnStore} backed by Cloudflare D1.
  *
  * D1 has no transactions. Multi-statement operations run as a `batch()`, and
@@ -58,4 +74,4 @@ declare class D1LocalWebAuthnStore implements LocalWebAuthnStore {
     cleanup(now: number): Promise<CleanupResult>;
 }
 
-export { type D1DatabaseLike, D1LocalWebAuthnStore, type D1PreparedStatementLike, type D1ResultLike, migrateD1 };
+export { type D1DatabaseLike, D1LocalWebAuthnStore, type D1PreparedStatementLike, type D1ResultLike, isD1TransactionGuardFailure, migrateD1 };
