@@ -84,6 +84,14 @@ fails after the credential INSERT committed.
 That row remains a normal passkey: the next successful authentication creates a session.
 There is no separate “orphan credential” cleanup path.
 
+When a mid-batch step is expected to change exactly one row and does not (authorization
+lost, counter CAS lost), the adapter inserts into `localwebauthn_transaction_guard` with
+`CHECK (value = 1)` so the batch fails. That failure is classified as authorization loss
+(`completeRegistration` / `completeAuthentication` return `false`). Classification matches
+the **guard table name** or the guard’s `value = 1` CHECK expression — not every
+`CHECK constraint failed` string — so unrelated schema CHECKs and UNIQUE/FK faults still
+propagate as storage errors (see #6 and `isD1TransactionGuardFailure`).
+
 ## Stored Secrets
 
 Enrollment tokens, enrollment sessions, challenge tokens, and application sessions contain

@@ -99,7 +99,16 @@ const phase = signupPhase({
 });
 ```
 
+`authCookieNames` / `cookieAttributes` **throw** for plain `http://` origins that
+are not loopback — WebAuthn will not run there, so non-`Secure` cookies would
+only hide a misconfiguration.
+
+`signupPhase` answers “where is this user in grant/credential terms?” Multi-channel
+**proofing before a grant exists** lives in
+[`examples/channels`](../../examples/channels) (`signup.ts`), not in this package.
+
 The repository [lifecycle demo](../../examples/demo/README.md) and
-[Hono starter](../../examples/starter-hono/README.md) use these helpers. See
-[docs/COMPARISON.md](../../docs/COMPARISON.md#starter-kit-roadmap) for the broader starter-kit
-roadmap (recovery, dual-channel signup, Next.js, ops snippets).
+[Hono starter](../../examples/starter-hono/README.md) use the HTTP helpers. Channel
+delivery and dual-channel proof sequences are documented under
+[`examples/channels/README.md`](../../examples/channels/README.md). Broader roadmap:
+[docs/COMPARISON.md](../../docs/COMPARISON.md#starter-kit-roadmap).

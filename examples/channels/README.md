@@ -18,6 +18,74 @@ Because content is template-only, the blast radius of a leaked credential or a
 buggy caller is "our own enrollment/OTP copy, at our rate" — a cost problem,
 never an arbitrary-content phishing relay from your domain or number.
 
+## Integration map
+
+| Need                                              | Use                                                                          |
+| ------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Passkey lifecycle (grants, sessions, credentials) | `@localwebauthn/server` + `@localwebauthn/browser`                           |
+| Cookie names / attributes / exact origin          | `authCookieNames`, `cookieAttributes`, `isExactOrigin` on the server package |
+| Issue grant and deliver the enrollment URL        | `inviteAndDeliver` + `channels-node` or `channels-cf` delivery               |
+| Dual-channel proof before any grant exists        | `signup.ts` helpers + your signup table (see demo)                           |
+| Full UI reference                                 | `examples/demo`                                                              |
+
+Server `signupPhase` (credential/grant facts for admin tables) is **not** the same
+as channels `signup.ts` (multi-channel OTP proofing). The first is “does this user
+have a passkey yet?”; the second is “have they proved email and phone?”
+
+## Signup vs recovery (sequence)
+
+### Plain self-serve signup
+
+```text
+Visitor                    Your app                         Channels / LocalWebAuthn
+   |                           |                                      |
+   |-- submit email+phone ---->|                                      |
+   |                           |-- createSignupChallenge() ---------->|
+   |                           |-- store otpHashes, send proof links ->| (email+SMS)
+   |<- open email proof link --|                                      |
+   |-- confirm OTP ----------->|-- verifySignupProof -> proved        |
+   |<- open SMS proof link ----|                                      |
+   |-- confirm OTP ----------->|-- last channel: issueEnrollment() -->|
+   |                           |-- completeSignup(store token)        |
+   |<- enrollmentToken --------|                                      |
+   |-- registerPasskey ------->|-- exchange + verifyRegistration ---->|
+```
+
+No enrollment grant exists until every required channel is proved. Proof links
+are capability-free while they ride the wire.
+
+### Recovery of an account that already has passkeys
+
+```text
+Requester                  Your app                         Existing owner
+   |                           |                                  |
+   |-- start recovery -------->|-- proof links to bound channels  |
+   |                           |                                  |
+   |-- confirm channels ------>|-- mark pending; claimableAt=now+D|
+   |                           |-- notify all channels ----------->|
+   |                           |   (account still unchanged)        |
+   |  [waiting period]         |                                  |
+   |                           |<-- "this wasn't me" cancel OTP ---|  (veto)
+   |                           |   OR passkey sign-in cancels     |
+   |                           |                                  |
+   |-- claim after claimableAt |-- revokeUserAuthentication       |
+   |                           |-- issueEnrollment                |
+   |<- enrollmentToken --------|                                  |
+```
+
+Confirming is weak authority; **canceling is strong**. Delay before claim
+gives the owner time to veto. Production `D` is hours, not the demo’s few
+seconds.
+
+### Claim-on-reopen
+
+After plain signup completes (grant minted), **any** valid channel OTP may
+claim the same single-use enrollment until expiry — so the person can finish
+on a second device. That is deliberate UX; the residual risk is a compromised
+channel in the short window before the legit user enrolls. Mitigations: short
+post-completion TTL, notify both channels when the grant is minted, treat
+“token already spent” support tickets as loud alerts.
+
 ## The two runtimes
 
 |                | [`channels-node`](../channels-node) (traditional server) | [`channels-cf`](../channels-cf) (fully Cloudflare) |
