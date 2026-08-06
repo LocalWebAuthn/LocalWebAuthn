@@ -890,6 +890,24 @@ var LocalWebAuthn = class {
     return false;
   }
   /**
+   * Revoke every pending enrollment grant for a user without touching
+   * credentials or sessions.
+   *
+   * Use when a grant was issued but must be abandoned — for example every
+   * delivery channel rejected the enrollment message. Prefer this over
+   * {@link revokeUserAuthentication} when the user may already have passkeys.
+   *
+   * @returns IDs of grants that were revoked (for audit trails).
+   */
+  async revokePendingEnrollments(userId) {
+    const now = this.#now();
+    const revokedGrantIds = await this.#store.revokePendingEnrollmentGrants(userId, now);
+    for (const grantId of revokedGrantIds) {
+      await this.#emit({ type: "enrollment.revoked", at: now, userId, grantId });
+    }
+    return revokedGrantIds;
+  }
+  /**
    * Revoke all of a user's credentials, sessions, pending enrollment grants,
    * and unconsumed challenges — the recovery reset.
    *

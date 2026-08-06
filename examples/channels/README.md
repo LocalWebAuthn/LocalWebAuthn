@@ -5,14 +5,14 @@ here, and neither runtime example adds one**: sending email or SMS is an
 internal function call from your application's own authorized routes. No
 external API can make these deployments send anything.
 
-| Piece          | What it fixes                                                                   |
-| -------------- | ------------------------------------------------------------------------------- |
-| `templates.ts` | The **only** source of message content — callers pass a URL or code, never copy |
-| `validate.ts`  | E.164 + `SMS_ALLOWED_PREFIXES` country allowlist (SMS-pumping defense)          |
-| `twilio.ts`    | fetch-based Twilio sender, identical under Node and Workers                     |
-| `resend.ts`    | fetch-based Resend sender (the Workers email transport)                         |
-| `deliver.ts`   | `inviteAndDeliver`: issue grant → deliver → return **no link** to the caller    |
-| `signup.ts`    | Self-serve proofing state machine: capability-free proof links, claim-on-reopen |
+| Piece          | What it fixes                                                                                       |
+| -------------- | --------------------------------------------------------------------------------------------------- |
+| `templates.ts` | The **only** source of message content — callers pass a URL or code, never copy                     |
+| `validate.ts`  | E.164 + `SMS_ALLOWED_PREFIXES` country allowlist (SMS-pumping defense)                              |
+| `twilio.ts`    | fetch-based Twilio sender, identical under Node and Workers                                         |
+| `resend.ts`    | fetch-based Resend sender (the Workers email transport)                                             |
+| `deliver.ts`   | `inviteAndDeliver`: issue grant → deliver → return **no link**; revoke grant if no channel accepted |
+| `signup.ts`    | Self-serve proofing state machine: capability-free proof links, claim-on-reopen                     |
 
 Because content is template-only, the blast radius of a leaked credential or a
 buggy caller is "our own enrollment/OTP copy, at our rate" — a cost problem,

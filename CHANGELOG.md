@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`revokePendingEnrollments(userId)`** on `LocalWebAuthn` and store method
+  `revokePendingEnrollmentGrants` — revoke outstanding grants without touching
+  credentials. Used when an invite must be abandoned after delivery failure.
+- **`inviteAndDeliver`**: if no channel accepts the enrollment message (or
+  delivery throws), pending grants are revoked. Outcome fields document
+  `grantStatus`, `anyDelivered`, and `revokedGrantIds`. Partial delivery
+  (one channel ok) keeps the grant live.
+
+### Documentation
+
+- MIGRATING: custom store method and invite delivery cleanup semantics.
+
 ## 2.2.0 - 2026-08-06
 
 Additive release: no changes are required for applications using the official

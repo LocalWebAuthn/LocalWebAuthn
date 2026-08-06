@@ -91,10 +91,12 @@ describe('inviteAndDeliver', () => {
     const sent: { to: string; body: string }[] = [];
     const auth = {
       issueEnrollment: vi.fn(async () => ({
+        grantId: 'grant-new',
         enrollmentUrl: url,
         expiresAt: 99_000,
         supersededGrantIds: ['old-grant'],
       })),
+      revokePendingEnrollments: vi.fn(async () => [] as string[]),
     };
     const delivery = {
       enrollment: async (
@@ -113,14 +115,104 @@ describe('inviteAndDeliver', () => {
     });
     expect(outcome).toMatchObject({
       delivered: true,
+      anyDelivered: true,
+      grantStatus: 'live',
+      grantId: 'grant-new',
       expiresAt: 99_000,
       supersededGrantIds: ['old-grant'],
+      revokedGrantIds: [],
     });
     expect(JSON.stringify(outcome)).not.toContain('token=');
     expect(sent[0].body).toBe(url);
+    expect(auth.revokePendingEnrollments).not.toHaveBeenCalled();
 
     await expect(inviteAndDeliver(auth, delivery, { userId: 'user-1', to: {} })).rejects.toThrow(
       TypeError,
     );
+  });
+
+  it('revokes the pending grant when every channel rejects delivery', async () => {
+    const auth = {
+      issueEnrollment: vi.fn(async () => ({
+        grantId: 'grant-dead',
+        enrollmentUrl: url,
+        expiresAt: 99_000,
+        supersededGrantIds: [] as string[],
+      })),
+      revokePendingEnrollments: vi.fn(async () => ['grant-dead']),
+    };
+    const delivery = {
+      enrollment: async (): Promise<DeliveryResult[]> => [
+        { ok: false, provider: 'smtp' as const, error: 'HTTP 550' },
+        { ok: false, provider: 'twilio' as const, error: 'HTTP 400' },
+      ],
+      otp: async (): Promise<DeliveryResult[]> => [],
+    };
+
+    const outcome = await inviteAndDeliver(auth, delivery, {
+      userId: 'user-1',
+      to: { email: 'person@example.test', phone: '+15551234567' },
+    });
+    expect(outcome).toMatchObject({
+      delivered: false,
+      anyDelivered: false,
+      grantStatus: 'revoked_after_delivery_failure',
+      revokedGrantIds: ['grant-dead'],
+    });
+    expect(auth.revokePendingEnrollments).toHaveBeenCalledWith('user-1');
+  });
+
+  it('keeps the grant live when at least one channel accepts (partial delivery)', async () => {
+    const auth = {
+      issueEnrollment: vi.fn(async () => ({
+        grantId: 'grant-partial',
+        enrollmentUrl: url,
+        expiresAt: 99_000,
+        supersededGrantIds: [] as string[],
+      })),
+      revokePendingEnrollments: vi.fn(async () => [] as string[]),
+    };
+    const delivery = {
+      enrollment: async (): Promise<DeliveryResult[]> => [
+        { ok: true, provider: 'smtp' as const, id: 'msg-1' },
+        { ok: false, provider: 'twilio' as const, error: 'HTTP 400' },
+      ],
+      otp: async (): Promise<DeliveryResult[]> => [],
+    };
+
+    const outcome = await inviteAndDeliver(auth, delivery, {
+      userId: 'user-1',
+      to: { email: 'person@example.test', phone: '+15551234567' },
+    });
+    expect(outcome.grantStatus).toBe('live');
+    expect(outcome.delivered).toBe(false);
+    expect(outcome.anyDelivered).toBe(true);
+    expect(auth.revokePendingEnrollments).not.toHaveBeenCalled();
+  });
+
+  it('revokes the grant when delivery throws before any result', async () => {
+    const auth = {
+      issueEnrollment: vi.fn(async () => ({
+        grantId: 'grant-throw',
+        enrollmentUrl: url,
+        expiresAt: 99_000,
+        supersededGrantIds: [] as string[],
+      })),
+      revokePendingEnrollments: vi.fn(async () => ['grant-throw']),
+    };
+    const delivery = {
+      enrollment: async (): Promise<DeliveryResult[]> => {
+        throw new Error('network down');
+      },
+      otp: async (): Promise<DeliveryResult[]> => [],
+    };
+
+    const outcome = await inviteAndDeliver(auth, delivery, {
+      userId: 'user-1',
+      to: { email: 'person@example.test' },
+    });
+    expect(outcome.grantStatus).toBe('revoked_after_delivery_failure');
+    expect(outcome.results[0]?.error).toBe('network down');
+    expect(auth.revokePendingEnrollments).toHaveBeenCalledWith('user-1');
   });
 });

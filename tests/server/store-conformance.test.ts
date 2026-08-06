@@ -187,6 +187,48 @@ function storeConformance(
 ) {
   const suite = options.skip ? describe.skip : describe;
   suite(`${name} store`, () => {
+    it('revokes pending enrollment grants without touching credentials', async () => {
+      const fixture = await createFixture();
+      try {
+        await exchangedGrant(fixture.store);
+        expect(await fixture.store.completeRegistration(registrationInput('grant-1'))).toBe(true);
+
+        // A fresh pending grant (re-invite while the passkey still exists).
+        await fixture.store.replaceEnrollmentGrant({
+          id: 'grant-pending',
+          userId: 'user-1',
+          tokenHash: bytes(20),
+          expiresAt: now + 10_000,
+          approvedByUserId: null,
+          createdAt: now + 1,
+        });
+        await expect(
+          fixture.store.exchangeEnrollment(bytes(20), bytes(21), now + 5_000, now + 2),
+        ).resolves.not.toBeNull();
+
+        // Reset: new pending grant that has not been exchanged.
+        await fixture.store.replaceEnrollmentGrant({
+          id: 'grant-pending-2',
+          userId: 'user-1',
+          tokenHash: bytes(22),
+          expiresAt: now + 20_000,
+          approvedByUserId: null,
+          createdAt: now + 3,
+        });
+
+        await expect(
+          fixture.store.revokePendingEnrollmentGrants('user-1', now + 4),
+        ).resolves.toEqual(['grant-pending-2']);
+        await expect(
+          fixture.store.exchangeEnrollment(bytes(22), bytes(23), now + 10_000, now + 5),
+        ).resolves.toBeNull();
+        // Credentials remain.
+        await expect(fixture.store.listCredentials('user-1')).resolves.toHaveLength(1);
+      } finally {
+        await fixture.close();
+      }
+    });
+
     it('exchanges enrollment grants exactly once', async () => {
       const fixture = await createFixture();
       try {

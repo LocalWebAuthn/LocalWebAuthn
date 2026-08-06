@@ -48,6 +48,10 @@ var D1LocalWebAuthnStore = class {
     ).run();
     return revoked.results.map((row) => row.id);
   }
+  async revokePendingEnrollmentGrants(userId, now) {
+    const revoked = await this.#database.prepare(SQL.revokePendingGrants).bind(now, userId).run();
+    return revoked.results.map((row) => row.id);
+  }
   async exchangeEnrollment(tokenHash, sessionHash, sessionExpiresAt, now) {
     const row = await returningRow(
       this.#database.prepare(SQL.exchangeEnrollment).bind(now, sessionHash, sessionExpiresAt, tokenHash, now)
