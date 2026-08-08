@@ -45,6 +45,7 @@ import {
   signupById,
   storeSignupClaim,
 } from './database';
+import { mountApiKeyRoutes, mountMachineRoutes } from './machine';
 
 export type DemoApplicationOptions = {
   auth: DemoAuthConfig;
@@ -438,8 +439,16 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
   const app = new Hono<DemoEnvironment>();
   const authentication = createDemoAuthentication(database, options.auth);
 
+  // Machine routes mount first, deliberately: Hono applies `use` middleware only
+  // to handlers registered after it, and a script sends no `Origin` header, so
+  // the origin check below would reject every API call. CSRF is a browser-only
+  // threat — it needs ambient credentials a browser attaches automatically, and a
+  // script has none — so nothing is given up here.
+  mountMachineRoutes(app, database, authentication);
+
   app.use('/api/*', requireExpectedOrigin(options.auth));
   mountAuthenticationRoutes(app, authentication, options.auth);
+  mountApiKeyRoutes(app, authentication, options.auth);
   mountSignupRoutes(app, database, authentication, options.auth, {
     recoveryDelayMs: options.recoveryDelayMs ?? 10_000,
     recoveryClaimWindowMs: options.recoveryClaimWindowMs ?? 15 * 60_000,

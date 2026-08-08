@@ -304,13 +304,216 @@ function normalizeConfig(options) {
   if (durations.sessionIdleMs > durations.sessionAbsoluteMs) {
     configurationError("sessionIdleMs cannot exceed sessionAbsoluteMs.");
   }
+  const credentialKinds = {};
+  for (const [kind, policy] of Object.entries(options.credentialKinds ?? {})) {
+    if (!kind.trim()) {
+      configurationError("A credential kind cannot be an empty string.");
+    }
+    const sessionAbsoluteMs = policy.sessionAbsoluteMs ?? durations.sessionAbsoluteMs;
+    for (const [name, duration] of Object.entries({
+      sessionAbsoluteMs,
+      sessionIdleMs: policy.sessionIdleMs ?? durations.sessionIdleMs
+    })) {
+      if (!Number.isSafeInteger(duration) || duration <= 0) {
+        configurationError(
+          `credentialKinds.${kind}.${name} must be a positive integer number of milliseconds.`
+        );
+      }
+    }
+    if (policy.sessionIdleMs !== void 0 && policy.sessionIdleMs > sessionAbsoluteMs) {
+      configurationError(`credentialKinds.${kind}.sessionIdleMs cannot exceed sessionAbsoluteMs.`);
+    }
+    const sessionIdleMs = Math.min(
+      policy.sessionIdleMs ?? durations.sessionIdleMs,
+      sessionAbsoluteMs
+    );
+    credentialKinds[kind] = {
+      interactive: policy.interactive ?? true,
+      canRegister: policy.canRegister ?? true,
+      sessionAbsoluteMs,
+      sessionIdleMs
+    };
+  }
   return {
     rpName,
     rpId,
     expectedOrigins,
     publicOrigin,
     enrollmentPath,
-    durations
+    durations,
+    credentialKinds
+  };
+}
+function defaultKindPolicy(config) {
+  return {
+    interactive: true,
+    canRegister: true,
+    sessionAbsoluteMs: config.durations.sessionAbsoluteMs,
+    sessionIdleMs: config.durations.sessionIdleMs
+  };
+}
+function kindPolicy(config, kind) {
+  return (kind === null ? void 0 : config.credentialKinds[kind]) ?? defaultKindPolicy(config);
+}
+
+// src/dpop.ts
+import { cose, decodeCredentialPublicKey } from "@simplewebauthn/server/helpers";
+var SUPPORTED_ALGORITHMS = /* @__PURE__ */ new Set(["ES256", "EdDSA"]);
+function invalid(reason) {
+  return { valid: false, reason };
+}
+function coseToJwk(publicKeyCose) {
+  let decoded;
+  try {
+    decoded = decodeCredentialPublicKey(Uint8Array.from(publicKeyCose));
+  } catch {
+    return null;
+  }
+  if (cose.isCOSEPublicKeyEC2(decoded)) {
+    const crv = decoded.get(cose.COSEKEYS.crv);
+    const x = decoded.get(cose.COSEKEYS.x);
+    const y = decoded.get(cose.COSEKEYS.y);
+    if (crv !== cose.COSECRV.P256 || !(x instanceof Uint8Array) || !(y instanceof Uint8Array) || x.length !== 32 || y.length !== 32) {
+      return null;
+    }
+    return { kty: "EC", crv: "P-256", x: encodeBase64Url(x), y: encodeBase64Url(y) };
+  }
+  if (cose.isCOSEPublicKeyOKP(decoded)) {
+    const crv = decoded.get(cose.COSEKEYS.crv);
+    const x = decoded.get(cose.COSEKEYS.x);
+    if (crv !== cose.COSECRV.ED25519 || !(x instanceof Uint8Array) || x.length !== 32) {
+      return null;
+    }
+    return { kty: "OKP", crv: "Ed25519", x: encodeBase64Url(x) };
+  }
+  return null;
+}
+async function jwkThumbprint(jwk) {
+  const canonical = jwk.kty === "EC" ? `{"crv":"${jwk.crv}","kty":"EC","x":"${jwk.x}","y":"${jwk.y}"}` : `{"crv":"${jwk.crv}","kty":"OKP","x":"${jwk.x}"}`;
+  return encodeBase64Url(await sha256(canonical));
+}
+function parseJsonSegment(segment) {
+  const bytes = decodeBase64Url(segment);
+  if (!bytes) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(bytes));
+    return typeof parsed === "object" && parsed !== null ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function normalizeTargetUri(value) {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return null;
+  }
+}
+async function verifySignature(jwk, algorithm, signingInput, signature) {
+  const parameters = algorithm === "ES256" ? { name: "ECDSA", namedCurve: "P-256" } : { name: "Ed25519" };
+  const verifyParameters = algorithm === "ES256" ? { name: "ECDSA", hash: "SHA-256" } : { name: "Ed25519" };
+  try {
+    const key = await globalThis.crypto.subtle.importKey("jwk", jwk, parameters, false, ["verify"]);
+    return await globalThis.crypto.subtle.verify(
+      verifyParameters,
+      key,
+      Uint8Array.from(signature),
+      new TextEncoder().encode(signingInput)
+    );
+  } catch {
+    return false;
+  }
+}
+async function verifyDpopProof(input) {
+  const now = input.now ?? Date.now();
+  const skewMs = input.skewMs ?? 6e4;
+  const segments = input.proof.split(".");
+  if (segments.length !== 3) {
+    return invalid("malformed_proof");
+  }
+  const [headerSegment, payloadSegment, signatureSegment] = segments;
+  const header = parseJsonSegment(headerSegment);
+  if (!header) {
+    return invalid("malformed_header");
+  }
+  if (header.typ !== "dpop+jwt") {
+    return invalid("unexpected_typ");
+  }
+  if (typeof header.alg !== "string" || !SUPPORTED_ALGORITHMS.has(header.alg)) {
+    return invalid("unsupported_alg");
+  }
+  if (typeof header.jwk !== "object" || header.jwk === null) {
+    return invalid("missing_jwk");
+  }
+  if ("d" in header.jwk) {
+    return invalid("private_key_in_jwk");
+  }
+  const expectedJwk = coseToJwk(input.publicKeyCose);
+  if (!expectedJwk) {
+    return invalid("unsupported_credential_key");
+  }
+  const expectedThumbprint = await jwkThumbprint(expectedJwk);
+  let presentedThumbprint;
+  try {
+    presentedThumbprint = await jwkThumbprint(header.jwk);
+  } catch {
+    return invalid("malformed_jwk");
+  }
+  const encoder = new TextEncoder();
+  if (!equalBytes(encoder.encode(expectedThumbprint), encoder.encode(presentedThumbprint))) {
+    return invalid("key_mismatch");
+  }
+  const signature = decodeBase64Url(signatureSegment);
+  if (!signature) {
+    return invalid("malformed_signature");
+  }
+  const verified = await verifySignature(
+    expectedJwk,
+    header.alg,
+    `${headerSegment}.${payloadSegment}`,
+    signature
+  );
+  if (!verified) {
+    return invalid("bad_signature");
+  }
+  const payload = parseJsonSegment(payloadSegment);
+  if (!payload) {
+    return invalid("malformed_payload");
+  }
+  if (typeof payload.jti !== "string" || payload.jti.length < 8 || payload.jti.length > 256) {
+    return invalid("bad_jti");
+  }
+  if (typeof payload.htm !== "string" || payload.htm !== input.method.toUpperCase()) {
+    return invalid("htm_mismatch");
+  }
+  const expectedUri = normalizeTargetUri(input.url);
+  const presentedUri = typeof payload.htu === "string" ? normalizeTargetUri(payload.htu) : null;
+  if (!expectedUri || !presentedUri || expectedUri !== presentedUri) {
+    return invalid("htu_mismatch");
+  }
+  if (typeof payload.iat !== "number" || !Number.isFinite(payload.iat)) {
+    return invalid("bad_iat");
+  }
+  const iatMs = payload.iat * 1e3;
+  if (iatMs > now + skewMs || iatMs < now - skewMs) {
+    return invalid("iat_out_of_window");
+  }
+  const expectedAth = encodeBase64Url(await sha256(input.accessToken));
+  if (typeof payload.ath !== "string" || !equalBytes(encoder.encode(expectedAth), encoder.encode(payload.ath))) {
+    return invalid("ath_mismatch");
+  }
+  if (input.nonce !== void 0 && payload.nonce !== input.nonce) {
+    return invalid("use_dpop_nonce");
+  }
+  return {
+    valid: true,
+    jtiHash: await sha256(payload.jti),
+    // The proof cannot be presented again once `iat` leaves the window, so the
+    // replay entry only needs to outlive the window itself.
+    expiresAt: iatMs + skewMs
   };
 }
 
@@ -332,6 +535,10 @@ var defaultCeremonies = {
   generateAuthenticationOptions,
   verifyAuthenticationResponse
 };
+function normalizeKind(kind) {
+  const trimmed = kind?.trim() ?? "";
+  return trimmed === "" ? null : trimmed;
+}
 var LocalWebAuthn = class {
   /** Normalized configuration (see {@link LocalWebAuthnOptions}). */
   config;
@@ -342,8 +549,14 @@ var LocalWebAuthn = class {
   #ceremonies;
   #onEvent;
   #logger;
+  /** Widest idle window across the global setting and every declared kind. */
+  #widestIdleMs;
   constructor(options) {
     this.config = normalizeConfig(options);
+    this.#widestIdleMs = Math.max(
+      this.config.durations.sessionIdleMs,
+      ...Object.values(this.config.credentialKinds).map((policy) => policy.sessionIdleMs)
+    );
     this.#store = options.store;
     this.#users = options.users;
     this.#now = options.now ?? Date.now;
@@ -474,6 +687,7 @@ var LocalWebAuthn = class {
    */
   async registrationOptions(input) {
     const authorization = await this.#registrationAuthorization(input);
+    const credentialKind = normalizeKind(input.credentialKind);
     const credentials = await this.#store.listCredentials(authorization.user.id);
     const options = await this.#ceremonies.generateRegistrationOptions({
       rpName: this.config.rpName,
@@ -501,6 +715,8 @@ var LocalWebAuthn = class {
       userId: authorization.user.id,
       grantId: authorization.grantId,
       authorizationSessionHash: authorization.authenticatedSessionHash,
+      credentialKind,
+      allowedCredentialKinds: null,
       expiresAt,
       createdAt: now
     })) {
@@ -576,7 +792,7 @@ var LocalWebAuthn = class {
     }
     const { credential, credentialBackedUp, credentialDeviceType } = verification.registrationInfo;
     const sessionToken = createOpaqueToken(this.#randomBytes);
-    const expiresAt = now + this.config.durations.sessionAbsoluteMs;
+    const expiresAt = now + kindPolicy(this.config, challenge.credentialKind).sessionAbsoluteMs;
     const completed = await this.#store.completeRegistration({
       challenge,
       enrollmentSessionHash: authorization.enrollmentSessionHash,
@@ -589,7 +805,10 @@ var LocalWebAuthn = class {
         transports: credential.transports ?? [],
         deviceType: credentialDeviceType,
         backedUp: credentialBackedUp,
-        label: this.#credentialLabel(input.label, credentialDeviceType),
+        label: this.#credentialLabel(input.label, credentialDeviceType, challenge.credentialKind),
+        // Taken from the challenge, which the host wrote before the client saw
+        // it — never from `input`, which is shaped by the request body.
+        kind: challenge.credentialKind,
         createdAt: now
       },
       session: {
@@ -621,15 +840,23 @@ var LocalWebAuthn = class {
       type: "credential.registered",
       at: now,
       userId: user.id,
-      credentialId: credential.id
+      credentialId: credential.id,
+      credentialKind: challenge.credentialKind
     });
     await this.#emit({
       type: "session.created",
       at: now,
       userId: user.id,
-      credentialId: credential.id
+      credentialId: credential.id,
+      credentialKind: challenge.credentialKind
     });
-    return { verified: true, sessionToken, expiresAt, credentialId: credential.id };
+    return {
+      verified: true,
+      sessionToken,
+      expiresAt,
+      credentialId: credential.id,
+      credentialKind: challenge.credentialKind
+    };
   }
   /**
    * Create discoverable-credential authentication options with
@@ -638,7 +865,7 @@ var LocalWebAuthn = class {
    * No user is identified at this point; the authenticator chooses the
    * credential and {@link verifyAuthentication} resolves and checks the user.
    */
-  async authenticationOptions() {
+  async authenticationOptions(input = {}) {
     const options = await this.#ceremonies.generateAuthenticationOptions({
       rpID: this.config.rpId,
       userVerification: "required"
@@ -653,6 +880,8 @@ var LocalWebAuthn = class {
       userId: null,
       grantId: null,
       authorizationSessionHash: null,
+      credentialKind: null,
+      allowedCredentialKinds: this.#admissibleKinds(input.credentialKinds),
       expiresAt,
       createdAt: now
     })) {
@@ -693,7 +922,11 @@ var LocalWebAuthn = class {
     const credential = await this.#store.getCredential(input.response.id);
     const user = credential ? await this.#activeUser(credential.userId) : null;
     const responseHandle = input.response.response.userHandle ? decodeBase64Url(input.response.response.userHandle) : null;
-    if (!credential || credential.revokedAt !== null || !user || !responseHandle || !equalBytes(responseHandle, user.webAuthnUserHandle)) {
+    if (!credential || credential.revokedAt !== null || !user || !responseHandle || !equalBytes(responseHandle, user.webAuthnUserHandle) || // The ceremony declared which credential kinds it accepts, before this
+    // client was handed a challenge. A machine credential presenting itself at
+    // the browser sign-in route fails here, and vice versa — enforced once,
+    // centrally, rather than in every host route.
+    !this.#kindAdmitted(credential.kind, challenge.allowedCredentialKinds)) {
       throw new LocalWebAuthnError(
         "authentication_failed",
         "The passkey could not be verified.",
@@ -734,7 +967,7 @@ var LocalWebAuthn = class {
       );
     }
     const sessionToken = createOpaqueToken(this.#randomBytes);
-    const expiresAt = now + this.config.durations.sessionAbsoluteMs;
+    const expiresAt = now + kindPolicy(this.config, credential.kind).sessionAbsoluteMs;
     const completed = await this.#store.completeAuthentication({
       credentialId: credential.id,
       previousCounter,
@@ -760,19 +993,22 @@ var LocalWebAuthn = class {
       type: "credential.authenticated",
       at: now,
       userId: user.id,
-      credentialId: credential.id
+      credentialId: credential.id,
+      credentialKind: credential.kind
     });
     await this.#emit({
       type: "session.created",
       at: now,
       userId: user.id,
-      credentialId: credential.id
+      credentialId: credential.id,
+      credentialKind: credential.kind
     });
     return {
       verified: true,
       sessionToken,
       expiresAt,
       credentialId: credential.id,
+      credentialKind: credential.kind,
       user: this.#publicUser(user)
     };
   }
@@ -788,13 +1024,12 @@ var LocalWebAuthn = class {
   async resolveSession(sessionToken, touch = true) {
     const idHash = await sha256(sessionToken);
     const now = this.#now();
-    const session = await this.#store.resolveSession(
-      idHash,
-      now,
-      now - this.config.durations.sessionIdleMs
-    );
+    const session = await this.#store.resolveSession(idHash, now, now - this.#widestIdleMs);
     const user = session ? await this.#activeUser(session.userId) : null;
     if (!session || !user) {
+      return null;
+    }
+    if (session.lastSeenAt <= now - kindPolicy(this.config, session.credentialKind).sessionIdleMs) {
       return null;
     }
     if (touch && !await this.#store.touchSession(idHash, now)) {
@@ -928,6 +1163,13 @@ var LocalWebAuthn = class {
       const authenticatedSessionHash = await sha256(input.sessionToken);
       const resolved = await this.resolveSession(input.sessionToken, false);
       if (resolved) {
+        if (!kindPolicy(this.config, resolved.session.credentialKind).canRegister) {
+          throw new LocalWebAuthnError(
+            "registration_not_permitted",
+            "This credential may not register additional credentials.",
+            403
+          );
+        }
         return {
           user: resolved.user,
           grantId: null,
@@ -941,6 +1183,78 @@ var LocalWebAuthn = class {
       "A valid enrollment or authenticated session is required.",
       403
     );
+  }
+  /**
+   * The `allowed_credential_kinds` value to record on an authentication challenge.
+   *
+   * An explicit list is stored as given, so a machine route can name its kind and
+   * that decision is fixed on a server row before the client sees the challenge.
+   *
+   * With no list the column stays `null`, meaning "unconstrained by this
+   * ceremony" — the admissibility question is then answered from configuration at
+   * verification time by {@link #kindAdmitted}. Storing `null` rather than an
+   * enumerated allow-list matters because the set of kinds present in the
+   * database is not knowable from configuration alone.
+   */
+  #admissibleKinds(requested) {
+    return requested ? [...new Set(requested)] : null;
+  }
+  /**
+   * Whether `kind` may authenticate under a challenge's recorded constraint.
+   *
+   * An enumerated list is authoritative. An unconstrained challenge falls back to
+   * the kind's `interactive` policy, so a kind declared `interactive: false` is
+   * refused at any route that did not ask for it by name — while an undeclared
+   * kind (including `null`) is admitted, preserving pre-`credentialKinds`
+   * behaviour.
+   */
+  #kindAdmitted(kind, allowed) {
+    return allowed === null ? kindPolicy(this.config, kind).interactive : allowed.includes(kind);
+  }
+  /**
+   * Verify a DPoP proof (RFC 9449) for a request on an already-resolved session.
+   *
+   * Derives the expected key thumbprint from the session's credential, so there
+   * is no per-session key material to store, then claims the proof's `jti`
+   * through the store so a captured proof cannot be replayed inside its `iat`
+   * window.
+   *
+   * Throws `invalid_dpop_proof` (401) on any failure. The `reason` is attached to
+   * the message for logs; do not surface it to callers, since it distinguishes
+   * "wrong key" from "replayed".
+   */
+  async verifyDpop(input) {
+    if (!input.proof) {
+      throw new LocalWebAuthnError("invalid_dpop_proof", "A DPoP proof is required.", 401);
+    }
+    const credential = await this.#store.getCredential(input.session.credentialId);
+    if (!credential || credential.revokedAt !== null) {
+      throw new LocalWebAuthnError("invalid_dpop_proof", "The credential is unavailable.", 401);
+    }
+    const now = this.#now();
+    const verification = await verifyDpopProof({
+      proof: input.proof,
+      method: input.method,
+      url: input.url,
+      accessToken: input.sessionToken,
+      publicKeyCose: credential.publicKey,
+      nonce: input.nonce,
+      now
+    });
+    if (!verification.valid) {
+      throw new LocalWebAuthnError(
+        "invalid_dpop_proof",
+        `The DPoP proof is not valid (${verification.reason}).`,
+        401
+      );
+    }
+    if (!await this.#store.claimDpopProof(verification.jtiHash, verification.expiresAt)) {
+      throw new LocalWebAuthnError(
+        "invalid_dpop_proof",
+        "The DPoP proof is not valid (replayed).",
+        401
+      );
+    }
   }
   async #verifyRegistrationAuthorization(challenge, input) {
     if (challenge.grantId && input.enrollmentSessionToken) {
@@ -968,10 +1282,13 @@ var LocalWebAuthn = class {
   #publicUser(user) {
     return { id: user.id, name: user.name, displayName: user.displayName };
   }
-  #credentialLabel(requestedLabel, deviceType) {
+  #credentialLabel(requestedLabel, deviceType, kind) {
     const label = requestedLabel?.trim();
     if (label) {
       return label.slice(0, 80);
+    }
+    if (kind !== null) {
+      return kind.slice(0, 80);
     }
     return deviceType === "multiDevice" ? "Synced passkey" : "Device passkey";
   }

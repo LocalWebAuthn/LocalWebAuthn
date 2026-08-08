@@ -26,7 +26,7 @@ import {
   type SessionRow,
   sessionFromRow,
 } from './rows.js';
-import { LOCALWEBAUTHN_SCHEMA_SQL, LOCALWEBAUTHN_SCHEMA_VERSION } from './schema.js';
+import { LOCALWEBAUTHN_SCHEMA_VERSION, localWebAuthnUpgradeStatements } from './schema.js';
 
 export type SqliteRunResult = {
   changes: number;
@@ -71,7 +71,14 @@ export function migrateSqlite(database: SqliteDatabase, now = Date.now()): void 
   database.exec('PRAGMA foreign_keys = ON');
   database
     .transaction(() => {
-      database.exec(LOCALWEBAUTHN_SCHEMA_SQL);
+      // The version table has to exist before its own version can be read.
+      database.exec(SQL.createMigrationsTable);
+      const stored = database.prepare(SQL.selectSchemaVersion).get() as
+        { version: number | null } | undefined;
+      const from = stored?.version ?? 0;
+      for (const statement of localWebAuthnUpgradeStatements(from, 'sqlite')) {
+        database.exec(statement);
+      }
       database.prepare(SQL.insertMigration).run(LOCALWEBAUTHN_SCHEMA_VERSION, now);
     })
     .immediate();
@@ -146,6 +153,10 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
           record.userId,
           record.grantId,
           record.authorizationSessionHash,
+          record.credentialKind,
+          record.allowedCredentialKinds === null
+            ? null
+            : JSON.stringify(record.allowedCredentialKinds),
           record.expiresAt,
           record.createdAt,
         ).changes === 1
@@ -195,6 +206,7 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
               credential.deviceType,
               credential.backedUp ? 1 : 0,
               credential.label,
+              credential.kind,
               credential.createdAt,
             );
 
@@ -323,13 +335,18 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
       .immediate();
   }
 
+  async claimDpopProof(jtiHash: Uint8Array, expiresAt: number): Promise<boolean> {
+    return this.#database.prepare(SQL.claimDpopProof).run(jtiHash, expiresAt).changes === 1;
+  }
+
   async cleanup(now: number): Promise<CleanupResult> {
     return this.#database
       .transaction(() => {
         const sessions = this.#database.prepare(SQL.deleteExpiredSessions).run(now).changes;
         const enrollmentGrants = this.#database.prepare(SQL.deleteFinishedGrants).run(now).changes;
         const challenges = this.#database.prepare(SQL.deleteFinishedChallenges).run(now).changes;
-        return { enrollmentGrants, challenges, sessions };
+        const dpopProofs = this.#database.prepare(SQL.deleteExpiredDpopProofs).run(now).changes;
+        return { enrollmentGrants, challenges, sessions, dpopProofs };
       })
       .immediate();
   }

@@ -5,11 +5,11 @@ import {
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-JJPVA6J5.js";
+} from "./chunk-XJU3HWJN.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnSchemaStatements
-} from "./chunk-6NWV3XTI.js";
+} from "./chunk-4KITUZX4.js";
 
 // src/d1.ts
 async function migrateD1(database, now = Date.now()) {
@@ -66,6 +66,8 @@ var D1LocalWebAuthnStore = class {
       record.userId,
       record.grantId,
       record.authorizationSessionHash,
+      record.credentialKind,
+      record.allowedCredentialKinds === null ? null : JSON.stringify(record.allowedCredentialKinds),
       record.expiresAt,
       record.createdAt
     ).run();
@@ -194,15 +196,21 @@ var D1LocalWebAuthnStore = class {
     const results = await this.#database.batch([
       this.#database.prepare(SQL.deleteExpiredSessions).bind(now),
       this.#database.prepare(SQL.deleteFinishedGrants).bind(now),
-      this.#database.prepare(SQL.deleteFinishedChallenges).bind(now)
+      this.#database.prepare(SQL.deleteFinishedChallenges).bind(now),
+      this.#database.prepare(SQL.deleteExpiredDpopProofs).bind(now)
     ]);
     return {
       sessions: changes(results[0]),
       enrollmentGrants: changes(results[1]),
-      challenges: changes(results[2])
+      challenges: changes(results[2]),
+      dpopProofs: changes(results[3])
     };
   }
-  /** The nine `localwebauthn_credentials` column values, in schema order. */
+  async claimDpopProof(jtiHash, expiresAt) {
+    const result = await this.#database.prepare(SQL.claimDpopProof).bind(jtiHash, expiresAt).run();
+    return changes(result) === 1;
+  }
+  /** The ten `localwebauthn_credentials` column values, in schema order. */
   #credentialValues(credential) {
     return [
       credential.id,
@@ -213,6 +221,7 @@ var D1LocalWebAuthnStore = class {
       credential.deviceType,
       credential.backedUp ? 1 : 0,
       credential.label,
+      credential.kind,
       credential.createdAt
     ];
   }

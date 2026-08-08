@@ -2,6 +2,13 @@ import type { LocalWebAuthnOptions } from './types.js';
 
 import { LocalWebAuthnError } from './errors.js';
 
+export type NormalizedCredentialKind = {
+  interactive: boolean;
+  canRegister: boolean;
+  sessionAbsoluteMs: number;
+  sessionIdleMs: number;
+};
+
 export type NormalizedConfig = {
   rpName: string;
   rpId: string;
@@ -15,6 +22,8 @@ export type NormalizedConfig = {
     sessionIdleMs: number;
     sessionAbsoluteMs: number;
   };
+  /** Declared kinds only; an undeclared kind falls back to {@link defaultKindPolicy}. */
+  credentialKinds: Record<string, NormalizedCredentialKind>;
 };
 
 const DEFAULTS = {
@@ -93,6 +102,42 @@ export function normalizeConfig(options: LocalWebAuthnOptions): NormalizedConfig
     configurationError('sessionIdleMs cannot exceed sessionAbsoluteMs.');
   }
 
+  const credentialKinds: Record<string, NormalizedCredentialKind> = {};
+  for (const [kind, policy] of Object.entries(options.credentialKinds ?? {})) {
+    if (!kind.trim()) {
+      configurationError('A credential kind cannot be an empty string.');
+    }
+    const sessionAbsoluteMs = policy.sessionAbsoluteMs ?? durations.sessionAbsoluteMs;
+    for (const [name, duration] of Object.entries({
+      sessionAbsoluteMs,
+      sessionIdleMs: policy.sessionIdleMs ?? durations.sessionIdleMs,
+    })) {
+      if (!Number.isSafeInteger(duration) || duration <= 0) {
+        configurationError(
+          `credentialKinds.${kind}.${name} must be a positive integer number of milliseconds.`,
+        );
+      }
+    }
+    // An explicit pair that disagrees is a mistake worth reporting. An *inherited*
+    // idle window longer than this kind's shortened absolute lifetime is not: the
+    // absolute lifetime wins regardless, so the excess is unreachable. Clamping
+    // it means shortening a machine session does not also force the host to
+    // restate an idle window it never cared about.
+    if (policy.sessionIdleMs !== undefined && policy.sessionIdleMs > sessionAbsoluteMs) {
+      configurationError(`credentialKinds.${kind}.sessionIdleMs cannot exceed sessionAbsoluteMs.`);
+    }
+    const sessionIdleMs = Math.min(
+      policy.sessionIdleMs ?? durations.sessionIdleMs,
+      sessionAbsoluteMs,
+    );
+    credentialKinds[kind] = {
+      interactive: policy.interactive ?? true,
+      canRegister: policy.canRegister ?? true,
+      sessionAbsoluteMs,
+      sessionIdleMs,
+    };
+  }
+
   return {
     rpName,
     rpId,
@@ -100,5 +145,30 @@ export function normalizeConfig(options: LocalWebAuthnOptions): NormalizedConfig
     publicOrigin,
     enrollmentPath,
     durations,
+    credentialKinds,
   };
+}
+
+/**
+ * Policy for a kind the host never declared, including `null`.
+ *
+ * Permissive on purpose: an undeclared kind must behave exactly as it did before
+ * `credentialKinds` existed, or adding the option would silently change
+ * behaviour for every deployment that ignores it.
+ */
+export function defaultKindPolicy(config: NormalizedConfig): NormalizedCredentialKind {
+  return {
+    interactive: true,
+    canRegister: true,
+    sessionAbsoluteMs: config.durations.sessionAbsoluteMs,
+    sessionIdleMs: config.durations.sessionIdleMs,
+  };
+}
+
+/** Effective policy for `kind`, falling back to {@link defaultKindPolicy}. */
+export function kindPolicy(
+  config: NormalizedConfig,
+  kind: string | null,
+): NormalizedCredentialKind {
+  return (kind === null ? undefined : config.credentialKinds[kind]) ?? defaultKindPolicy(config);
 }

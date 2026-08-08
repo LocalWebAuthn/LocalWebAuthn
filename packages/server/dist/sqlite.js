@@ -4,11 +4,11 @@ import {
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-JJPVA6J5.js";
+} from "./chunk-XJU3HWJN.js";
 import {
-  LOCALWEBAUTHN_SCHEMA_SQL,
-  LOCALWEBAUTHN_SCHEMA_VERSION
-} from "./chunk-6NWV3XTI.js";
+  LOCALWEBAUTHN_SCHEMA_VERSION,
+  localWebAuthnUpgradeStatements
+} from "./chunk-4KITUZX4.js";
 
 // src/sqlite.ts
 var Rollback = class extends Error {
@@ -16,7 +16,12 @@ var Rollback = class extends Error {
 function migrateSqlite(database, now = Date.now()) {
   database.exec("PRAGMA foreign_keys = ON");
   database.transaction(() => {
-    database.exec(LOCALWEBAUTHN_SCHEMA_SQL);
+    database.exec(SQL.createMigrationsTable);
+    const stored = database.prepare(SQL.selectSchemaVersion).get();
+    const from = stored?.version ?? 0;
+    for (const statement of localWebAuthnUpgradeStatements(from, "sqlite")) {
+      database.exec(statement);
+    }
     database.prepare(SQL.insertMigration).run(LOCALWEBAUTHN_SCHEMA_VERSION, now);
   }).immediate();
 }
@@ -56,6 +61,8 @@ var SqliteLocalWebAuthnStore = class {
       record.userId,
       record.grantId,
       record.authorizationSessionHash,
+      record.credentialKind,
+      record.allowedCredentialKinds === null ? null : JSON.stringify(record.allowedCredentialKinds),
       record.expiresAt,
       record.createdAt
     ).changes === 1;
@@ -88,6 +95,7 @@ var SqliteLocalWebAuthnStore = class {
           credential.deviceType,
           credential.backedUp ? 1 : 0,
           credential.label,
+          credential.kind,
           credential.createdAt
         );
         if (input.challenge.grantId) {
@@ -162,12 +170,16 @@ var SqliteLocalWebAuthnStore = class {
       this.#database.prepare(SQL.consumeUserChallenges).run(now, userId);
     }).immediate();
   }
+  async claimDpopProof(jtiHash, expiresAt) {
+    return this.#database.prepare(SQL.claimDpopProof).run(jtiHash, expiresAt).changes === 1;
+  }
   async cleanup(now) {
     return this.#database.transaction(() => {
       const sessions = this.#database.prepare(SQL.deleteExpiredSessions).run(now).changes;
       const enrollmentGrants = this.#database.prepare(SQL.deleteFinishedGrants).run(now).changes;
       const challenges = this.#database.prepare(SQL.deleteFinishedChallenges).run(now).changes;
-      return { enrollmentGrants, challenges, sessions };
+      const dpopProofs = this.#database.prepare(SQL.deleteExpiredDpopProofs).run(now).changes;
+      return { enrollmentGrants, challenges, sessions, dpopProofs };
     }).immediate();
   }
   /** Re-check the authorizing grant or session at commit time. */

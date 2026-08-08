@@ -1,5 +1,5 @@
-import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsResult, m as RegistrationVerificationInput, n as RegistrationVerificationResult, A as AuthenticationOptionsResult, o as AuthenticationVerificationInput, p as AuthenticationVerificationResult, q as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-Cne4CLO3.js';
-export { r as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, s as LocalWebAuthnDurations, t as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, u as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-Cne4CLO3.js';
+import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsInput, m as RegistrationOptionsResult, n as RegistrationVerificationInput, o as RegistrationVerificationResult, A as AuthenticationOptionsInput, p as AuthenticationOptionsResult, q as AuthenticationVerificationInput, r as AuthenticationVerificationResult, s as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-CUVweKWs.js';
+export { t as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, u as LocalWebAuthnDurations, v as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, w as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-CUVweKWs.js';
 export { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 declare function defaultRandomBytes(length: number): Uint8Array;
@@ -12,7 +12,15 @@ declare function createUserHandle(randomBytes?: typeof defaultRandomBytes): Uint
 declare function createEnrollmentToken(randomBytes?: typeof defaultRandomBytes): string;
 declare function createOpaqueToken(randomBytes?: typeof defaultRandomBytes): string;
 
-type LocalWebAuthnErrorCode = 'invalid_configuration' | 'invalid_enrollment' | 'enrollment_not_authorized' | 'invalid_ceremony' | 'registration_failed' | 'authentication_failed' | 'unauthenticated' | 'credential_not_found' | 'last_credential';
+type LocalWebAuthnErrorCode = 'invalid_configuration' | 'invalid_enrollment' | 'enrollment_not_authorized' | 'invalid_ceremony' | 'registration_failed' | 'authentication_failed' | 'unauthenticated' | 'credential_not_found' | 'last_credential'
+/**
+ * The authorizing session's credential kind is configured `canRegister: false`
+ * — a machine credential may authenticate but may not enroll another
+ * credential. See {@link CredentialKindPolicy.canRegister}.
+ */
+ | 'registration_not_permitted'
+/** A DPoP proof was absent, malformed, replayed, or signed by the wrong key. */
+ | 'invalid_dpop_proof';
 declare class LocalWebAuthnError extends Error {
     readonly code: LocalWebAuthnErrorCode;
     readonly status: number;
@@ -177,6 +185,12 @@ declare function describeSignupPhase(phase: SignupPhase): string;
  */
 declare const SELF_SERVE_SIGNUP_STEPS: readonly ["Collect identifiers (e.g. email and phone) and rate-limit the form", "Verify control of two independent channels before creating durable access", "Insert application user with createUserHandle(); do not store a password", "Call issueEnrollment(userId); store only the URL for delivery, never log the raw token long-term", "Deliver the enrollment URL on a bound channel (not an attacker-supplied address)", "User opens fragment → exchangeEnrollment → registerPasskey", "Optionally prompt for a second passkey while the session is fresh"];
 
+type NormalizedCredentialKind = {
+    interactive: boolean;
+    canRegister: boolean;
+    sessionAbsoluteMs: number;
+    sessionIdleMs: number;
+};
 type NormalizedConfig = {
     rpName: string;
     rpId: string;
@@ -190,6 +204,8 @@ type NormalizedConfig = {
         sessionIdleMs: number;
         sessionAbsoluteMs: number;
     };
+    /** Declared kinds only; an undeclared kind falls back to {@link defaultKindPolicy}. */
+    credentialKinds: Record<string, NormalizedCredentialKind>;
 };
 
 /**
@@ -267,10 +283,7 @@ declare class LocalWebAuthn {
      * valid — including when the user is **inactive** as reported by the
      * `getUser` provider.
      */
-    registrationOptions(input: {
-        enrollmentSessionToken?: string;
-        sessionToken?: string;
-    }): Promise<RegistrationOptionsResult>;
+    registrationOptions(input: RegistrationOptionsInput): Promise<RegistrationOptionsResult>;
     /**
      * Verify a registration response, store the credential, and open a session.
      *
@@ -295,7 +308,7 @@ declare class LocalWebAuthn {
      * No user is identified at this point; the authenticator chooses the
      * credential and {@link verifyAuthentication} resolves and checks the user.
      */
-    authenticationOptions(): Promise<AuthenticationOptionsResult>;
+    authenticationOptions(input?: AuthenticationOptionsInput): Promise<AuthenticationOptionsResult>;
     /**
      * Verify an authentication assertion and create a session.
      *
@@ -382,6 +395,26 @@ declare class LocalWebAuthn {
      * part of cleanup.
      */
     cleanup(): Promise<CleanupResult>;
+    /**
+     * Verify a DPoP proof (RFC 9449) for a request on an already-resolved session.
+     *
+     * Derives the expected key thumbprint from the session's credential, so there
+     * is no per-session key material to store, then claims the proof's `jti`
+     * through the store so a captured proof cannot be replayed inside its `iat`
+     * window.
+     *
+     * Throws `invalid_dpop_proof` (401) on any failure. The `reason` is attached to
+     * the message for logs; do not surface it to callers, since it distinguishes
+     * "wrong key" from "replayed".
+     */
+    verifyDpop(input: {
+        proof: string | undefined;
+        method: string;
+        url: string;
+        sessionToken: string;
+        session: SessionIdentity;
+        nonce?: string;
+    }): Promise<void>;
 }
 
 export { type AuthCookieKind, type AuthCookieNames, AuthUser, AuthenticationOptionsResult, AuthenticationVerificationInput, AuthenticationVerificationResult, CleanupResult, type CookieAttributes, type CookieAttributesOptions, Credential, EnrollmentExchange, EnrollmentIssue, LocalWebAuthn, LocalWebAuthnError, type LocalWebAuthnErrorCode, LocalWebAuthnOptions, RegistrationOptionsResult, RegistrationVerificationInput, RegistrationVerificationResult, SELF_SERVE_SIGNUP_STEPS, SessionIdentity, type SignupFacts, type SignupNextStep, type SignupPhase, authCookieNames, cookieAttributes, createEnrollmentToken, createOpaqueToken, createUserHandle, decodeBase64Url, describeSignupPhase, encodeBase32, encodeBase64Url, equalBytes, isExactOrigin, isHttpsPublicOrigin, isLocalWebAuthnError, nextSignupStep, parseCookieHeader, serializeClearedCookie, serializeCookie, sha256, signupPhase };

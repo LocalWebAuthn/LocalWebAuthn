@@ -14,6 +14,7 @@ import {
 
 import type {
   AuthUser,
+  AuthenticationOptionsInput,
   AuthenticationOptionsResult,
   AuthenticationVerificationInput,
   AuthenticationVerificationResult,
@@ -23,13 +24,14 @@ import type {
   EnrollmentIssue,
   LocalWebAuthnEvent,
   LocalWebAuthnOptions,
+  RegistrationOptionsInput,
   RegistrationOptionsResult,
   RegistrationVerificationInput,
   RegistrationVerificationResult,
   SessionIdentity,
 } from './types.js';
 
-import { normalizeConfig } from './config.js';
+import { kindPolicy, normalizeConfig } from './config.js';
 import {
   createEnrollmentToken,
   createOpaqueToken,
@@ -38,6 +40,7 @@ import {
   equalBytes,
   sha256,
 } from './crypto.js';
+import { verifyDpopProof } from './dpop.js';
 import { LocalWebAuthnError } from './errors.js';
 import { toWebAuthnCredential } from './types.js';
 
@@ -61,6 +64,12 @@ type RegistrationAuthorization =
       enrollmentSessionHash: null;
       authenticatedSessionHash: Uint8Array;
     };
+
+/** Normalize a host-supplied kind: trimmed, or `null` for unclassified. */
+function normalizeKind(kind: string | undefined): string | null {
+  const trimmed = kind?.trim() ?? '';
+  return trimmed === '' ? null : trimmed;
+}
 
 /**
  * Framework-neutral passkey authentication lifecycle.
@@ -95,9 +104,15 @@ export class LocalWebAuthn {
   readonly #ceremonies;
   readonly #onEvent;
   readonly #logger;
+  /** Widest idle window across the global setting and every declared kind. */
+  readonly #widestIdleMs;
 
   constructor(options: LocalWebAuthnOptions) {
     this.config = normalizeConfig(options);
+    this.#widestIdleMs = Math.max(
+      this.config.durations.sessionIdleMs,
+      ...Object.values(this.config.credentialKinds).map((policy) => policy.sessionIdleMs),
+    );
     this.#store = options.store;
     this.#users = options.users;
     this.#now = options.now ?? Date.now;
@@ -234,11 +249,9 @@ export class LocalWebAuthn {
    * valid — including when the user is **inactive** as reported by the
    * `getUser` provider.
    */
-  async registrationOptions(input: {
-    enrollmentSessionToken?: string;
-    sessionToken?: string;
-  }): Promise<RegistrationOptionsResult> {
+  async registrationOptions(input: RegistrationOptionsInput): Promise<RegistrationOptionsResult> {
     const authorization = await this.#registrationAuthorization(input);
+    const credentialKind = normalizeKind(input.credentialKind);
     const credentials = await this.#store.listCredentials(authorization.user.id);
     const options = await this.#ceremonies.generateRegistrationOptions({
       rpName: this.config.rpName,
@@ -268,6 +281,8 @@ export class LocalWebAuthn {
         userId: authorization.user.id,
         grantId: authorization.grantId,
         authorizationSessionHash: authorization.authenticatedSessionHash,
+        credentialKind,
+        allowedCredentialKinds: null,
         expiresAt,
         createdAt: now,
       }))
@@ -351,7 +366,7 @@ export class LocalWebAuthn {
 
     const { credential, credentialBackedUp, credentialDeviceType } = verification.registrationInfo;
     const sessionToken = createOpaqueToken(this.#randomBytes);
-    const expiresAt = now + this.config.durations.sessionAbsoluteMs;
+    const expiresAt = now + kindPolicy(this.config, challenge.credentialKind).sessionAbsoluteMs;
     const completed = await this.#store.completeRegistration({
       challenge,
       enrollmentSessionHash: authorization.enrollmentSessionHash,
@@ -364,7 +379,10 @@ export class LocalWebAuthn {
         transports: credential.transports ?? [],
         deviceType: credentialDeviceType,
         backedUp: credentialBackedUp,
-        label: this.#credentialLabel(input.label, credentialDeviceType),
+        label: this.#credentialLabel(input.label, credentialDeviceType, challenge.credentialKind),
+        // Taken from the challenge, which the host wrote before the client saw
+        // it — never from `input`, which is shaped by the request body.
+        kind: challenge.credentialKind,
         createdAt: now,
       },
       session: {
@@ -398,14 +416,22 @@ export class LocalWebAuthn {
       at: now,
       userId: user.id,
       credentialId: credential.id,
+      credentialKind: challenge.credentialKind,
     });
     await this.#emit({
       type: 'session.created',
       at: now,
       userId: user.id,
       credentialId: credential.id,
+      credentialKind: challenge.credentialKind,
     });
-    return { verified: true, sessionToken, expiresAt, credentialId: credential.id };
+    return {
+      verified: true,
+      sessionToken,
+      expiresAt,
+      credentialId: credential.id,
+      credentialKind: challenge.credentialKind,
+    };
   }
 
   /**
@@ -415,7 +441,9 @@ export class LocalWebAuthn {
    * No user is identified at this point; the authenticator chooses the
    * credential and {@link verifyAuthentication} resolves and checks the user.
    */
-  async authenticationOptions(): Promise<AuthenticationOptionsResult> {
+  async authenticationOptions(
+    input: AuthenticationOptionsInput = {},
+  ): Promise<AuthenticationOptionsResult> {
     const options = await this.#ceremonies.generateAuthenticationOptions({
       rpID: this.config.rpId,
       userVerification: 'required',
@@ -431,6 +459,8 @@ export class LocalWebAuthn {
         userId: null,
         grantId: null,
         authorizationSessionHash: null,
+        credentialKind: null,
+        allowedCredentialKinds: this.#admissibleKinds(input.credentialKinds),
         expiresAt,
         createdAt: now,
       }))
@@ -483,7 +513,12 @@ export class LocalWebAuthn {
       credential.revokedAt !== null ||
       !user ||
       !responseHandle ||
-      !equalBytes(responseHandle, user.webAuthnUserHandle)
+      !equalBytes(responseHandle, user.webAuthnUserHandle) ||
+      // The ceremony declared which credential kinds it accepts, before this
+      // client was handed a challenge. A machine credential presenting itself at
+      // the browser sign-in route fails here, and vice versa — enforced once,
+      // centrally, rather than in every host route.
+      !this.#kindAdmitted(credential.kind, challenge.allowedCredentialKinds)
     ) {
       throw new LocalWebAuthnError(
         'authentication_failed',
@@ -530,7 +565,7 @@ export class LocalWebAuthn {
     }
 
     const sessionToken = createOpaqueToken(this.#randomBytes);
-    const expiresAt = now + this.config.durations.sessionAbsoluteMs;
+    const expiresAt = now + kindPolicy(this.config, credential.kind).sessionAbsoluteMs;
     const completed = await this.#store.completeAuthentication({
       credentialId: credential.id,
       previousCounter,
@@ -558,18 +593,21 @@ export class LocalWebAuthn {
       at: now,
       userId: user.id,
       credentialId: credential.id,
+      credentialKind: credential.kind,
     });
     await this.#emit({
       type: 'session.created',
       at: now,
       userId: user.id,
       credentialId: credential.id,
+      credentialKind: credential.kind,
     });
     return {
       verified: true,
       sessionToken,
       expiresAt,
       credentialId: credential.id,
+      credentialKind: credential.kind,
       user: this.#publicUser(user),
     };
   }
@@ -592,13 +630,16 @@ export class LocalWebAuthn {
   } | null> {
     const idHash = await sha256(sessionToken);
     const now = this.#now();
-    const session = await this.#store.resolveSession(
-      idHash,
-      now,
-      now - this.config.durations.sessionIdleMs,
-    );
+    // The store filters on the widest idle window any kind allows, because the
+    // session's kind is only known once the row comes back; the exact per-kind
+    // window is applied below. With no per-kind override this is the global
+    // window and the second check is a no-op.
+    const session = await this.#store.resolveSession(idHash, now, now - this.#widestIdleMs);
     const user = session ? await this.#activeUser(session.userId) : null;
     if (!session || !user) {
+      return null;
+    }
+    if (session.lastSeenAt <= now - kindPolicy(this.config, session.credentialKind).sessionIdleMs) {
       return null;
     }
     if (touch && !(await this.#store.touchSession(idHash, now))) {
@@ -752,6 +793,18 @@ export class LocalWebAuthn {
       const authenticatedSessionHash = await sha256(input.sessionToken);
       const resolved = await this.resolveSession(input.sessionToken, false);
       if (resolved) {
+        // A machine credential may authenticate but may not enroll another
+        // credential. Without this, a leaked machine key registers a spare and
+        // survives revocation of the original, so revocation stops being a
+        // remedy at all. This is the only place the check can live: nothing sits
+        // between a host route and this call.
+        if (!kindPolicy(this.config, resolved.session.credentialKind).canRegister) {
+          throw new LocalWebAuthnError(
+            'registration_not_permitted',
+            'This credential may not register additional credentials.',
+            403,
+          );
+        }
         return {
           user: resolved.user,
           grantId: null,
@@ -766,6 +819,89 @@ export class LocalWebAuthn {
       'A valid enrollment or authenticated session is required.',
       403,
     );
+  }
+
+  /**
+   * The `allowed_credential_kinds` value to record on an authentication challenge.
+   *
+   * An explicit list is stored as given, so a machine route can name its kind and
+   * that decision is fixed on a server row before the client sees the challenge.
+   *
+   * With no list the column stays `null`, meaning "unconstrained by this
+   * ceremony" — the admissibility question is then answered from configuration at
+   * verification time by {@link #kindAdmitted}. Storing `null` rather than an
+   * enumerated allow-list matters because the set of kinds present in the
+   * database is not knowable from configuration alone.
+   */
+  #admissibleKinds(requested: (string | null)[] | undefined): (string | null)[] | null {
+    return requested ? [...new Set(requested)] : null;
+  }
+
+  /**
+   * Whether `kind` may authenticate under a challenge's recorded constraint.
+   *
+   * An enumerated list is authoritative. An unconstrained challenge falls back to
+   * the kind's `interactive` policy, so a kind declared `interactive: false` is
+   * refused at any route that did not ask for it by name — while an undeclared
+   * kind (including `null`) is admitted, preserving pre-`credentialKinds`
+   * behaviour.
+   */
+  #kindAdmitted(kind: string | null, allowed: (string | null)[] | null): boolean {
+    return allowed === null ? kindPolicy(this.config, kind).interactive : allowed.includes(kind);
+  }
+
+  /**
+   * Verify a DPoP proof (RFC 9449) for a request on an already-resolved session.
+   *
+   * Derives the expected key thumbprint from the session's credential, so there
+   * is no per-session key material to store, then claims the proof's `jti`
+   * through the store so a captured proof cannot be replayed inside its `iat`
+   * window.
+   *
+   * Throws `invalid_dpop_proof` (401) on any failure. The `reason` is attached to
+   * the message for logs; do not surface it to callers, since it distinguishes
+   * "wrong key" from "replayed".
+   */
+  async verifyDpop(input: {
+    proof: string | undefined;
+    method: string;
+    url: string;
+    sessionToken: string;
+    session: SessionIdentity;
+    nonce?: string;
+  }): Promise<void> {
+    if (!input.proof) {
+      throw new LocalWebAuthnError('invalid_dpop_proof', 'A DPoP proof is required.', 401);
+    }
+    const credential = await this.#store.getCredential(input.session.credentialId);
+    if (!credential || credential.revokedAt !== null) {
+      throw new LocalWebAuthnError('invalid_dpop_proof', 'The credential is unavailable.', 401);
+    }
+
+    const now = this.#now();
+    const verification = await verifyDpopProof({
+      proof: input.proof,
+      method: input.method,
+      url: input.url,
+      accessToken: input.sessionToken,
+      publicKeyCose: credential.publicKey,
+      nonce: input.nonce,
+      now,
+    });
+    if (!verification.valid) {
+      throw new LocalWebAuthnError(
+        'invalid_dpop_proof',
+        `The DPoP proof is not valid (${verification.reason}).`,
+        401,
+      );
+    }
+    if (!(await this.#store.claimDpopProof(verification.jtiHash, verification.expiresAt))) {
+      throw new LocalWebAuthnError(
+        'invalid_dpop_proof',
+        'The DPoP proof is not valid (replayed).',
+        401,
+      );
+    }
   }
 
   async #verifyRegistrationAuthorization(
@@ -812,10 +948,17 @@ export class LocalWebAuthn {
   #credentialLabel(
     requestedLabel: string | undefined,
     deviceType: 'singleDevice' | 'multiDevice',
+    kind: string | null,
   ): string {
     const label = requestedLabel?.trim();
     if (label) {
       return label.slice(0, 80);
+    }
+    // "Device passkey" on a machine credential is the mislabelling this whole
+    // feature exists to prevent, so a kinded credential falls back to its kind
+    // rather than to device wording it cannot honestly claim.
+    if (kind !== null) {
+      return kind.slice(0, 80);
     }
     return deviceType === 'multiDevice' ? 'Synced passkey' : 'Device passkey';
   }

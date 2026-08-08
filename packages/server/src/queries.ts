@@ -71,8 +71,9 @@ export const SQL = {
   insertChallenge: `
     INSERT INTO localwebauthn_challenges(
       id_hash, kind, challenge, user_id, grant_id,
-      authorization_session_hash, expires_at, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      authorization_session_hash, credential_kind, allowed_credential_kinds,
+      expires_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT DO NOTHING`,
 
   /** Consume a challenge exactly once; returns no rows on replay or expiry. */
@@ -83,14 +84,15 @@ export const SQL = {
       AND kind = ?
       AND consumed_at IS NULL
       AND expires_at > ?
-    RETURNING kind, challenge, user_id, grant_id, authorization_session_hash`,
+    RETURNING kind, challenge, user_id, grant_id, authorization_session_hash,
+              credential_kind, allowed_credential_kinds`,
 
   // -- Credentials ----------------------------------------------------------
 
   selectCredentialsForUser: `
     SELECT
       id, user_id, public_key, counter, transports_json, device_type,
-      backed_up, label, created_at, last_used_at, revoked_at
+      backed_up, label, kind, created_at, last_used_at, revoked_at
     FROM localwebauthn_credentials
     WHERE user_id = ? AND (? = 1 OR revoked_at IS NULL)
     ORDER BY created_at, id`,
@@ -98,15 +100,15 @@ export const SQL = {
   selectCredentialById: `
     SELECT
       id, user_id, public_key, counter, transports_json, device_type,
-      backed_up, label, created_at, last_used_at, revoked_at
+      backed_up, label, kind, created_at, last_used_at, revoked_at
     FROM localwebauthn_credentials
     WHERE id = ?`,
 
   insertCredential: `
     INSERT INTO localwebauthn_credentials(
       id, user_id, public_key, counter, transports_json,
-      device_type, backed_up, label, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      device_type, backed_up, label, kind, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 
   /**
    * Compare-and-swap the signature counter.
@@ -127,17 +129,26 @@ export const SQL = {
 
   /**
    * Revoke one credential. When `allow_last` is 0, the row is updated only if
-   * another active credential for the same user still exists — so the last
-   * active passkey cannot be removed without an explicit recovery override.
+   * another active credential *of the same kind* for the same user still exists
+   * — so the last active passkey of a kind cannot be removed without an
+   * explicit recovery override.
+   *
+   * Scoping the guard by kind is what stops a deployment key from counting as
+   * the human's fallback: without it, a person holding one passkey and one API
+   * credential could have their only passkey revoked and be told it worked.
+   * `COALESCE` is required because `NULL <> NULL` — every pre-`kind` credential
+   * is kind `NULL` and must still count as one group. For any user whose
+   * credentials share a kind (including all-`NULL`), this is exactly the old
+   * behaviour.
    *
    * Binds: now, credentialId, userId, allowLast (1 or 0), userId, credentialId.
    */
   revokeCredential: `
-    UPDATE localwebauthn_credentials
+    UPDATE localwebauthn_credentials AS target
     SET revoked_at = ?
-    WHERE id = ?
-      AND user_id = ?
-      AND revoked_at IS NULL
+    WHERE target.id = ?
+      AND target.user_id = ?
+      AND target.revoked_at IS NULL
       AND (
         ? = 1
         OR EXISTS (
@@ -146,22 +157,24 @@ export const SQL = {
           WHERE other.user_id = ?
             AND other.id <> ?
             AND other.revoked_at IS NULL
+            AND COALESCE(other.kind, '') = COALESCE(target.kind, '')
         )
       )`,
 
-  /** True when the credential is active and is the user's only active passkey. */
+  /** True when the credential is active and is the user's only active passkey of its kind. */
   isLastActiveCredential: `
     SELECT 1 AS ok
-    FROM localwebauthn_credentials
-    WHERE id = ?
-      AND user_id = ?
-      AND revoked_at IS NULL
+    FROM localwebauthn_credentials AS target
+    WHERE target.id = ?
+      AND target.user_id = ?
+      AND target.revoked_at IS NULL
       AND NOT EXISTS (
         SELECT 1
         FROM localwebauthn_credentials AS other
         WHERE other.user_id = ?
           AND other.id <> ?
           AND other.revoked_at IS NULL
+          AND COALESCE(other.kind, '') = COALESCE(target.kind, '')
       )`,
 
   revokeUserCredentials: `
@@ -205,10 +218,15 @@ export const SQL = {
       id_hash, user_id, credential_id, authenticated_at, expires_at, last_seen_at
     ) VALUES (?, ?, ?, ?, ?, ?)`,
 
+  /**
+   * The credential join already exists to enforce "credential not revoked", so
+   * carrying `credentials.kind` out of it costs nothing and lets
+   * {@link LocalWebAuthn.resolveSession} report the kind without a second query.
+   */
   selectSession: `
     SELECT
       sessions.user_id, sessions.credential_id, sessions.authenticated_at,
-      sessions.expires_at, sessions.last_seen_at
+      sessions.expires_at, sessions.last_seen_at, credentials.kind
     FROM localwebauthn_sessions AS sessions
     JOIN localwebauthn_credentials AS credentials
       ON credentials.id = sessions.credential_id
@@ -301,7 +319,35 @@ export const SQL = {
     DELETE FROM localwebauthn_challenges
     WHERE expires_at <= ? OR consumed_at IS NOT NULL`,
 
+  deleteExpiredDpopProofs: `
+    DELETE FROM localwebauthn_dpop_proofs WHERE expires_at <= ?`,
+
+  // -- DPoP proof replay cache ----------------------------------------------
+
+  /**
+   * Claim a proof's `jti` exactly once. `ON CONFLICT DO NOTHING` makes a replay
+   * report zero rows, which is the whole mechanism: the first request carrying a
+   * given `jti` wins and every repeat is refused.
+   *
+   * The raw `jti` is never stored — only its digest, for the same reason
+   * challenge and session tokens are stored hashed.
+   */
+  claimDpopProof: `
+    INSERT INTO localwebauthn_dpop_proofs(jti_hash, expires_at)
+    VALUES (?, ?)
+    ON CONFLICT DO NOTHING`,
+
   // -- Migrations -----------------------------------------------------------
+
+  createMigrationsTable: `
+    CREATE TABLE IF NOT EXISTS localwebauthn_migrations (
+      version INTEGER PRIMARY KEY,
+      applied_at INTEGER NOT NULL
+    )`,
+
+  /** Highest applied schema version, or no rows on a fresh database. */
+  selectSchemaVersion: `
+    SELECT MAX(version) AS version FROM localwebauthn_migrations`,
 
   insertMigration: `
     INSERT INTO localwebauthn_migrations(version, applied_at)
@@ -322,13 +368,13 @@ export const SQL = {
  * path it is on, so neither statement carries the other's parameters.
  */
 export const D1_SQL = {
-  /** Grant path: 9 credential columns, then grant id, user id, session hash, now. */
+  /** Grant path: 10 credential columns, then grant id, user id, session hash, now. */
   insertCredentialIfGrantValid: `
     INSERT INTO localwebauthn_credentials(
       id, user_id, public_key, counter, transports_json,
-      device_type, backed_up, label, created_at
+      device_type, backed_up, label, kind, created_at
     )
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     WHERE EXISTS (
       SELECT 1 FROM localwebauthn_enrollment_grants
       WHERE id = ?
@@ -339,13 +385,13 @@ export const D1_SQL = {
         AND revoked_at IS NULL
     )`,
 
-  /** Session path: 9 credential columns, then session hash, user id, now. */
+  /** Session path: 10 credential columns, then session hash, user id, now. */
   insertCredentialIfSessionValid: `
     INSERT INTO localwebauthn_credentials(
       id, user_id, public_key, counter, transports_json,
-      device_type, backed_up, label, created_at
+      device_type, backed_up, label, kind, created_at
     )
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     WHERE EXISTS (
       SELECT 1
       FROM localwebauthn_sessions AS sessions

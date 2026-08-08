@@ -1,0 +1,43 @@
+{
+  "name": "@localwebauthn/client",
+  "version": "2.2.0",
+  "description": "Software WebAuthn authenticator and DPoP client for headless API access",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LocalWebAuthn/LocalWebAuthn.git",
+    "directory": "packages/client"
+  },
+  "bugs": {
+    "url": "https://github.com/LocalWebAuthn/LocalWebAuthn/issues"
+  },
+  "homepage": "https://github.com/LocalWebAuthn/LocalWebAuthn#readme",
+  "keywords": [
+    "passkey",
+    "webauthn",
+    "dpop",
+    "api",
+    "machine-to-machine"
+  ]
+}

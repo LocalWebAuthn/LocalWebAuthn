@@ -7,7 +7,15 @@ export type LocalWebAuthnErrorCode =
   | 'authentication_failed'
   | 'unauthenticated'
   | 'credential_not_found'
-  | 'last_credential';
+  | 'last_credential'
+  /**
+   * The authorizing session's credential kind is configured `canRegister: false`
+   * — a machine credential may authenticate but may not enroll another
+   * credential. See {@link CredentialKindPolicy.canRegister}.
+   */
+  | 'registration_not_permitted'
+  /** A DPoP proof was absent, malformed, replayed, or signed by the wrong key. */
+  | 'invalid_dpop_proof';
 
 export class LocalWebAuthnError extends Error {
   readonly code: LocalWebAuthnErrorCode;

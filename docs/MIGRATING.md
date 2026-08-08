@@ -1,5 +1,85 @@
 # Migrating LocalWebAuthn
 
+## 2.2.0 → unreleased (credential kinds and machine credentials)
+
+### Schema version 2
+
+The schema moves to version 2. `migrateSqlite`, `migratePostgres` and `migrateD1` now read
+the stored version and apply only what is missing, so calling them on a 1.x or 2.2.0
+database upgrades it in place. Adding a column is why that machinery had to exist —
+`CREATE TABLE IF NOT EXISTS` cannot do it.
+
+What version 2 adds:
+
+- `localwebauthn_credentials.kind` — nullable, host-defined credential class.
+- `localwebauthn_challenges.credential_kind` — the kind a registration ceremony creates.
+- `localwebauthn_challenges.allowed_credential_kinds` — JSON array of kinds an
+  authentication ceremony accepts; `NULL` is unconstrained.
+- `localwebauthn_dpop_proofs` — the DPoP `jti` replay cache.
+- `localwebauthn_credential_kind_idx` on `(user_id, kind, revoked_at)`.
+
+No `CHECK` constraints were added. SQLite cannot add one to an existing table, and a fresh
+install must not end up with constraints an upgraded install lacks — the two would diverge
+and only one of them would be tested. The equivalent invariants live in the service layer.
+
+**Every existing credential keeps `kind: NULL`**, and an undeclared kind behaves exactly as
+before, so a deployment that ignores all of this sees no behaviour change.
+
+### Custom `LocalWebAuthnStore` implementations
+
+Add one method:
+
+```ts
+claimDpopProof(jtiHash: Uint8Array, expiresAt: number): Promise<boolean>;
+```
+
+Record the digest if absent and return `true`; return `false` if it was already there,
+which is a replayed proof. Must be atomic — two concurrent requests carrying the same `jti`
+must not both see `true`. Official adapters use `SQL.claimDpopProof`. `CleanupResult` gains
+`dpopProofs`, reaped with `SQL.deleteExpiredDpopProofs`.
+
+Four records grow by a column each, and the shared SQL already selects and binds them:
+
+- `Credential` → `kind: string | null`
+- `ChallengeRecord` / `ConsumedChallenge` → `credentialKind`, `allowedCredentialKinds`
+- `SessionIdentity` → `credentialKind`, from the credential `SQL.selectSession` already joins
+
+**One behaviour change.** `SQL.revokeCredential` and `SQL.isLastActiveCredential` scope the
+last-credential guard to the credential's own kind, via `COALESCE(kind, '')` so pre-`kind`
+rows form a single group. The change is monotone — never weaker than before, and
+byte-identical for any user whose credentials all share one kind — but stricter in one new
+case: revoking the last credential _of a kind_ now requires `allowLastCredential: true`.
+Without it, a person holding one passkey and one API credential could have their only
+passkey revoked and be told it worked.
+
+### New service API
+
+Nothing is required, but machine credentials need these:
+
+```ts
+// The kind is fixed by the host route, before the client ever sees a challenge.
+registrationOptions({ sessionToken, credentialKind: 'service' });
+// Restrict a ceremony to named kinds.
+authenticationOptions({ credentialKinds: ['service'] });
+// Declare policy per kind. Undeclared kinds keep the old permissive behaviour.
+new LocalWebAuthn({
+  credentialKinds: { service: { interactive: false, canRegister: false } },
+});
+```
+
+`verifyRegistration` deliberately takes **no** kind input — a client must not be able to
+classify itself. `RegistrationVerificationResult` and `AuthenticationVerificationResult`
+now report `credentialKind`, as does `SessionIdentity`.
+
+`registrationOptions` refuses a session whose kind is declared `canRegister: false`, with
+the new `registration_not_permitted` code. That closes a hole older than this release: any
+live session could authorize registering another credential, so a leaked machine key could
+mint a spare and outlive revocation of the first, making revocation useless as a remedy.
+
+`verifyDpop` verifies an RFC 9449 proof against the session's credential. There is no
+per-session key material to store: the expected thumbprint is derived from
+`credentials.public_key`.
+
 ## 2.1.0 → 2.2.0
 
 No changes are required for applications using the official SQLite, PostgreSQL,

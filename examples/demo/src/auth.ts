@@ -2,6 +2,7 @@ import type {
   AuthenticationVerificationInput,
   AuthUser,
   RegistrationVerificationInput,
+  SessionIdentity,
 } from '@localwebauthn/server';
 import {
   authCookieNames,
@@ -28,6 +29,8 @@ export type DemoAuthConfig = {
 export type DemoEnvironment = {
   Variables: {
     authenticatedUser: AuthUser;
+    /** Set by `requireMachineSession` on `/api/machine/v1/*` routes. */
+    machineSession: SessionIdentity;
   };
 };
 
@@ -49,6 +52,22 @@ export function createDemoAuthentication(
     expectedOrigins: config.publicOrigin,
     publicOrigin: config.publicOrigin,
     store: new SqliteLocalWebAuthnStore(database),
+    // Declaring the kind is what turns 'service' from a label into a set of
+    // restrictions. An undeclared kind — including null, which every human
+    // passkey here has — keeps the default permissive behaviour.
+    credentialKinds: {
+      service: {
+        // Cannot open a session at the browser sign-in route, which never names
+        // a kind.
+        interactive: false,
+        // Cannot enrol another credential. Without this, a leaked .env key mints
+        // a spare and outlives revocation of the first.
+        canRegister: false,
+        // Short sessions: the client re-runs the ceremony on 401, which costs it
+        // two round trips and nothing else.
+        sessionAbsoluteMs: 15 * 60_000,
+      },
+    },
     users: {
       getUser: async (userId) => {
         const row = database

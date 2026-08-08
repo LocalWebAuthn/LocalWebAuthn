@@ -112,4 +112,11 @@ than being auto-logged-in. No cleanup step is required to reconcile that state.
 ## Non-Goals
 
 LocalWebAuthn does not provide authorization, user identity verification, email delivery,
-account recovery policy, API-token authentication, OAuth, OIDC, or password fallback.
+account recovery policy, OAuth, OIDC, or password fallback.
+
+It does authenticate non-browser clients: a credential carries a host-defined `kind`, and a
+software client can complete the ceremony without a browser or a human. Such a credential's
+`userVerified`, `origin`, `deviceType` and counter are claims a program makes about itself
+and must never be read as evidence of a person — `kind` is the only fact about a
+credential's class that a hostile key holder cannot forge. See
+[docs/API-AUTH.org](docs/API-AUTH.org).

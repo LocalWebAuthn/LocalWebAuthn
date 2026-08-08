@@ -43,6 +43,7 @@ function credential(id: string, userId = 'user-1') {
     deviceType: 'multiDevice' as const,
     backedUp: true,
     label: 'Primary passkey',
+    kind: null,
     createdAt: now,
   };
 }
@@ -55,6 +56,8 @@ function enrollmentChallenge(grantId: string): ChallengeRecord {
     userId: 'user-1',
     grantId,
     authorizationSessionHash: null,
+    credentialKind: null,
+    allowedCredentialKinds: null,
     expiresAt: now + 1_000,
     createdAt: now,
   };
@@ -85,6 +88,8 @@ function registrationInput(grantId: string): CompleteRegistrationInput {
       userId: 'user-1',
       grantId,
       authorizationSessionHash: null,
+      credentialKind: null,
+      allowedCredentialKinds: null,
     },
     enrollmentSessionHash: bytes(2),
     authenticatedSessionHash: null,

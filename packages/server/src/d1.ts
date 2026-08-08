@@ -157,6 +157,10 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
         record.userId,
         record.grantId,
         record.authorizationSessionHash,
+        record.credentialKind,
+        record.allowedCredentialKinds === null
+          ? null
+          : JSON.stringify(record.allowedCredentialKinds),
         record.expiresAt,
         record.createdAt,
       )
@@ -358,15 +362,22 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
       this.#database.prepare(SQL.deleteExpiredSessions).bind(now),
       this.#database.prepare(SQL.deleteFinishedGrants).bind(now),
       this.#database.prepare(SQL.deleteFinishedChallenges).bind(now),
+      this.#database.prepare(SQL.deleteExpiredDpopProofs).bind(now),
     ]);
     return {
       sessions: changes(results[0]),
       enrollmentGrants: changes(results[1]),
       challenges: changes(results[2]),
+      dpopProofs: changes(results[3]),
     };
   }
 
-  /** The nine `localwebauthn_credentials` column values, in schema order. */
+  async claimDpopProof(jtiHash: Uint8Array, expiresAt: number): Promise<boolean> {
+    const result = await this.#database.prepare(SQL.claimDpopProof).bind(jtiHash, expiresAt).run();
+    return changes(result) === 1;
+  }
+
+  /** The ten `localwebauthn_credentials` column values, in schema order. */
   #credentialValues(credential: NewCredential): unknown[] {
     return [
       credential.id,
@@ -377,6 +388,7 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
       credential.deviceType,
       credential.backedUp ? 1 : 0,
       credential.label,
+      credential.kind,
       credential.createdAt,
     ];
   }

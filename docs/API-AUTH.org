@@ -43,13 +43,37 @@ table already is.
 #+LATEX: \clearpage
 * Status
 
-Design document.  Describes the intended system, not the shipped one.
+Implemented on the =feature/machine-api-credentials= branch, and demonstrated end to
+end in =examples/demo=.  Items still marked /proposed/ below are the ones that were
+not built.
 
-As of =@localwebauthn/server@2.2.0=, =Credential.label= and =Credential.lastUsedAt=
-exist and do everything this design needs of them.  The =kind= column does not exist
-([[https://github.com/LocalWebAuthn/LocalWebAuthn/issues/11][issue #11]]), there is no
-=@localwebauthn/client= package, and there is no DPoP support.  Items marked
-/proposed/ are new work; everything else is a call that exists today.
+What exists:
+
+- Schema version 2 with =credentials.kind=, per-ceremony kind scoping on challenges,
+  and the DPoP =jti= replay cache, plus the versioned migration runner all three
+  adapters needed before any of it could be added.
+- =credentialKinds= configuration: =interactive=, =canRegister= and per-kind session
+  lifetimes.  Undeclared kinds — including =null= — behave exactly as before.
+- =kind= reported on =SessionIdentity=, on both verification results, and on every
+  credential and session event.
+- =@localwebauthn/client=: the software authenticator, the two-line credential file,
+  DPoP proof construction, and =MachineClient=.
+- =verifyDpop= on the service, deriving the expected thumbprint from
+  =credentials.public_key= so nothing is stored per session.
+- The demo's =/api/api-keys/*= and =/api/machine/v1/*= routes, an API-credentials UI
+  panel, and =npm run api-demo= for the script side.
+
+Not built, and still design only:
+
+- =credential_kind= on enrollment grants, and the kind-scoped pending-grant index.
+  The demo mints credentials through the *session* path, which needs neither; the
+  bootstrap-token variant in =docs/API-AUTH/PROVISIONING.md= would.
+- Server-issued DPoP nonces.  =MachineClient= already captures and echoes a
+  =DPoP-Nonce=, and =verifyDpopProof= already checks one when given it, but no route
+  issues one yet.
+- Keystore backends beyond a base64 PKCS#8 key.  The =keystore:= URI is parsed and
+  refused with a pointer to /Key Custody/.
+- Kind filters on =revokeUserAuthentication= and =revokeUserSessions=.
 
 Companion documents in =docs/API-AUTH/=: three independent design treatments, a
 consensus analysis with the standards survey, and the provisioning discussion this

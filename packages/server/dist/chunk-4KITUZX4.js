@@ -1,5 +1,5 @@
 // src/schema.ts
-var LOCALWEBAUTHN_SCHEMA_VERSION = 1;
+var LOCALWEBAUTHN_SCHEMA_VERSION = 2;
 var LOCALWEBAUTHN_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS localwebauthn_migrations (
   version INTEGER PRIMARY KEY,
@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS localwebauthn_challenges (
   user_id TEXT,
   grant_id TEXT REFERENCES localwebauthn_enrollment_grants(id),
   authorization_session_hash BLOB,
+  credential_kind TEXT,
+  allowed_credential_kinds TEXT,
   expires_at INTEGER NOT NULL,
   consumed_at INTEGER,
   created_at INTEGER NOT NULL,
@@ -66,6 +68,7 @@ CREATE TABLE IF NOT EXISTS localwebauthn_credentials (
   device_type TEXT NOT NULL CHECK (device_type IN ('singleDevice', 'multiDevice')),
   backed_up INTEGER NOT NULL DEFAULT 0 CHECK (backed_up IN (0, 1)),
   label TEXT NOT NULL DEFAULT 'Passkey',
+  kind TEXT,
   created_at INTEGER NOT NULL,
   last_used_at INTEGER,
   revoked_at INTEGER
@@ -73,6 +76,9 @@ CREATE TABLE IF NOT EXISTS localwebauthn_credentials (
 
 CREATE INDEX IF NOT EXISTS localwebauthn_credential_user_idx
   ON localwebauthn_credentials(user_id, revoked_at);
+
+CREATE INDEX IF NOT EXISTS localwebauthn_credential_kind_idx
+  ON localwebauthn_credentials(user_id, kind, revoked_at);
 
 CREATE TABLE IF NOT EXISTS localwebauthn_sessions (
   id_hash BLOB PRIMARY KEY,
@@ -88,6 +94,15 @@ CREATE TABLE IF NOT EXISTS localwebauthn_sessions (
 
 CREATE INDEX IF NOT EXISTS localwebauthn_session_user_idx
   ON localwebauthn_sessions(user_id, revoked_at, expires_at);
+
+CREATE TABLE IF NOT EXISTS localwebauthn_dpop_proofs (
+  jti_hash BLOB PRIMARY KEY,
+  expires_at INTEGER NOT NULL,
+  CHECK (length(jti_hash) = 32)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS localwebauthn_dpop_expiry_idx
+  ON localwebauthn_dpop_proofs(expires_at);
 
 CREATE TABLE IF NOT EXISTS localwebauthn_transaction_guard (
   value INTEGER NOT NULL CHECK (value = 1)
@@ -133,6 +148,8 @@ CREATE TABLE IF NOT EXISTS localwebauthn_challenges (
   user_id TEXT,
   grant_id TEXT REFERENCES localwebauthn_enrollment_grants(id),
   authorization_session_hash BYTEA,
+  credential_kind TEXT,
+  allowed_credential_kinds TEXT,
   expires_at BIGINT NOT NULL,
   consumed_at BIGINT,
   created_at BIGINT NOT NULL,
@@ -159,6 +176,7 @@ CREATE TABLE IF NOT EXISTS localwebauthn_credentials (
   device_type TEXT NOT NULL CHECK (device_type IN ('singleDevice', 'multiDevice')),
   backed_up BOOLEAN NOT NULL DEFAULT FALSE,
   label TEXT NOT NULL DEFAULT 'Passkey',
+  kind TEXT,
   created_at BIGINT NOT NULL,
   last_used_at BIGINT,
   revoked_at BIGINT
@@ -166,6 +184,9 @@ CREATE TABLE IF NOT EXISTS localwebauthn_credentials (
 
 CREATE INDEX IF NOT EXISTS localwebauthn_credential_user_idx
   ON localwebauthn_credentials(user_id, revoked_at);
+
+CREATE INDEX IF NOT EXISTS localwebauthn_credential_kind_idx
+  ON localwebauthn_credentials(user_id, kind, revoked_at);
 
 CREATE TABLE IF NOT EXISTS localwebauthn_sessions (
   id_hash BYTEA PRIMARY KEY,
@@ -181,9 +202,51 @@ CREATE TABLE IF NOT EXISTS localwebauthn_sessions (
 
 CREATE INDEX IF NOT EXISTS localwebauthn_session_user_idx
   ON localwebauthn_sessions(user_id, revoked_at, expires_at);
+
+CREATE TABLE IF NOT EXISTS localwebauthn_dpop_proofs (
+  jti_hash BYTEA PRIMARY KEY,
+  expires_at BIGINT NOT NULL,
+  CHECK (octet_length(jti_hash) = 32)
+);
+
+CREATE INDEX IF NOT EXISTS localwebauthn_dpop_expiry_idx
+  ON localwebauthn_dpop_proofs(expires_at);
 `;
+var LOCALWEBAUTHN_MIGRATIONS = [
+  {
+    version: 2,
+    statements: [
+      "ALTER TABLE localwebauthn_credentials ADD COLUMN kind TEXT",
+      "ALTER TABLE localwebauthn_challenges ADD COLUMN credential_kind TEXT",
+      "ALTER TABLE localwebauthn_challenges ADD COLUMN allowed_credential_kinds TEXT",
+      `CREATE INDEX IF NOT EXISTS localwebauthn_credential_kind_idx
+         ON localwebauthn_credentials(user_id, kind, revoked_at)`
+    ]
+  }
+];
+function migrationStatements(fromVersion) {
+  return LOCALWEBAUTHN_MIGRATIONS.filter((entry) => entry.version > fromVersion).flatMap(
+    (entry) => entry.statements.map((statement) => statement.replace(/\s+/gu, " ").trim())
+  );
+}
 function localWebAuthnSchemaStatements() {
   return LOCALWEBAUTHN_SCHEMA_SQL.split(";").map((statement) => statement.replace(/\s+/gu, " ").trim()).filter(Boolean);
+}
+function localWebAuthnPostgresSchemaStatements() {
+  return LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL.split(";").map((statement) => statement.replace(/\s+/gu, " ").trim()).filter(Boolean);
+}
+function localWebAuthnUpgradeStatements(fromVersion, dialect = "sqlite") {
+  const schema = dialect === "postgres" ? localWebAuthnPostgresSchemaStatements() : localWebAuthnSchemaStatements();
+  if (fromVersion <= 0) {
+    return schema;
+  }
+  if (fromVersion >= LOCALWEBAUTHN_SCHEMA_VERSION) {
+    return [];
+  }
+  const newTables = schema.filter(
+    (statement) => /^CREATE (TABLE|INDEX|UNIQUE INDEX) IF NOT EXISTS localwebauthn_dpop/u.test(statement)
+  );
+  return [...migrationStatements(fromVersion), ...newTables];
 }
 function localWebAuthnMigrationStatements(now = Date.now()) {
   return [
@@ -198,6 +261,9 @@ export {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   LOCALWEBAUTHN_SCHEMA_SQL,
   LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL,
+  LOCALWEBAUTHN_MIGRATIONS,
   localWebAuthnSchemaStatements,
+  localWebAuthnPostgresSchemaStatements,
+  localWebAuthnUpgradeStatements,
   localWebAuthnMigrationStatements
 };

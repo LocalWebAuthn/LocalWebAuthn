@@ -6,11 +6,11 @@ import {
   enrollmentSessionFromRow,
   sessionFromRow,
   toPositionalPlaceholders
-} from "./chunk-JJPVA6J5.js";
+} from "./chunk-XJU3HWJN.js";
 import {
-  LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL,
-  LOCALWEBAUTHN_SCHEMA_VERSION
-} from "./chunk-6NWV3XTI.js";
+  LOCALWEBAUTHN_SCHEMA_VERSION,
+  localWebAuthnUpgradeStatements
+} from "./chunk-4KITUZX4.js";
 
 // src/postgres.ts
 var PG = Object.fromEntries(
@@ -25,7 +25,12 @@ async function migratePostgres(pool, now = Date.now()) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query(LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL);
+    await client.query(SQL.createMigrationsTable);
+    const stored = await client.query(PG.selectSchemaVersion);
+    const from = Number(stored.rows[0]?.version ?? 0);
+    for (const statement of localWebAuthnUpgradeStatements(from, "postgres")) {
+      await client.query(statement);
+    }
     await client.query(PG.insertMigration, [LOCALWEBAUTHN_SCHEMA_VERSION, now]);
     await client.query("COMMIT");
   } catch (error) {
@@ -84,6 +89,8 @@ var PostgresLocalWebAuthnStore = class {
       record.userId,
       record.grantId,
       record.authorizationSessionHash,
+      record.credentialKind,
+      record.allowedCredentialKinds === null ? null : JSON.stringify(record.allowedCredentialKinds),
       record.expiresAt,
       record.createdAt
     ]);
@@ -127,6 +134,7 @@ var PostgresLocalWebAuthnStore = class {
           credential.deviceType,
           credential.backedUp,
           credential.label,
+          credential.kind,
           credential.createdAt
         ]);
         if (input.challenge.grantId) {
@@ -248,12 +256,18 @@ var PostgresLocalWebAuthnStore = class {
       const sessions = await tx.query(PG.deleteExpiredSessions, [now]);
       const enrollmentGrants = await tx.query(PG.deleteFinishedGrants, [now]);
       const challenges = await tx.query(PG.deleteFinishedChallenges, [now]);
+      const dpopProofs = await tx.query(PG.deleteExpiredDpopProofs, [now]);
       return {
         sessions: sessions.rowCount ?? 0,
         enrollmentGrants: enrollmentGrants.rowCount ?? 0,
-        challenges: challenges.rowCount ?? 0
+        challenges: challenges.rowCount ?? 0,
+        dpopProofs: dpopProofs.rowCount ?? 0
       };
     });
+  }
+  async claimDpopProof(jtiHash, expiresAt) {
+    const result = await this.#pool.query(PG.claimDpopProof, [jtiHash, expiresAt]);
+    return result.rowCount === 1;
   }
   /** Re-check the authorizing grant or session at commit time. */
   async #registrationIsAuthorized(tx, input) {
