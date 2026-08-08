@@ -1,5 +1,5 @@
-import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsInput, m as RegistrationOptionsResult, n as RegistrationVerificationInput, o as RegistrationVerificationResult, A as AuthenticationOptionsInput, p as AuthenticationOptionsResult, q as AuthenticationVerificationInput, r as AuthenticationVerificationResult, s as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-BRWwL9ty.js';
-export { t as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, u as LocalWebAuthnDurations, v as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, w as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-BRWwL9ty.js';
+import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsInput, m as RegistrationOptionsResult, n as RegistrationVerificationInput, o as RegistrationVerificationResult, A as AuthenticationOptionsInput, p as AuthenticationOptionsResult, q as AuthenticationVerificationInput, r as AuthenticationVerificationResult, s as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-ByWv-_Re.js';
+export { t as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, u as CredentialKindPolicy, v as CredentialProvenance, E as EnrollmentGrantRecord, a as EnrollmentSession, w as LocalWebAuthnDurations, x as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, y as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-ByWv-_Re.js';
 export { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 declare function defaultRandomBytes(length: number): Uint8Array;
@@ -11,6 +11,132 @@ declare function equalBytes(left: Uint8Array, right: Uint8Array): boolean;
 declare function createUserHandle(randomBytes?: typeof defaultRandomBytes): Uint8Array;
 declare function createEnrollmentToken(randomBytes?: typeof defaultRandomBytes): string;
 declare function createOpaqueToken(randomBytes?: typeof defaultRandomBytes): string;
+
+type NormalizedCredentialKind = {
+    interactive: boolean;
+    canRegister: boolean;
+    sessionAbsoluteMs: number;
+    sessionIdleMs: number;
+};
+type NormalizedConfig = {
+    rpName: string;
+    rpId: string;
+    expectedOrigins: string[];
+    publicOrigin: string;
+    enrollmentPath: string;
+    durations: {
+        enrollmentGrantMs: number;
+        enrollmentSessionMs: number;
+        challengeMs: number;
+        sessionIdleMs: number;
+        sessionAbsoluteMs: number;
+    };
+    /** Declared kinds only; an undeclared kind falls back to {@link defaultKindPolicy}. */
+    credentialKinds: Record<string, NormalizedCredentialKind>;
+    /** `null` when nonce issuance was not configured. */
+    dpopNonce: {
+        rotationMs: number;
+    } | null;
+};
+/**
+ * Policy for a kind the host never declared, including `null`.
+ *
+ * Permissive on purpose: an undeclared kind must behave exactly as it did before
+ * `credentialKinds` existed, or adding the option would silently change
+ * behaviour for every deployment that ignores it.
+ */
+declare function defaultKindPolicy(config: NormalizedConfig): NormalizedCredentialKind;
+/** Effective policy for `kind`, falling back to {@link defaultKindPolicy}. */
+declare function kindPolicy(config: NormalizedConfig, kind: string | null): NormalizedCredentialKind;
+
+/**
+ * DPoP (RFC 9449) proof verification, bound to a stored WebAuthn credential.
+ *
+ * The usual OAuth deployment stores a `jkt` — the thumbprint of the key that
+ * will sign proofs — alongside each access token, because there the DPoP key is
+ * unrelated to whatever authenticated the client. Here it *is* the credential
+ * key: a software client signs its WebAuthn assertion and its DPoP proofs with
+ * one key, so the expected thumbprint is derived from `credentials.public_key`
+ * and there is nothing new to store per session.
+ *
+ * The per-request check therefore reduces to: this proof was signed by the same
+ * key that produced the assertion that opened this session.
+ *
+ * Reusing one key across the two protocols is safe because the signed inputs
+ * cannot collide. A WebAuthn assertion covers `authenticatorData ‖
+ * SHA-256(clientDataJSON)` — 69 bytes opening with a SHA-256 digest — while a
+ * JWS signing input is printable ASCII that always begins `eyJ`. The separation
+ * is structural, not a coincidence of encoding.
+ */
+/** Public JWK for an EC2 P-256 or OKP Ed25519 key. */
+type PublicJwk = {
+    kty: 'EC';
+    crv: 'P-256';
+    x: string;
+    y: string;
+} | {
+    kty: 'OKP';
+    crv: 'Ed25519';
+    x: string;
+};
+type DpopVerificationInput = {
+    /** Raw `DPoP` header value: a compact JWS. */
+    proof: string;
+    /** Request method, e.g. `"POST"`. */
+    method: string;
+    /** Full request URL; query and fragment are stripped before comparison. */
+    url: string;
+    /** The session token this proof accompanies, hashed into the `ath` claim. */
+    accessToken: string;
+    /** COSE public key of the credential that opened the session. */
+    publicKeyCose: Uint8Array;
+    /**
+     * When non-empty, the proof's `nonce` must be one of these — normally the
+     * current and previous rotation slot, so a rotation landing mid-flight does not
+     * reject a proof built moments earlier.
+     */
+    nonces?: string[];
+    /** Accepted clock skew for `iat`, in milliseconds. Defaults to 60s either way. */
+    skewMs?: number;
+    now?: number;
+};
+type DpopVerification = {
+    valid: true;
+    /** SHA-256 of the `jti`, for the single-use claim in the store. */
+    jtiHash: Uint8Array;
+    /** When the replay-cache entry may be reaped. */
+    expiresAt: number;
+} | {
+    valid: false;
+    reason: string;
+};
+/**
+ * Convert a COSE public key to its public JWK form.
+ *
+ * Returns `null` for key types this package does not register (RSA), or for a
+ * structurally incomplete key.
+ */
+declare function coseToJwk(publicKeyCose: Uint8Array): PublicJwk | null;
+/**
+ * RFC 7638 JWK thumbprint.
+ *
+ * The canonical form contains only the required members, in lexicographic order,
+ * with no whitespace — so the JSON below is written by hand rather than by
+ * `JSON.stringify` over an object whose key order would be incidental.
+ */
+declare function jwkThumbprint(jwk: PublicJwk): Promise<string>;
+/**
+ * Verify a DPoP proof against the credential that opened the session.
+ *
+ * Checks, in order: the compact JWS shape; `typ` and `alg`; that the embedded
+ * `jwk` is the credential's own key, by thumbprint; the signature; then `htm`,
+ * `htu`, `iat`, `ath` and `nonce`.
+ *
+ * A `true` result still requires the caller to claim `jtiHash` through
+ * {@link LocalWebAuthnStore.claimDpopProof} — this function is pure and cannot
+ * detect replay by itself.
+ */
+declare function verifyDpopProof(input: DpopVerificationInput): Promise<DpopVerification>;
 
 type LocalWebAuthnErrorCode = 'invalid_configuration' | 'invalid_enrollment' | 'enrollment_not_authorized' | 'invalid_ceremony' | 'registration_failed' | 'authentication_failed' | 'unauthenticated' | 'credential_not_found' | 'last_credential'
 /**
@@ -191,33 +317,6 @@ declare function describeSignupPhase(phase: SignupPhase): string;
  * the contract, not executable I/O.
  */
 declare const SELF_SERVE_SIGNUP_STEPS: readonly ["Collect identifiers (e.g. email and phone) and rate-limit the form", "Verify control of two independent channels before creating durable access", "Insert application user with createUserHandle(); do not store a password", "Call issueEnrollment(userId); store only the URL for delivery, never log the raw token long-term", "Deliver the enrollment URL on a bound channel (not an attacker-supplied address)", "User opens fragment → exchangeEnrollment → registerPasskey", "Optionally prompt for a second passkey while the session is fresh"];
-
-type NormalizedCredentialKind = {
-    interactive: boolean;
-    canRegister: boolean;
-    sessionAbsoluteMs: number;
-    sessionIdleMs: number;
-};
-type NormalizedConfig = {
-    rpName: string;
-    rpId: string;
-    expectedOrigins: string[];
-    publicOrigin: string;
-    enrollmentPath: string;
-    durations: {
-        enrollmentGrantMs: number;
-        enrollmentSessionMs: number;
-        challengeMs: number;
-        sessionIdleMs: number;
-        sessionAbsoluteMs: number;
-    };
-    /** Declared kinds only; an undeclared kind falls back to {@link defaultKindPolicy}. */
-    credentialKinds: Record<string, NormalizedCredentialKind>;
-    /** `null` when nonce issuance was not configured. */
-    dpopNonce: {
-        rotationMs: number;
-    } | null;
-};
 
 /**
  * Framework-neutral passkey authentication lifecycle.
@@ -527,4 +626,4 @@ declare class LocalWebAuthn {
     }): Promise<void>;
 }
 
-export { type AuthCookieKind, type AuthCookieNames, AuthUser, AuthenticationOptionsResult, AuthenticationVerificationInput, AuthenticationVerificationResult, CleanupResult, type CookieAttributes, type CookieAttributesOptions, Credential, EnrollmentExchange, EnrollmentIssue, LocalWebAuthn, LocalWebAuthnError, type LocalWebAuthnErrorCode, LocalWebAuthnOptions, RegistrationOptionsResult, RegistrationVerificationInput, RegistrationVerificationResult, SELF_SERVE_SIGNUP_STEPS, SessionIdentity, type SignupFacts, type SignupNextStep, type SignupPhase, authCookieNames, cookieAttributes, createEnrollmentToken, createOpaqueToken, createUserHandle, decodeBase64Url, describeSignupPhase, encodeBase32, encodeBase64Url, equalBytes, isExactOrigin, isHttpsPublicOrigin, isLocalWebAuthnError, nextSignupStep, parseCookieHeader, serializeClearedCookie, serializeCookie, sha256, signupPhase };
+export { type AuthCookieKind, type AuthCookieNames, AuthUser, AuthenticationOptionsInput, AuthenticationOptionsResult, AuthenticationVerificationInput, AuthenticationVerificationResult, CleanupResult, type CookieAttributes, type CookieAttributesOptions, Credential, type DpopVerification, type DpopVerificationInput, EnrollmentExchange, EnrollmentIssue, LocalWebAuthn, LocalWebAuthnError, type LocalWebAuthnErrorCode, LocalWebAuthnOptions, type NormalizedConfig, type NormalizedCredentialKind, type PublicJwk, RegistrationOptionsInput, RegistrationOptionsResult, RegistrationVerificationInput, RegistrationVerificationResult, SELF_SERVE_SIGNUP_STEPS, SessionIdentity, type SignupFacts, type SignupNextStep, type SignupPhase, authCookieNames, cookieAttributes, coseToJwk, createEnrollmentToken, createOpaqueToken, createUserHandle, decodeBase64Url, defaultKindPolicy, describeSignupPhase, encodeBase32, encodeBase64Url, equalBytes, isExactOrigin, isHttpsPublicOrigin, isLocalWebAuthnError, jwkThumbprint, kindPolicy, nextSignupStep, parseCookieHeader, serializeClearedCookie, serializeCookie, sha256, signupPhase, verifyDpopProof };

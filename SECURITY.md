@@ -9,10 +9,22 @@ and the database schema stay compatible across minor releases. Custom
 store contract for correctness (see [docs/MIGRATING.md](docs/MIGRATING.md)).
 
 A `1.x` version means the interface is stable, not that the code has years of production
-exposure. The project is young and has a small user base. It is also small on purpose —
-about 3,500 lines of TypeScript across the service, all three storage adapters, and the
-browser client — so that a reviewer can read the whole authentication path rather than
-trust it. Every SQL statement the package executes is collected in one module,
+exposure. The project is young and has a small user base. It is also small on purpose, so
+that a reviewer can read the whole authentication path rather than trust it:
+
+|                                                                    | Lines  | Who has to read it                       |
+| ------------------------------------------------------------------ | ------ | ---------------------------------------- |
+| `@localwebauthn/server` — service, all three adapters, schema, SQL | ~5,900 | every deployment                         |
+| `@localwebauthn/browser`                                           | ~180   | deployments with a browser front end     |
+| `@localwebauthn/client` — software authenticator, DPoP             | ~1,000 | only deployments issuing API credentials |
+
+Machine credentials took the server package from roughly 4,000 lines to 5,900. The default
+path barely moved — a deployment that declares no `credentialKinds`, configures no
+`dpopNonce` and never sets a `credentialKind` behaves as it did — but the _audit_ surface
+grew with it, and that cost is real. If you are reviewing and do not issue API credentials,
+`packages/server/src/dpop.ts` and the `credentialKinds` handling are the parts you can skip.
+
+Every SQL statement the package executes is collected in one module,
 `packages/server/src/queries.ts`, to make that review tractable. Please do read it, and
 report anything that looks wrong.
 

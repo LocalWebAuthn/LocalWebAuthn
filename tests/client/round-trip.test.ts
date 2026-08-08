@@ -18,6 +18,7 @@ import {
   createAssertionResponse,
   createDpopProof,
   createRegistrationResponse,
+  EDDSA,
   ES256,
   encodeBase64Url,
   formatCredentialFile,
@@ -119,6 +120,39 @@ describe('software authenticator against the real verification path', () => {
 
   beforeEach(() => {
     fixture = harness();
+  });
+
+  it('registers and authenticates with an Ed25519 key', async () => {
+    // EDDSA is exported, so the whole -8 path has to be exercised somewhere: raw
+    // 64-byte signatures rather than DER, and an OKP COSE key rather than EC2.
+    const { auth, user } = fixture;
+    const { keyStore } = await generateKeyStore(EDDSA);
+    const issue = await auth.issueEnrollment('user-1');
+    const exchange = await auth.exchangeEnrollment(issue.enrollmentToken);
+    const options = await auth.registrationOptions({
+      enrollmentSessionToken: exchange.enrollmentSessionToken,
+    });
+    const registration = await createRegistrationResponse({
+      keyStore,
+      challenge: options.options.challenge,
+      rpId: RP_ID,
+      origin: ORIGIN,
+    });
+    await expect(
+      auth.verifyRegistration({
+        response: registration.response as unknown as RegistrationResponseJSON,
+        challengeToken: options.challengeToken,
+        enrollmentSessionToken: exchange.enrollmentSessionToken,
+      }),
+    ).resolves.toMatchObject({ verified: true });
+
+    const authenticated = await assertOnce(auth, keyStore, {
+      credentialId: registration.credentialId,
+      userHandle: user.webAuthnUserHandle,
+      rpId: RP_ID,
+      origin: ORIGIN,
+    });
+    expect(authenticated.verified).toBe(true);
   });
 
   it('registers and authenticates with no browser involved', async () => {

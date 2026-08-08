@@ -82,6 +82,301 @@ function isLocalWebAuthnError(value) {
   return value instanceof LocalWebAuthnError;
 }
 
+// src/config.ts
+var DEFAULTS = {
+  enrollmentGrantMs: 30 * 6e4,
+  enrollmentSessionMs: 10 * 6e4,
+  challengeMs: 5 * 6e4,
+  sessionIdleMs: 30 * 6e4,
+  sessionAbsoluteMs: 8 * 60 * 6e4
+};
+function configurationError(message) {
+  throw new LocalWebAuthnError("invalid_configuration", message, 500);
+}
+function normalizeConfig(options) {
+  const rpName = options.rpName.trim();
+  const rpId = options.rpId.trim().toLowerCase();
+  const configuredOrigins = typeof options.expectedOrigins === "string" ? [options.expectedOrigins] : options.expectedOrigins;
+  if (!rpName || !rpId || configuredOrigins.length === 0) {
+    configurationError("rpName, rpId, and at least one expected origin are required.");
+  }
+  try {
+    const url = new URL(`https://${rpId}`);
+    if (url.hostname !== rpId) {
+      configurationError("rpId must be a bare hostname (no protocol, port, or path).");
+    }
+  } catch {
+    configurationError("rpId must be a valid hostname.");
+  }
+  const expectedOrigins = configuredOrigins.map((configuredOrigin) => {
+    const url = new URL(configuredOrigin);
+    const origin = url.origin;
+    const isLocalHttp = url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
+    if (configuredOrigin !== origin || url.protocol !== "https:" && !isLocalHttp) {
+      configurationError("Expected origins must be exact HTTPS origins or local HTTP origins.");
+    }
+    if (url.hostname !== rpId && !url.hostname.endsWith(`.${rpId}`)) {
+      configurationError("Every expected origin hostname must equal or be beneath the RP ID.");
+    }
+    return origin;
+  });
+  const publicOrigin = options.publicOrigin ?? expectedOrigins[0];
+  if (!expectedOrigins.includes(new URL(publicOrigin).origin) || publicOrigin !== new URL(publicOrigin).origin) {
+    configurationError("publicOrigin must exactly match one of the expected origins.");
+  }
+  const enrollmentPath = options.enrollmentPath ?? "/enroll";
+  if (!enrollmentPath.startsWith("/") || enrollmentPath.includes("#") || enrollmentPath.includes("?")) {
+    configurationError("enrollmentPath must be an absolute URL path without a query or fragment.");
+  }
+  const durations = { ...DEFAULTS, ...options.durations };
+  for (const [name, duration] of Object.entries(durations)) {
+    if (!Number.isSafeInteger(duration) || duration <= 0) {
+      configurationError(`${name} must be a positive integer number of milliseconds.`);
+    }
+  }
+  if (durations.sessionIdleMs > durations.sessionAbsoluteMs) {
+    configurationError("sessionIdleMs cannot exceed sessionAbsoluteMs.");
+  }
+  const credentialKinds = {};
+  for (const [kind, policy] of Object.entries(options.credentialKinds ?? {})) {
+    if (!kind.trim()) {
+      configurationError("A credential kind cannot be an empty string.");
+    }
+    const sessionAbsoluteMs = policy.sessionAbsoluteMs ?? durations.sessionAbsoluteMs;
+    for (const [name, duration] of Object.entries({
+      sessionAbsoluteMs,
+      sessionIdleMs: policy.sessionIdleMs ?? durations.sessionIdleMs
+    })) {
+      if (!Number.isSafeInteger(duration) || duration <= 0) {
+        configurationError(
+          `credentialKinds.${kind}.${name} must be a positive integer number of milliseconds.`
+        );
+      }
+    }
+    if (policy.sessionIdleMs !== void 0 && policy.sessionIdleMs > sessionAbsoluteMs) {
+      configurationError(`credentialKinds.${kind}.sessionIdleMs cannot exceed sessionAbsoluteMs.`);
+    }
+    const sessionIdleMs = Math.min(
+      policy.sessionIdleMs ?? durations.sessionIdleMs,
+      sessionAbsoluteMs
+    );
+    credentialKinds[kind] = {
+      interactive: policy.interactive ?? true,
+      canRegister: policy.canRegister ?? true,
+      sessionAbsoluteMs,
+      sessionIdleMs
+    };
+  }
+  let dpopNonce = null;
+  if (options.dpopNonce) {
+    const rotationMs = options.dpopNonce.rotationMs ?? 5 * 6e4;
+    if (!Number.isSafeInteger(rotationMs) || rotationMs <= 0) {
+      configurationError("dpopNonce.rotationMs must be a positive integer number of milliseconds.");
+    }
+    dpopNonce = { rotationMs };
+  }
+  return {
+    rpName,
+    rpId,
+    expectedOrigins,
+    publicOrigin,
+    enrollmentPath,
+    durations,
+    credentialKinds,
+    dpopNonce
+  };
+}
+function defaultKindPolicy(config) {
+  return {
+    interactive: true,
+    canRegister: true,
+    sessionAbsoluteMs: config.durations.sessionAbsoluteMs,
+    sessionIdleMs: config.durations.sessionIdleMs
+  };
+}
+function kindPolicy(config, kind) {
+  return (kind === null ? void 0 : config.credentialKinds[kind]) ?? defaultKindPolicy(config);
+}
+
+// src/dpop.ts
+import { cose, decodeCredentialPublicKey } from "@simplewebauthn/server/helpers";
+var SUPPORTED_ALGORITHMS = /* @__PURE__ */ new Set(["ES256", "EdDSA"]);
+function invalid(reason) {
+  return { valid: false, reason };
+}
+function coseToJwk(publicKeyCose) {
+  try {
+    return decodeCoseToJwk(publicKeyCose);
+  } catch {
+    return null;
+  }
+}
+function decodeCoseToJwk(publicKeyCose) {
+  const decoded = decodeCredentialPublicKey(Uint8Array.from(publicKeyCose));
+  if (typeof decoded.get !== "function") {
+    return null;
+  }
+  if (cose.isCOSEPublicKeyEC2(decoded)) {
+    const crv = decoded.get(cose.COSEKEYS.crv);
+    const x = decoded.get(cose.COSEKEYS.x);
+    const y = decoded.get(cose.COSEKEYS.y);
+    if (crv !== cose.COSECRV.P256 || !(x instanceof Uint8Array) || !(y instanceof Uint8Array) || x.length !== 32 || y.length !== 32) {
+      return null;
+    }
+    return { kty: "EC", crv: "P-256", x: encodeBase64Url(x), y: encodeBase64Url(y) };
+  }
+  if (cose.isCOSEPublicKeyOKP(decoded)) {
+    const crv = decoded.get(cose.COSEKEYS.crv);
+    const x = decoded.get(cose.COSEKEYS.x);
+    if (crv !== cose.COSECRV.ED25519 || !(x instanceof Uint8Array) || x.length !== 32) {
+      return null;
+    }
+    return { kty: "OKP", crv: "Ed25519", x: encodeBase64Url(x) };
+  }
+  return null;
+}
+function isPublicJwk(value) {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const jwk = value;
+  if (typeof jwk.crv !== "string" || typeof jwk.x !== "string") {
+    return false;
+  }
+  if (jwk.kty === "EC") {
+    return typeof jwk.y === "string";
+  }
+  return jwk.kty === "OKP";
+}
+async function jwkThumbprint(jwk) {
+  const canonical = jwk.kty === "EC" ? `{"crv":"${jwk.crv}","kty":"EC","x":"${jwk.x}","y":"${jwk.y}"}` : `{"crv":"${jwk.crv}","kty":"OKP","x":"${jwk.x}"}`;
+  return encodeBase64Url(await sha256(canonical));
+}
+function parseJsonSegment(segment) {
+  const bytes = decodeBase64Url(segment);
+  if (!bytes) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(bytes));
+    return typeof parsed === "object" && parsed !== null ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function normalizeTargetUri(value) {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return null;
+  }
+}
+async function verifySignature(jwk, algorithm, signingInput, signature) {
+  const parameters = algorithm === "ES256" ? { name: "ECDSA", namedCurve: "P-256" } : { name: "Ed25519" };
+  const verifyParameters = algorithm === "ES256" ? { name: "ECDSA", hash: "SHA-256" } : { name: "Ed25519" };
+  try {
+    const key = await globalThis.crypto.subtle.importKey("jwk", jwk, parameters, false, ["verify"]);
+    return await globalThis.crypto.subtle.verify(
+      verifyParameters,
+      key,
+      Uint8Array.from(signature),
+      new TextEncoder().encode(signingInput)
+    );
+  } catch {
+    return false;
+  }
+}
+async function verifyDpopProof(input) {
+  const now = input.now ?? Date.now();
+  const skewMs = input.skewMs ?? 6e4;
+  const segments = input.proof.split(".");
+  if (segments.length !== 3) {
+    return invalid("malformed_proof");
+  }
+  const [headerSegment, payloadSegment, signatureSegment] = segments;
+  const header = parseJsonSegment(headerSegment);
+  if (!header) {
+    return invalid("malformed_header");
+  }
+  if (header.typ !== "dpop+jwt") {
+    return invalid("unexpected_typ");
+  }
+  if (typeof header.alg !== "string" || !SUPPORTED_ALGORITHMS.has(header.alg)) {
+    return invalid("unsupported_alg");
+  }
+  if (typeof header.jwk !== "object" || header.jwk === null) {
+    return invalid("missing_jwk");
+  }
+  if ("d" in header.jwk) {
+    return invalid("private_key_in_jwk");
+  }
+  const expectedJwk = coseToJwk(input.publicKeyCose);
+  if (!expectedJwk) {
+    return invalid("unsupported_credential_key");
+  }
+  if (!isPublicJwk(header.jwk)) {
+    return invalid("malformed_jwk");
+  }
+  const expectedThumbprint = await jwkThumbprint(expectedJwk);
+  const presentedThumbprint = await jwkThumbprint(header.jwk);
+  const encoder = new TextEncoder();
+  if (!equalBytes(encoder.encode(expectedThumbprint), encoder.encode(presentedThumbprint))) {
+    return invalid("key_mismatch");
+  }
+  const signature = decodeBase64Url(signatureSegment);
+  if (!signature) {
+    return invalid("malformed_signature");
+  }
+  const verified = await verifySignature(
+    expectedJwk,
+    header.alg,
+    `${headerSegment}.${payloadSegment}`,
+    signature
+  );
+  if (!verified) {
+    return invalid("bad_signature");
+  }
+  const payload = parseJsonSegment(payloadSegment);
+  if (!payload) {
+    return invalid("malformed_payload");
+  }
+  if (typeof payload.jti !== "string" || payload.jti.length < 8 || payload.jti.length > 256) {
+    return invalid("bad_jti");
+  }
+  if (typeof payload.htm !== "string" || payload.htm !== input.method.toUpperCase()) {
+    return invalid("htm_mismatch");
+  }
+  const expectedUri = normalizeTargetUri(input.url);
+  const presentedUri = typeof payload.htu === "string" ? normalizeTargetUri(payload.htu) : null;
+  if (!expectedUri || !presentedUri || expectedUri !== presentedUri) {
+    return invalid("htu_mismatch");
+  }
+  if (typeof payload.iat !== "number" || !Number.isFinite(payload.iat)) {
+    return invalid("bad_iat");
+  }
+  const iatMs = payload.iat * 1e3;
+  if (iatMs > now + skewMs || iatMs < now - skewMs) {
+    return invalid("iat_out_of_window");
+  }
+  const expectedAth = encodeBase64Url(await sha256(input.accessToken));
+  if (typeof payload.ath !== "string" || !equalBytes(encoder.encode(expectedAth), encoder.encode(payload.ath))) {
+    return invalid("ath_mismatch");
+  }
+  if (input.nonces && input.nonces.length > 0) {
+    if (typeof payload.nonce !== "string" || !input.nonces.includes(payload.nonce)) {
+      return invalid("use_dpop_nonce");
+    }
+  }
+  return {
+    valid: true,
+    jtiHash: await sha256(payload.jti),
+    // The proof cannot be presented again once `iat` leaves the window, so the
+    // replay entry only needs to outlive the window itself.
+    expiresAt: iatMs + skewMs
+  };
+}
+
 // src/http.ts
 function isHttpsPublicOrigin(publicOrigin) {
   return new URL(publicOrigin).protocol === "https:";
@@ -248,285 +543,6 @@ import {
   verifyAuthenticationResponse,
   verifyRegistrationResponse
 } from "@simplewebauthn/server";
-
-// src/config.ts
-var DEFAULTS = {
-  enrollmentGrantMs: 30 * 6e4,
-  enrollmentSessionMs: 10 * 6e4,
-  challengeMs: 5 * 6e4,
-  sessionIdleMs: 30 * 6e4,
-  sessionAbsoluteMs: 8 * 60 * 6e4
-};
-function configurationError(message) {
-  throw new LocalWebAuthnError("invalid_configuration", message, 500);
-}
-function normalizeConfig(options) {
-  const rpName = options.rpName.trim();
-  const rpId = options.rpId.trim().toLowerCase();
-  const configuredOrigins = typeof options.expectedOrigins === "string" ? [options.expectedOrigins] : options.expectedOrigins;
-  if (!rpName || !rpId || configuredOrigins.length === 0) {
-    configurationError("rpName, rpId, and at least one expected origin are required.");
-  }
-  try {
-    const url = new URL(`https://${rpId}`);
-    if (url.hostname !== rpId) {
-      configurationError("rpId must be a bare hostname (no protocol, port, or path).");
-    }
-  } catch {
-    configurationError("rpId must be a valid hostname.");
-  }
-  const expectedOrigins = configuredOrigins.map((configuredOrigin) => {
-    const url = new URL(configuredOrigin);
-    const origin = url.origin;
-    const isLocalHttp = url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
-    if (configuredOrigin !== origin || url.protocol !== "https:" && !isLocalHttp) {
-      configurationError("Expected origins must be exact HTTPS origins or local HTTP origins.");
-    }
-    if (url.hostname !== rpId && !url.hostname.endsWith(`.${rpId}`)) {
-      configurationError("Every expected origin hostname must equal or be beneath the RP ID.");
-    }
-    return origin;
-  });
-  const publicOrigin = options.publicOrigin ?? expectedOrigins[0];
-  if (!expectedOrigins.includes(new URL(publicOrigin).origin) || publicOrigin !== new URL(publicOrigin).origin) {
-    configurationError("publicOrigin must exactly match one of the expected origins.");
-  }
-  const enrollmentPath = options.enrollmentPath ?? "/enroll";
-  if (!enrollmentPath.startsWith("/") || enrollmentPath.includes("#") || enrollmentPath.includes("?")) {
-    configurationError("enrollmentPath must be an absolute URL path without a query or fragment.");
-  }
-  const durations = { ...DEFAULTS, ...options.durations };
-  for (const [name, duration] of Object.entries(durations)) {
-    if (!Number.isSafeInteger(duration) || duration <= 0) {
-      configurationError(`${name} must be a positive integer number of milliseconds.`);
-    }
-  }
-  if (durations.sessionIdleMs > durations.sessionAbsoluteMs) {
-    configurationError("sessionIdleMs cannot exceed sessionAbsoluteMs.");
-  }
-  const credentialKinds = {};
-  for (const [kind, policy] of Object.entries(options.credentialKinds ?? {})) {
-    if (!kind.trim()) {
-      configurationError("A credential kind cannot be an empty string.");
-    }
-    const sessionAbsoluteMs = policy.sessionAbsoluteMs ?? durations.sessionAbsoluteMs;
-    for (const [name, duration] of Object.entries({
-      sessionAbsoluteMs,
-      sessionIdleMs: policy.sessionIdleMs ?? durations.sessionIdleMs
-    })) {
-      if (!Number.isSafeInteger(duration) || duration <= 0) {
-        configurationError(
-          `credentialKinds.${kind}.${name} must be a positive integer number of milliseconds.`
-        );
-      }
-    }
-    if (policy.sessionIdleMs !== void 0 && policy.sessionIdleMs > sessionAbsoluteMs) {
-      configurationError(`credentialKinds.${kind}.sessionIdleMs cannot exceed sessionAbsoluteMs.`);
-    }
-    const sessionIdleMs = Math.min(
-      policy.sessionIdleMs ?? durations.sessionIdleMs,
-      sessionAbsoluteMs
-    );
-    credentialKinds[kind] = {
-      interactive: policy.interactive ?? true,
-      canRegister: policy.canRegister ?? true,
-      sessionAbsoluteMs,
-      sessionIdleMs
-    };
-  }
-  let dpopNonce = null;
-  if (options.dpopNonce) {
-    const rotationMs = options.dpopNonce.rotationMs ?? 5 * 6e4;
-    if (!Number.isSafeInteger(rotationMs) || rotationMs <= 0) {
-      configurationError("dpopNonce.rotationMs must be a positive integer number of milliseconds.");
-    }
-    dpopNonce = { rotationMs };
-  }
-  return {
-    rpName,
-    rpId,
-    expectedOrigins,
-    publicOrigin,
-    enrollmentPath,
-    durations,
-    credentialKinds,
-    dpopNonce
-  };
-}
-function defaultKindPolicy(config) {
-  return {
-    interactive: true,
-    canRegister: true,
-    sessionAbsoluteMs: config.durations.sessionAbsoluteMs,
-    sessionIdleMs: config.durations.sessionIdleMs
-  };
-}
-function kindPolicy(config, kind) {
-  return (kind === null ? void 0 : config.credentialKinds[kind]) ?? defaultKindPolicy(config);
-}
-
-// src/dpop.ts
-import { cose, decodeCredentialPublicKey } from "@simplewebauthn/server/helpers";
-var SUPPORTED_ALGORITHMS = /* @__PURE__ */ new Set(["ES256", "EdDSA"]);
-function invalid(reason) {
-  return { valid: false, reason };
-}
-function coseToJwk(publicKeyCose) {
-  let decoded;
-  try {
-    decoded = decodeCredentialPublicKey(Uint8Array.from(publicKeyCose));
-  } catch {
-    return null;
-  }
-  if (cose.isCOSEPublicKeyEC2(decoded)) {
-    const crv = decoded.get(cose.COSEKEYS.crv);
-    const x = decoded.get(cose.COSEKEYS.x);
-    const y = decoded.get(cose.COSEKEYS.y);
-    if (crv !== cose.COSECRV.P256 || !(x instanceof Uint8Array) || !(y instanceof Uint8Array) || x.length !== 32 || y.length !== 32) {
-      return null;
-    }
-    return { kty: "EC", crv: "P-256", x: encodeBase64Url(x), y: encodeBase64Url(y) };
-  }
-  if (cose.isCOSEPublicKeyOKP(decoded)) {
-    const crv = decoded.get(cose.COSEKEYS.crv);
-    const x = decoded.get(cose.COSEKEYS.x);
-    if (crv !== cose.COSECRV.ED25519 || !(x instanceof Uint8Array) || x.length !== 32) {
-      return null;
-    }
-    return { kty: "OKP", crv: "Ed25519", x: encodeBase64Url(x) };
-  }
-  return null;
-}
-async function jwkThumbprint(jwk) {
-  const canonical = jwk.kty === "EC" ? `{"crv":"${jwk.crv}","kty":"EC","x":"${jwk.x}","y":"${jwk.y}"}` : `{"crv":"${jwk.crv}","kty":"OKP","x":"${jwk.x}"}`;
-  return encodeBase64Url(await sha256(canonical));
-}
-function parseJsonSegment(segment) {
-  const bytes = decodeBase64Url(segment);
-  if (!bytes) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(new TextDecoder().decode(bytes));
-    return typeof parsed === "object" && parsed !== null ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-function normalizeTargetUri(value) {
-  try {
-    const url = new URL(value);
-    return `${url.origin}${url.pathname}`;
-  } catch {
-    return null;
-  }
-}
-async function verifySignature(jwk, algorithm, signingInput, signature) {
-  const parameters = algorithm === "ES256" ? { name: "ECDSA", namedCurve: "P-256" } : { name: "Ed25519" };
-  const verifyParameters = algorithm === "ES256" ? { name: "ECDSA", hash: "SHA-256" } : { name: "Ed25519" };
-  try {
-    const key = await globalThis.crypto.subtle.importKey("jwk", jwk, parameters, false, ["verify"]);
-    return await globalThis.crypto.subtle.verify(
-      verifyParameters,
-      key,
-      Uint8Array.from(signature),
-      new TextEncoder().encode(signingInput)
-    );
-  } catch {
-    return false;
-  }
-}
-async function verifyDpopProof(input) {
-  const now = input.now ?? Date.now();
-  const skewMs = input.skewMs ?? 6e4;
-  const segments = input.proof.split(".");
-  if (segments.length !== 3) {
-    return invalid("malformed_proof");
-  }
-  const [headerSegment, payloadSegment, signatureSegment] = segments;
-  const header = parseJsonSegment(headerSegment);
-  if (!header) {
-    return invalid("malformed_header");
-  }
-  if (header.typ !== "dpop+jwt") {
-    return invalid("unexpected_typ");
-  }
-  if (typeof header.alg !== "string" || !SUPPORTED_ALGORITHMS.has(header.alg)) {
-    return invalid("unsupported_alg");
-  }
-  if (typeof header.jwk !== "object" || header.jwk === null) {
-    return invalid("missing_jwk");
-  }
-  if ("d" in header.jwk) {
-    return invalid("private_key_in_jwk");
-  }
-  const expectedJwk = coseToJwk(input.publicKeyCose);
-  if (!expectedJwk) {
-    return invalid("unsupported_credential_key");
-  }
-  const expectedThumbprint = await jwkThumbprint(expectedJwk);
-  let presentedThumbprint;
-  try {
-    presentedThumbprint = await jwkThumbprint(header.jwk);
-  } catch {
-    return invalid("malformed_jwk");
-  }
-  const encoder = new TextEncoder();
-  if (!equalBytes(encoder.encode(expectedThumbprint), encoder.encode(presentedThumbprint))) {
-    return invalid("key_mismatch");
-  }
-  const signature = decodeBase64Url(signatureSegment);
-  if (!signature) {
-    return invalid("malformed_signature");
-  }
-  const verified = await verifySignature(
-    expectedJwk,
-    header.alg,
-    `${headerSegment}.${payloadSegment}`,
-    signature
-  );
-  if (!verified) {
-    return invalid("bad_signature");
-  }
-  const payload = parseJsonSegment(payloadSegment);
-  if (!payload) {
-    return invalid("malformed_payload");
-  }
-  if (typeof payload.jti !== "string" || payload.jti.length < 8 || payload.jti.length > 256) {
-    return invalid("bad_jti");
-  }
-  if (typeof payload.htm !== "string" || payload.htm !== input.method.toUpperCase()) {
-    return invalid("htm_mismatch");
-  }
-  const expectedUri = normalizeTargetUri(input.url);
-  const presentedUri = typeof payload.htu === "string" ? normalizeTargetUri(payload.htu) : null;
-  if (!expectedUri || !presentedUri || expectedUri !== presentedUri) {
-    return invalid("htu_mismatch");
-  }
-  if (typeof payload.iat !== "number" || !Number.isFinite(payload.iat)) {
-    return invalid("bad_iat");
-  }
-  const iatMs = payload.iat * 1e3;
-  if (iatMs > now + skewMs || iatMs < now - skewMs) {
-    return invalid("iat_out_of_window");
-  }
-  const expectedAth = encodeBase64Url(await sha256(input.accessToken));
-  if (typeof payload.ath !== "string" || !equalBytes(encoder.encode(expectedAth), encoder.encode(payload.ath))) {
-    return invalid("ath_mismatch");
-  }
-  if (input.nonces && input.nonces.length > 0) {
-    if (typeof payload.nonce !== "string" || !input.nonces.includes(payload.nonce)) {
-      return invalid("use_dpop_nonce");
-    }
-  }
-  return {
-    valid: true,
-    jtiHash: await sha256(payload.jti),
-    // The proof cannot be presented again once `iat` leaves the window, so the
-    // replay entry only needs to outlive the window itself.
-    expiresAt: iatMs + skewMs
-  };
-}
 
 // src/types.ts
 function toWebAuthnCredential(credential) {
@@ -1566,10 +1582,12 @@ export {
   SELF_SERVE_SIGNUP_STEPS,
   authCookieNames,
   cookieAttributes,
+  coseToJwk,
   createEnrollmentToken,
   createOpaqueToken,
   createUserHandle,
   decodeBase64Url,
+  defaultKindPolicy,
   describeSignupPhase,
   encodeBase32,
   encodeBase64Url,
@@ -1577,10 +1595,13 @@ export {
   isExactOrigin,
   isHttpsPublicOrigin,
   isLocalWebAuthnError,
+  jwkThumbprint,
+  kindPolicy,
   nextSignupStep,
   parseCookieHeader,
   serializeClearedCookie,
   serializeCookie,
   sha256,
-  signupPhase
+  signupPhase,
+  verifyDpopProof
 };

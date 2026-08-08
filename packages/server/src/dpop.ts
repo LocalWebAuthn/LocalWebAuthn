@@ -72,10 +72,25 @@ function invalid(reason: string): DpopVerification {
  * structurally incomplete key.
  */
 export function coseToJwk(publicKeyCose: Uint8Array): PublicJwk | null {
-  let decoded;
   try {
-    decoded = decodeCredentialPublicKey(Uint8Array.from(publicKeyCose));
+    return decodeCoseToJwk(publicKeyCose);
   } catch {
+    // The whole decode is guarded, not just the parse. `decodeCredentialPublicKey`
+    // is *typed* as returning a Map but will happily hand back whatever the CBOR
+    // decoded to — a bare integer, for instance — and the type guards below then
+    // call `.get` on it and throw. A verifier that throws is a 500 where a
+    // rejection was meant, so every path out of here returns `null` instead.
+    return null;
+  }
+}
+
+function decodeCoseToJwk(publicKeyCose: Uint8Array): PublicJwk | null {
+  const decoded = decodeCredentialPublicKey(Uint8Array.from(publicKeyCose));
+  // Deliberately not `instanceof Map`: that narrows the declared union down to the
+  // Map intersection, after which SimpleWebAuthn's own type predicates narrow the
+  // remaining branch to `never`. This checks the same thing without touching the
+  // static type.
+  if (typeof (decoded as { get?: unknown }).get !== 'function') {
     return null;
   }
 
@@ -103,6 +118,30 @@ export function coseToJwk(publicKeyCose: Uint8Array): PublicJwk | null {
     return { kty: 'OKP', crv: 'Ed25519', x: encodeBase64Url(x) };
   }
   return null;
+}
+
+/**
+ * Whether a parsed header `jwk` has the members {@link jwkThumbprint} needs.
+ *
+ * Checked before hashing rather than after. `jwkThumbprint` interpolates its
+ * members into a string and so cannot fail on any value `JSON.parse` can produce
+ * — a jwk missing `y` would hash the literal text `"undefined"` and then merely
+ * fail the comparison. That works by accident, and two differently-malformed jwks
+ * can hash identically. Validating first makes the rejection deliberate, and gives
+ * the failure its own reason instead of masquerading as `key_mismatch`.
+ */
+function isPublicJwk(value: unknown): value is PublicJwk {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const jwk = value as Record<string, unknown>;
+  if (typeof jwk.crv !== 'string' || typeof jwk.x !== 'string') {
+    return false;
+  }
+  if (jwk.kty === 'EC') {
+    return typeof jwk.y === 'string';
+  }
+  return jwk.kty === 'OKP';
 }
 
 /**
@@ -220,13 +259,11 @@ export async function verifyDpopProof(input: DpopVerificationInput): Promise<Dpo
   if (!expectedJwk) {
     return invalid('unsupported_credential_key');
   }
-  const expectedThumbprint = await jwkThumbprint(expectedJwk);
-  let presentedThumbprint: string;
-  try {
-    presentedThumbprint = await jwkThumbprint(header.jwk as PublicJwk);
-  } catch {
+  if (!isPublicJwk(header.jwk)) {
     return invalid('malformed_jwk');
   }
+  const expectedThumbprint = await jwkThumbprint(expectedJwk);
+  const presentedThumbprint = await jwkThumbprint(header.jwk);
   const encoder = new TextEncoder();
   if (!equalBytes(encoder.encode(expectedThumbprint), encoder.encode(presentedThumbprint))) {
     return invalid('key_mismatch');
