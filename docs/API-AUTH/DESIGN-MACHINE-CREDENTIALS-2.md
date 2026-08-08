@@ -6,7 +6,7 @@ such as the following are demonstrably false, and any security assumptions surro
 assume some specific behaviour on part of the putative Passkey client/owner are vaccuous: a hostile
 holder of a Passkey secret key can be assumed to do anything, so if WebAuthn's security assumptions
 rest on assuming the Passkey client did or did not do something, then WebAuthn is broken:
- 
+
 Passkeys replace user passwords and traditional credentials with public-key cryptography, but they
 do not replace API client secrets for server-to-server communication. Passkeys require a user
 interface and an authenticator (like a phone or hardware key) to approve a cryptographic challenge
@@ -21,7 +21,6 @@ JWTs, or mutual TLS (mTLS) because servers cannot prompt a user for a biometric 
 trying to secure communication between a frontend client and a backend server, or a Node.js server
 and a third-party API, let me know and I can show you the correct authentication pattern for that
 specific workflow.
-
 
 # Architecture: passkey-gated, proof-of-possession API access
 
@@ -269,9 +268,9 @@ The authorization server performs all of the following:
 7. For `webauthn-user`, require UP and enforce UV according to policy.
 8. Check the transaction’s expiry.
 9. Verify the accompanying DPoP proof and match its key thumbprint to the transaction’s stored `dpop_jkt`.
-10.e-evaluate current account, credential, scope and risk policy.
-11. Atomically change the transaction from `unused` to `consumed`.
-12. Return a short-lived, single-use authorization code bound to the same DPoP key.
+   10.e-evaluate current account, credential, scope and risk policy.
+10. Atomically change the transaction from `unused` to `consumed`.
+11. Return a short-lived, single-use authorization code bound to the same DPoP key.
 
 The atomic transition is important: signature verification followed by a non-atomic “mark used” operation permits concurrent replay against multiple authorization-server instances.
 
@@ -310,10 +309,10 @@ Every resource request includes both the access token and a DPoP proof. DPoP pro
 
 Use:
 
-* Short-lived access tokens, such as 5–10 minutes.
-* Rotating refresh tokens bound to the same DPoP key.
-* A replay cache for DPoP `jti` values.
-* Server-provided DPoP nonces for high-risk endpoints or where pre-generation is a concern.
+- Short-lived access tokens, such as 5–10 minutes.
+- Rotating refresh tokens bound to the same DPoP key.
+- A replay cache for DPoP `jti` values.
+- Server-provided DPoP nonces for high-risk endpoints or where pre-generation is a concern.
 
 That last control directly addresses the hostile-client argument. RFC 9449 explicitly observes that even a legitimate but malicious user could pre-generate DPoP proofs for future use. Unpredictable server-provided nonces prevent this because the client cannot sign a future proof until the server supplies the nonce. ([RFC Editor][3])
 
@@ -338,11 +337,11 @@ Do **not** make a client counter security-critical.
 
 WebAuthn’s `signCount`:
 
-* Is optional.
-* May remain zero permanently.
-* Is intended as a possible clone-detection signal.
-* Can produce ambiguous results because of parallel use, malfunction or multiple copies.
-* Is not the mechanism that provides freshness or replay prevention. ([W3C][1])
+- Is optional.
+- May remain zero permanently.
+- Is intended as a possible clone-detection signal.
+- Can produce ambiguous results because of parallel use, malfunction or multiple copies.
+- Is not the mechanism that provides freshness or replay prevention. ([W3C][1])
 
 For API security, use:
 
@@ -422,7 +421,7 @@ The implementation should make these properties explicit:
 | Claim                                                | Assessment                                                                                                                                                                                                                                                                                          |
 | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | “Passkeys do not replace API client secrets.”        | Too categorical. A public-key credential can absolutely replace a symmetric client secret. A WebAuthn passkey is simply not a drop-in `client_secret` field because it exposes a structured assertion operation rather than arbitrary signing.                                                      |
-|��Passkeys always require biometrics or a PIN.”       | False. WebAuthn allows user verification to be `required`, `preferred` or `discouraged`. However, normal WebAuthn assertion verification does require the UP flag, so a conforming browser ceremony remains user-presence-oriented even when biometric/PIN verification is not required. ([W3C][1]) |
+| ��Passkeys always require biometrics or a PIN.”      | False. WebAuthn allows user verification to be `required`, `preferred` or `discouraged`. However, normal WebAuthn assertion verification does require the UP flag, so a conforming browser ceremony remains user-presence-oriented even when biometric/PIN verification is not required. ([W3C][1]) |
 | “They are unusable for headless JavaScript servers.” | Too absolute. A headless process can own a key, use an external signer, construct a WebAuthn-shaped proof, or be delegated a workload key through a passkey-gated flow. What it cannot honestly claim, without an appropriate trusted authenticator, is human presence or biometric verification.   |
 | “Servers must continue using client secrets.”        | False. Standard public-key alternatives include JWT client authentication and mTLS; DPoP can sender-constrain issued tokens. ([RFC Editor][4])                                                                                                                                                      |
 
@@ -432,7 +431,7 @@ The clean formulation is:
 
 That architecture remains secure even when the client is assumed hostile: the client may sign anything it is asked to sign, but it cannot invent an unused server challenge, alter the server’s stored authorization context, reuse a consumed transaction, expand its scope, or use a stolen sender-constrained token without the associated API key.
 
-[1]: https://www.w3.org/TR/webauthn-3/ "Web Authentication: An API for accessing Public Key Credentials - Level 3"
-[2]: https://datatracker.ietf.org/doc/draft-ietf-oauth-first-party-apps/ "draft-ietf-oauth-first-party-apps-04 - OAuth 2.0 for First-Party Applications"
-[3]: https://www.rfc-editor.org/rfc/rfc9449.html "RFC 9449: OAuth 2.0 Demonstrating Proof of Possession (DPoP)"
-[4]: https://www.rfc-editor.org/rfc/rfc7523.html?utm_source=chatgpt.com "RFC Editor"
+[1]: https://www.w3.org/TR/webauthn-3/ 'Web Authentication: An API for accessing Public Key Credentials - Level 3'
+[2]: https://datatracker.ietf.org/doc/draft-ietf-oauth-first-party-apps/ 'draft-ietf-oauth-first-party-apps-04 - OAuth 2.0 for First-Party Applications'
+[3]: https://www.rfc-editor.org/rfc/rfc9449.html 'RFC 9449: OAuth 2.0 Demonstrating Proof of Possession (DPoP)'
+[4]: https://www.rfc-editor.org/rfc/rfc7523.html?utm_source=chatgpt.com 'RFC Editor'
