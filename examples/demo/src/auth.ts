@@ -52,6 +52,11 @@ export function createDemoAuthentication(
     expectedOrigins: config.publicOrigin,
     publicOrigin: config.publicOrigin,
     store: new SqliteLocalWebAuthnStore(database),
+    // Server-issued DPoP nonces: the one element of a per-request proof the
+    // *server* chooses. Everything else in one — jti, iat, htm, htu, the key — is
+    // the client's, so this is what stops a key holder pre-generating proofs for
+    // later use. Optional in the package; the demo turns it on to exercise it.
+    dpopNonce: { rotationMs: 60_000 },
     // Declaring the kind is what turns 'service' from a label into a set of
     // restrictions. An undeclared kind — including null, which every human
     // passkey here has — keeps the default permissive behaviour.

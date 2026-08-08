@@ -339,6 +339,26 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
     return this.#database.prepare(SQL.claimDpopProof).run(jtiHash, expiresAt).changes === 1;
   }
 
+  async claimDpopNonce(slot: number, candidate: string, expiresAt: number): Promise<string> {
+    return this.#database
+      .transaction(() => {
+        this.#database.prepare(SQL.insertDpopNonce).run(slot, candidate, expiresAt);
+        // Read back rather than returning `candidate`: on a lost insert the stored
+        // value is another server's, and both must agree.
+        const row = this.#database.prepare(SQL.selectDpopNonce).get(slot) as
+          { nonce: string } | undefined;
+        return row?.nonce ?? candidate;
+      })
+      .immediate();
+  }
+
+  async dpopNonces(currentSlot: number, previousSlot: number): Promise<string[]> {
+    const rows = this.#database.prepare(SQL.selectDpopNonces).all(currentSlot, previousSlot) as {
+      nonce: string;
+    }[];
+    return rows.map((row) => row.nonce);
+  }
+
   async cleanup(now: number): Promise<CleanupResult> {
     return this.#database
       .transaction(() => {
@@ -346,7 +366,8 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
         const enrollmentGrants = this.#database.prepare(SQL.deleteFinishedGrants).run(now).changes;
         const challenges = this.#database.prepare(SQL.deleteFinishedChallenges).run(now).changes;
         const dpopProofs = this.#database.prepare(SQL.deleteExpiredDpopProofs).run(now).changes;
-        return { enrollmentGrants, challenges, sessions, dpopProofs };
+        const dpopNonces = this.#database.prepare(SQL.deleteExpiredDpopNonces).run(now).changes;
+        return { enrollmentGrants, challenges, sessions, dpopProofs, dpopNonces };
       })
       .immediate();
   }

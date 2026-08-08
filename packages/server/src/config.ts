@@ -24,6 +24,8 @@ export type NormalizedConfig = {
   };
   /** Declared kinds only; an undeclared kind falls back to {@link defaultKindPolicy}. */
   credentialKinds: Record<string, NormalizedCredentialKind>;
+  /** `null` when nonce issuance was not configured. */
+  dpopNonce: { rotationMs: number } | null;
 };
 
 const DEFAULTS = {
@@ -138,6 +140,15 @@ export function normalizeConfig(options: LocalWebAuthnOptions): NormalizedConfig
     };
   }
 
+  let dpopNonce: { rotationMs: number } | null = null;
+  if (options.dpopNonce) {
+    const rotationMs = options.dpopNonce.rotationMs ?? 5 * 60_000;
+    if (!Number.isSafeInteger(rotationMs) || rotationMs <= 0) {
+      configurationError('dpopNonce.rotationMs must be a positive integer number of milliseconds.');
+    }
+    dpopNonce = { rotationMs };
+  }
+
   return {
     rpName,
     rpId,
@@ -146,6 +157,7 @@ export function normalizeConfig(options: LocalWebAuthnOptions): NormalizedConfig
     enrollmentPath,
     durations,
     credentialKinds,
+    dpopNonce,
   };
 }
 

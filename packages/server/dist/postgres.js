@@ -6,11 +6,11 @@ import {
   enrollmentSessionFromRow,
   sessionFromRow,
   toPositionalPlaceholders
-} from "./chunk-XJU3HWJN.js";
+} from "./chunk-5ACQCBBK.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnUpgradeStatements
-} from "./chunk-4KITUZX4.js";
+} from "./chunk-2BSKCSEH.js";
 
 // src/postgres.ts
 var PG = Object.fromEntries(
@@ -257,17 +257,33 @@ var PostgresLocalWebAuthnStore = class {
       const enrollmentGrants = await tx.query(PG.deleteFinishedGrants, [now]);
       const challenges = await tx.query(PG.deleteFinishedChallenges, [now]);
       const dpopProofs = await tx.query(PG.deleteExpiredDpopProofs, [now]);
+      const dpopNonces = await tx.query(PG.deleteExpiredDpopNonces, [now]);
       return {
         sessions: sessions.rowCount ?? 0,
         enrollmentGrants: enrollmentGrants.rowCount ?? 0,
         challenges: challenges.rowCount ?? 0,
-        dpopProofs: dpopProofs.rowCount ?? 0
+        dpopProofs: dpopProofs.rowCount ?? 0,
+        dpopNonces: dpopNonces.rowCount ?? 0
       };
     });
   }
   async claimDpopProof(jtiHash, expiresAt) {
     const result = await this.#pool.query(PG.claimDpopProof, [jtiHash, expiresAt]);
     return result.rowCount === 1;
+  }
+  async claimDpopNonce(slot, candidate, expiresAt) {
+    return this.#transaction(async (tx) => {
+      await tx.query(PG.insertDpopNonce, [slot, candidate, expiresAt]);
+      const result = await tx.query(PG.selectDpopNonce, [slot]);
+      return result.rows[0]?.nonce ?? candidate;
+    });
+  }
+  async dpopNonces(currentSlot, previousSlot) {
+    const result = await this.#pool.query(PG.selectDpopNonces, [
+      currentSlot,
+      previousSlot
+    ]);
+    return result.rows.map((row) => row.nonce);
   }
   /** Re-check the authorizing grant or session at commit time. */
   async #registrationIsAuthorized(tx, input) {

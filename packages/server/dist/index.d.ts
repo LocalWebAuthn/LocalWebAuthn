@@ -1,5 +1,5 @@
-import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsInput, m as RegistrationOptionsResult, n as RegistrationVerificationInput, o as RegistrationVerificationResult, A as AuthenticationOptionsInput, p as AuthenticationOptionsResult, q as AuthenticationVerificationInput, r as AuthenticationVerificationResult, s as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-CUVweKWs.js';
-export { t as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, u as LocalWebAuthnDurations, v as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, w as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-CUVweKWs.js';
+import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsInput, m as RegistrationOptionsResult, n as RegistrationVerificationInput, o as RegistrationVerificationResult, A as AuthenticationOptionsInput, p as AuthenticationOptionsResult, q as AuthenticationVerificationInput, r as AuthenticationVerificationResult, s as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-CuLhqdg0.js';
+export { t as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, u as LocalWebAuthnDurations, v as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, w as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-CuLhqdg0.js';
 export { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 declare function defaultRandomBytes(length: number): Uint8Array;
@@ -20,7 +20,14 @@ type LocalWebAuthnErrorCode = 'invalid_configuration' | 'invalid_enrollment' | '
  */
  | 'registration_not_permitted'
 /** A DPoP proof was absent, malformed, replayed, or signed by the wrong key. */
- | 'invalid_dpop_proof';
+ | 'invalid_dpop_proof'
+/**
+ * A DPoP proof carried no nonce, or one the server no longer recognises. The
+ * host should answer `401` with `WWW-Authenticate: DPoP
+ * error="use_dpop_nonce"` and a fresh `DPoP-Nonce` header, which the client
+ * echoes on its retry.
+ */
+ | 'dpop_nonce_required';
 declare class LocalWebAuthnError extends Error {
     readonly code: LocalWebAuthnErrorCode;
     readonly status: number;
@@ -206,6 +213,10 @@ type NormalizedConfig = {
     };
     /** Declared kinds only; an undeclared kind falls back to {@link defaultKindPolicy}. */
     credentialKinds: Record<string, NormalizedCredentialKind>;
+    /** `null` when nonce issuance was not configured. */
+    dpopNonce: {
+        rotationMs: number;
+    } | null;
 };
 
 /**
@@ -396,6 +407,17 @@ declare class LocalWebAuthn {
      */
     cleanup(): Promise<CleanupResult>;
     /**
+     * The current nonce, for a `DPoP-Nonce` response header.
+     *
+     * Returns `null` when nonce issuance is not configured, so a host can attach the
+     * header unconditionally and have it simply not appear.
+     *
+     * Every server in a deployment derives the same slot from its clock and claims
+     * it through the store; whichever inserts first decides the value and the rest
+     * read it back. No shared secret and no rotation coordination.
+     */
+    dpopNonce(): Promise<string | null>;
+    /**
      * Verify a DPoP proof (RFC 9449) for a request on an already-resolved session.
      *
      * Derives the expected key thumbprint from the session's credential, so there
@@ -413,7 +435,12 @@ declare class LocalWebAuthn {
         url: string;
         sessionToken: string;
         session: SessionIdentity;
-        nonce?: string;
+        /**
+         * Demand a server-issued nonce (RFC 9449 section 8). Requires `dpopNonce` in
+         * configuration; throws `dpop_nonce_required` when the proof carries none or
+         * carries one the server no longer recognises.
+         */
+        requireNonce?: boolean;
     }): Promise<void>;
 }
 

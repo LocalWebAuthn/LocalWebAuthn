@@ -3,9 +3,10 @@
  *
  * - `1` — the original tables.
  * - `2` — credential `kind`, per-ceremony kind scoping on challenges, and the
- *   DPoP proof-replay cache. See {@link LOCALWEBAUTHN_MIGRATIONS}.
+ *   DPoP proof-replay cache.
+ * - `3` — the DPoP nonce slot table. See {@link LOCALWEBAUTHN_MIGRATIONS}.
  */
-export const LOCALWEBAUTHN_SCHEMA_VERSION = 2;
+export const LOCALWEBAUTHN_SCHEMA_VERSION = 3;
 
 export const LOCALWEBAUTHN_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS localwebauthn_migrations (
@@ -110,6 +111,15 @@ CREATE TABLE IF NOT EXISTS localwebauthn_dpop_proofs (
 
 CREATE INDEX IF NOT EXISTS localwebauthn_dpop_expiry_idx
   ON localwebauthn_dpop_proofs(expires_at);
+
+CREATE TABLE IF NOT EXISTS localwebauthn_dpop_nonces (
+  slot INTEGER PRIMARY KEY,
+  nonce TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS localwebauthn_dpop_nonce_expiry_idx
+  ON localwebauthn_dpop_nonces(expires_at);
 
 CREATE TABLE IF NOT EXISTS localwebauthn_transaction_guard (
   value INTEGER NOT NULL CHECK (value = 1)
@@ -231,6 +241,15 @@ CREATE TABLE IF NOT EXISTS localwebauthn_dpop_proofs (
 
 CREATE INDEX IF NOT EXISTS localwebauthn_dpop_expiry_idx
   ON localwebauthn_dpop_proofs(expires_at);
+
+CREATE TABLE IF NOT EXISTS localwebauthn_dpop_nonces (
+  slot BIGINT PRIMARY KEY,
+  nonce TEXT NOT NULL,
+  expires_at BIGINT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS localwebauthn_dpop_nonce_expiry_idx
+  ON localwebauthn_dpop_nonces(expires_at);
 `;
 
 /**
@@ -262,6 +281,12 @@ export const LOCALWEBAUTHN_MIGRATIONS: { version: number; statements: string[] }
       `CREATE INDEX IF NOT EXISTS localwebauthn_credential_kind_idx
          ON localwebauthn_credentials(user_id, kind, revoked_at)`,
     ],
+  },
+  {
+    version: 3,
+    // Table-only, so the `CREATE TABLE IF NOT EXISTS` copied out of the full
+    // schema below covers it; nothing incremental is needed here.
+    statements: [],
   },
 ];
 
@@ -312,6 +337,9 @@ export function localWebAuthnUpgradeStatements(
   }
   // Tables added after v1 are created by their `CREATE TABLE IF NOT EXISTS`
   // from the full schema; columns need the explicit ALTERs.
+  // Tables introduced after v1 come from the full schema's idempotent
+  // `CREATE ... IF NOT EXISTS`, which the incremental list cannot express
+  // portably across both dialects.
   const newTables = schema.filter((statement) =>
     /^CREATE (TABLE|INDEX|UNIQUE INDEX) IF NOT EXISTS localwebauthn_dpop/u.test(statement),
   );

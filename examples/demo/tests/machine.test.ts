@@ -387,6 +387,72 @@ describe('restrictions enforced over HTTP', () => {
     expect(await response.json()).toMatchObject({ error: 'invalid_dpop_proof' });
   });
 
+  it('challenges a nonce-less proof and accepts the retry', async () => {
+    const fixture = setup();
+    const person = await signedInPerson(fixture);
+    const { payload, privateKey } = await mintApiKey(fixture, person.cookie, 'nightly export');
+    const keyStore = await importKeyStore(privateKey, ES256);
+    const client = new MachineClient({ payload, keyStore, fetch: appFetch(fixture.app) });
+    const session = await client.authenticate();
+    const { createDpopProof } = await import('@localwebauthn/client');
+
+    // First attempt carries no nonce, because the client has not been told one.
+    const bare = await fixture.app.fetch(
+      new Request(`${ORIGIN}/api/machine/v1/whoami`, {
+        headers: {
+          Authorization: `DPoP ${session.token}`,
+          DPoP: await createDpopProof({
+            keyStore,
+            method: 'GET',
+            url: `${ORIGIN}/api/machine/v1/whoami`,
+            accessToken: session.token,
+          }),
+        },
+      }),
+    );
+    expect(bare.status).toBe(401);
+    expect(await bare.json()).toMatchObject({ error: 'dpop_nonce_required' });
+    expect(bare.headers.get('WWW-Authenticate')).toBe('DPoP error="use_dpop_nonce"');
+    const nonce = bare.headers.get('DPoP-Nonce');
+    expect(nonce).toBeTruthy();
+
+    // Retry with the nonce the challenge supplied.
+    const retried = await fixture.app.fetch(
+      new Request(`${ORIGIN}/api/machine/v1/whoami`, {
+        headers: {
+          Authorization: `DPoP ${session.token}`,
+          DPoP: await createDpopProof({
+            keyStore,
+            method: 'GET',
+            url: `${ORIGIN}/api/machine/v1/whoami`,
+            accessToken: session.token,
+            nonce: nonce ?? undefined,
+          }),
+        },
+      }),
+    );
+    expect(retried.status).toBe(200);
+  });
+
+  it('handles the nonce challenge transparently in MachineClient', async () => {
+    const fixture = setup();
+    const person = await signedInPerson(fixture);
+    const { payload, privateKey } = await mintApiKey(fixture, person.cookie, 'nightly export');
+    const client = new MachineClient({
+      payload,
+      keyStore: await importKeyStore(privateKey, ES256),
+      fetch: appFetch(fixture.app),
+    });
+
+    // The very first call has no nonce to offer, so it takes the 401 + retry path
+    // without the caller seeing it — and the session survives, since a nonce
+    // challenge is not an expiry.
+    const first = await client.fetch('/api/machine/v1/whoami');
+    expect(first.status).toBe(200);
+    const second = await client.fetch('/api/machine/v1/clients');
+    expect(second.status).toBe(200);
+  });
+
   it('rejects a replayed DPoP proof', async () => {
     const fixture = setup();
     const person = await signedInPerson(fixture);
@@ -396,17 +462,37 @@ describe('restrictions enforced over HTTP', () => {
 
     const first = await client.fetch('/api/machine/v1/whoami');
     expect(first.status).toBe(200);
+    // The server rotates the client onto the current nonce on every success.
+    const nonce = first.headers.get('DPoP-Nonce');
+    expect(nonce).toBeTruthy();
 
-    // Capture a valid proof and send it a second time by hand.
+    // Build two proofs by hand that share a nonce but differ in jti. The nonce is
+    // reusable by design — it only has to be unguessable in advance — while the
+    // jti is single-use. The two mechanisms are independent, and this is what
+    // proves it: reusing the nonce is fine, reusing the jti is not.
     const session = await client.authenticate();
     const { createDpopProof } = await import('@localwebauthn/client');
-    const proof = await createDpopProof({
-      keyStore,
-      method: 'GET',
-      url: `${ORIGIN}/api/machine/v1/whoami`,
-      accessToken: session.token,
-    });
-    const headers = { Authorization: `DPoP ${session.token}`, DPoP: proof };
+    const proofFor = () =>
+      createDpopProof({
+        keyStore,
+        method: 'GET',
+        url: `${ORIGIN}/api/machine/v1/whoami`,
+        accessToken: session.token,
+        nonce: nonce ?? undefined,
+      });
+
+    const fresh = await proofFor();
+    expect(
+      (
+        await fixture.app.fetch(
+          new Request(`${ORIGIN}/api/machine/v1/whoami`, {
+            headers: { Authorization: `DPoP ${session.token}`, DPoP: await proofFor() },
+          }),
+        )
+      ).status,
+    ).toBe(200);
+
+    const headers = { Authorization: `DPoP ${session.token}`, DPoP: fresh };
     const replayFirst = await fixture.app.fetch(
       new Request(`${ORIGIN}/api/machine/v1/whoami`, { headers }),
     );

@@ -1,5 +1,5 @@
 // src/schema.ts
-var LOCALWEBAUTHN_SCHEMA_VERSION = 2;
+var LOCALWEBAUTHN_SCHEMA_VERSION = 3;
 var LOCALWEBAUTHN_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS localwebauthn_migrations (
   version INTEGER PRIMARY KEY,
@@ -103,6 +103,15 @@ CREATE TABLE IF NOT EXISTS localwebauthn_dpop_proofs (
 
 CREATE INDEX IF NOT EXISTS localwebauthn_dpop_expiry_idx
   ON localwebauthn_dpop_proofs(expires_at);
+
+CREATE TABLE IF NOT EXISTS localwebauthn_dpop_nonces (
+  slot INTEGER PRIMARY KEY,
+  nonce TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS localwebauthn_dpop_nonce_expiry_idx
+  ON localwebauthn_dpop_nonces(expires_at);
 
 CREATE TABLE IF NOT EXISTS localwebauthn_transaction_guard (
   value INTEGER NOT NULL CHECK (value = 1)
@@ -211,6 +220,15 @@ CREATE TABLE IF NOT EXISTS localwebauthn_dpop_proofs (
 
 CREATE INDEX IF NOT EXISTS localwebauthn_dpop_expiry_idx
   ON localwebauthn_dpop_proofs(expires_at);
+
+CREATE TABLE IF NOT EXISTS localwebauthn_dpop_nonces (
+  slot BIGINT PRIMARY KEY,
+  nonce TEXT NOT NULL,
+  expires_at BIGINT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS localwebauthn_dpop_nonce_expiry_idx
+  ON localwebauthn_dpop_nonces(expires_at);
 `;
 var LOCALWEBAUTHN_MIGRATIONS = [
   {
@@ -222,6 +240,12 @@ var LOCALWEBAUTHN_MIGRATIONS = [
       `CREATE INDEX IF NOT EXISTS localwebauthn_credential_kind_idx
          ON localwebauthn_credentials(user_id, kind, revoked_at)`
     ]
+  },
+  {
+    version: 3,
+    // Table-only, so the `CREATE TABLE IF NOT EXISTS` copied out of the full
+    // schema below covers it; nothing incremental is needed here.
+    statements: []
   }
 ];
 function migrationStatements(fromVersion) {

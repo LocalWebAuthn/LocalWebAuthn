@@ -2,9 +2,9 @@
 
 ## 2.2.0 → unreleased (credential kinds and machine credentials)
 
-### Schema version 2
+### Schema versions 2 and 3
 
-The schema moves to version 2. `migrateSqlite`, `migratePostgres` and `migrateD1` now read
+The schema moves to version 3. `migrateSqlite`, `migratePostgres` and `migrateD1` now read
 the stored version and apply only what is missing, so calling them on a 1.x or 2.2.0
 database upgrades it in place. Adding a column is why that machinery had to exist —
 `CREATE TABLE IF NOT EXISTS` cannot do it.
@@ -17,6 +17,8 @@ What version 2 adds:
   authentication ceremony accepts; `NULL` is unconstrained.
 - `localwebauthn_dpop_proofs` — the DPoP `jti` replay cache.
 - `localwebauthn_credential_kind_idx` on `(user_id, kind, revoked_at)`.
+
+Version 3 adds `localwebauthn_dpop_nonces`, keyed by time slot.
 
 No `CHECK` constraints were added. SQLite cannot add one to an existing table, and a fresh
 install must not end up with constraints an upgraded install lacks — the two would diverge
@@ -35,8 +37,26 @@ claimDpopProof(jtiHash: Uint8Array, expiresAt: number): Promise<boolean>;
 
 Record the digest if absent and return `true`; return `false` if it was already there,
 which is a replayed proof. Must be atomic — two concurrent requests carrying the same `jti`
-must not both see `true`. Official adapters use `SQL.claimDpopProof`. `CleanupResult` gains
-`dpopProofs`, reaped with `SQL.deleteExpiredDpopProofs`.
+must not both see `true`. Official adapters use `SQL.claimDpopProof`. Two more for server-issued DPoP nonces (RFC 9449 section 8):
+
+```ts
+claimDpopNonce(slot: number, candidate: string, expiresAt: number): Promise<string>;
+dpopNonces(currentSlot: number, previousSlot: number): Promise<string[]>;
+```
+
+`claimDpopNonce` inserts `candidate` for `slot` if unclaimed and returns the **stored**
+value — never `candidate` — so every server in a deployment converges on one nonce per
+slot. The primary key is the only coordination: whichever server inserts first decides,
+and the rest read it back. That is why the nonce lives in the database rather than in
+memory; an in-memory value would be rejected by whichever server the client did not
+happen to reach first.
+
+Nonces are stored in the clear, unlike every other token in this schema. They are not
+secrets — the server hands the current one to any caller in a response header. The only
+property needed is that a _future_ one cannot be guessed.
+
+`CleanupResult` gains `dpopProofs` and `dpopNonces`, reaped with
+`SQL.deleteExpiredDpopProofs` and `SQL.deleteExpiredDpopNonces`.
 
 Four records grow by a column each, and the shared SQL already selects and binds them:
 
@@ -79,6 +99,30 @@ mint a spare and outlive revocation of the first, making revocation useless as a
 `verifyDpop` verifies an RFC 9449 proof against the session's credential. There is no
 per-session key material to store: the expected thumbprint is derived from
 `credentials.public_key`.
+
+Server-issued nonces are **opt-in**, because they cost the client something real — it must
+retain the latest `DPoP-Nonce` and retry once when challenged. `@localwebauthn/client`
+already does both; a hand-written client would have to.
+
+```ts
+new LocalWebAuthn({ dpopNonce: { rotationMs: 5 * 60_000 } }); // enables issuance
+await auth.dpopNonce(); // current nonce, or null when unconfigured
+await auth.verifyDpop({ ..., requireNonce: true }); // enforce
+```
+
+A proof with no nonce, or a stale one, throws the new `dpop_nonce_required` code so the
+host can answer `401` with `WWW-Authenticate: DPoP error="use_dpop_nonce"` and a fresh
+`DPoP-Nonce` header. Current _and_ previous slot are accepted, so a rotation landing
+mid-flight does not reject a proof built moments earlier. Asking for `requireNonce`
+without `dpopNonce` configured is an `invalid_configuration` error rather than a silent
+pass.
+
+The nonce is per **deployment**, not per credential or per session: its only job is to be
+unguessable in advance, and rotation on a clock delivers that globally. It is also the one
+element of a per-request proof the _server_ chooses — `jti`, `iat`, `htm`, `htu` and the
+key are all the client's — which is what makes it the part that stops a key holder
+pre-generating proofs. Note that a nonce is deliberately **reusable** within its window,
+unlike `jti`, which is single-use and is why the replay cache exists.
 
 ## 2.1.0 → 2.2.0
 

@@ -334,6 +334,14 @@ function normalizeConfig(options) {
       sessionIdleMs
     };
   }
+  let dpopNonce = null;
+  if (options.dpopNonce) {
+    const rotationMs = options.dpopNonce.rotationMs ?? 5 * 6e4;
+    if (!Number.isSafeInteger(rotationMs) || rotationMs <= 0) {
+      configurationError("dpopNonce.rotationMs must be a positive integer number of milliseconds.");
+    }
+    dpopNonce = { rotationMs };
+  }
   return {
     rpName,
     rpId,
@@ -341,7 +349,8 @@ function normalizeConfig(options) {
     publicOrigin,
     enrollmentPath,
     durations,
-    credentialKinds
+    credentialKinds,
+    dpopNonce
   };
 }
 function defaultKindPolicy(config) {
@@ -505,8 +514,10 @@ async function verifyDpopProof(input) {
   if (typeof payload.ath !== "string" || !equalBytes(encoder.encode(expectedAth), encoder.encode(payload.ath))) {
     return invalid("ath_mismatch");
   }
-  if (input.nonce !== void 0 && payload.nonce !== input.nonce) {
-    return invalid("use_dpop_nonce");
+  if (input.nonces && input.nonces.length > 0) {
+    if (typeof payload.nonce !== "string" || !input.nonces.includes(payload.nonce)) {
+      return invalid("use_dpop_nonce");
+    }
   }
   return {
     valid: true,
@@ -1211,6 +1222,48 @@ var LocalWebAuthn = class {
   #kindAdmitted(kind, allowed) {
     return allowed === null ? kindPolicy(this.config, kind).interactive : allowed.includes(kind);
   }
+  /** `floor(now / rotationMs)` — the same value on every server, from the clock alone. */
+  #dpopSlot(now, rotationMs) {
+    return Math.floor(now / rotationMs);
+  }
+  /**
+   * The current nonce, for a `DPoP-Nonce` response header.
+   *
+   * Returns `null` when nonce issuance is not configured, so a host can attach the
+   * header unconditionally and have it simply not appear.
+   *
+   * Every server in a deployment derives the same slot from its clock and claims
+   * it through the store; whichever inserts first decides the value and the rest
+   * read it back. No shared secret and no rotation coordination.
+   */
+  async dpopNonce() {
+    if (!this.config.dpopNonce) {
+      return null;
+    }
+    const { rotationMs } = this.config.dpopNonce;
+    const now = this.#now();
+    const slot = this.#dpopSlot(now, rotationMs);
+    return this.#store.claimDpopNonce(
+      slot,
+      createOpaqueToken(this.#randomBytes),
+      // Outlive the previous-slot grace window before becoming reapable.
+      (slot + 3) * rotationMs
+    );
+  }
+  /** Current and previous slot, so a rotation mid-flight does not reject a fresh proof. */
+  async #acceptableDpopNonces(now) {
+    if (!this.config.dpopNonce) {
+      return [];
+    }
+    const { rotationMs } = this.config.dpopNonce;
+    const slot = this.#dpopSlot(now, rotationMs);
+    await this.#store.claimDpopNonce(
+      slot,
+      createOpaqueToken(this.#randomBytes),
+      (slot + 3) * rotationMs
+    );
+    return this.#store.dpopNonces(slot, slot - 1);
+  }
   /**
    * Verify a DPoP proof (RFC 9449) for a request on an already-resolved session.
    *
@@ -1227,6 +1280,13 @@ var LocalWebAuthn = class {
     if (!input.proof) {
       throw new LocalWebAuthnError("invalid_dpop_proof", "A DPoP proof is required.", 401);
     }
+    if (input.requireNonce && !this.config.dpopNonce) {
+      throw new LocalWebAuthnError(
+        "invalid_configuration",
+        "requireNonce needs dpopNonce configuration; otherwise no nonce is ever issued.",
+        500
+      );
+    }
     const credential = await this.#store.getCredential(input.session.credentialId);
     if (!credential || credential.revokedAt !== null) {
       throw new LocalWebAuthnError("invalid_dpop_proof", "The credential is unavailable.", 401);
@@ -1238,12 +1298,12 @@ var LocalWebAuthn = class {
       url: input.url,
       accessToken: input.sessionToken,
       publicKeyCose: credential.publicKey,
-      nonce: input.nonce,
+      nonces: input.requireNonce ? await this.#acceptableDpopNonces(now) : void 0,
       now
     });
     if (!verification.valid) {
       throw new LocalWebAuthnError(
-        "invalid_dpop_proof",
+        verification.reason === "use_dpop_nonce" ? "dpop_nonce_required" : "invalid_dpop_proof",
         `The DPoP proof is not valid (${verification.reason}).`,
         401
       );

@@ -192,6 +192,56 @@ function storeConformance(
 ) {
   const suite = options.skip ? describe.skip : describe;
   suite(`${name} store`, () => {
+    it('converges on one DPoP nonce per slot', async () => {
+      const fixture = await createFixture();
+      try {
+        // Two servers derive the same slot from their clocks and each offer their
+        // own candidate. Whichever insert wins, both must read back the same
+        // value — otherwise a client's nonce would be rejected by whichever
+        // server it did not talk to first, which is the whole reason this lives
+        // in the database rather than in memory.
+        const [first, second] = await Promise.all([
+          fixture.store.claimDpopNonce(1000, 'from-server-a', now + 60_000),
+          fixture.store.claimDpopNonce(1000, 'from-server-b', now + 60_000),
+        ]);
+        expect(first).toBe(second);
+        expect(['from-server-a', 'from-server-b']).toContain(first);
+
+        // A later read is stable, and a different slot is a different nonce.
+        await expect(
+          fixture.store.claimDpopNonce(1000, 'from-server-c', now + 60_000),
+        ).resolves.toBe(first);
+        const next = await fixture.store.claimDpopNonce(1001, 'next-slot', now + 60_000);
+        expect(next).toBe('next-slot');
+
+        // Current plus previous slot are both accepted, so a rotation landing
+        // mid-flight does not reject a proof built moments earlier.
+        const accepted = await fixture.store.dpopNonces(1001, 1000);
+        expect([...accepted].sort()).toEqual([first, next].sort());
+
+        // An unclaimed slot contributes nothing rather than erroring.
+        await expect(fixture.store.dpopNonces(9999, 9998)).resolves.toEqual([]);
+      } finally {
+        await fixture.close();
+      }
+    });
+
+    it('reaps expired DPoP nonces and proofs', async () => {
+      const fixture = await createFixture();
+      try {
+        await fixture.store.claimDpopNonce(1, 'stale', now - 1);
+        await fixture.store.claimDpopNonce(2, 'live', now + 60_000);
+        expect(await fixture.store.claimDpopProof(bytes(30), now - 1)).toBe(true);
+
+        const result = await fixture.store.cleanup(now);
+        expect(result.dpopNonces).toBe(1);
+        expect(result.dpopProofs).toBe(1);
+        await expect(fixture.store.dpopNonces(2, 1)).resolves.toEqual(['live']);
+      } finally {
+        await fixture.close();
+      }
+    });
+
     it('exchanges enrollment grants exactly once', async () => {
       const fixture = await createFixture();
       try {

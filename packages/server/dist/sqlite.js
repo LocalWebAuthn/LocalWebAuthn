@@ -4,11 +4,11 @@ import {
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-XJU3HWJN.js";
+} from "./chunk-5ACQCBBK.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnUpgradeStatements
-} from "./chunk-4KITUZX4.js";
+} from "./chunk-2BSKCSEH.js";
 
 // src/sqlite.ts
 var Rollback = class extends Error {
@@ -173,13 +173,25 @@ var SqliteLocalWebAuthnStore = class {
   async claimDpopProof(jtiHash, expiresAt) {
     return this.#database.prepare(SQL.claimDpopProof).run(jtiHash, expiresAt).changes === 1;
   }
+  async claimDpopNonce(slot, candidate, expiresAt) {
+    return this.#database.transaction(() => {
+      this.#database.prepare(SQL.insertDpopNonce).run(slot, candidate, expiresAt);
+      const row = this.#database.prepare(SQL.selectDpopNonce).get(slot);
+      return row?.nonce ?? candidate;
+    }).immediate();
+  }
+  async dpopNonces(currentSlot, previousSlot) {
+    const rows = this.#database.prepare(SQL.selectDpopNonces).all(currentSlot, previousSlot);
+    return rows.map((row) => row.nonce);
+  }
   async cleanup(now) {
     return this.#database.transaction(() => {
       const sessions = this.#database.prepare(SQL.deleteExpiredSessions).run(now).changes;
       const enrollmentGrants = this.#database.prepare(SQL.deleteFinishedGrants).run(now).changes;
       const challenges = this.#database.prepare(SQL.deleteFinishedChallenges).run(now).changes;
       const dpopProofs = this.#database.prepare(SQL.deleteExpiredDpopProofs).run(now).changes;
-      return { enrollmentGrants, challenges, sessions, dpopProofs };
+      const dpopNonces = this.#database.prepare(SQL.deleteExpiredDpopNonces).run(now).changes;
+      return { enrollmentGrants, challenges, sessions, dpopProofs, dpopNonces };
     }).immediate();
   }
   /** Re-check the authorizing grant or session at commit time. */

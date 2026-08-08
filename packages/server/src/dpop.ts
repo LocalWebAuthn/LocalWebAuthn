@@ -40,8 +40,12 @@ export type DpopVerificationInput = {
   accessToken: string;
   /** COSE public key of the credential that opened the session. */
   publicKeyCose: Uint8Array;
-  /** When set, the proof's `nonce` must equal this value. */
-  nonce?: string;
+  /**
+   * When non-empty, the proof's `nonce` must be one of these — normally the
+   * current and previous rotation slot, so a rotation landing mid-flight does not
+   * reject a proof built moments earlier.
+   */
+  nonces?: string[];
   /** Accepted clock skew for `iat`, in milliseconds. Defaults to 60s either way. */
   skewMs?: number;
   now?: number;
@@ -271,8 +275,12 @@ export async function verifyDpopProof(input: DpopVerificationInput): Promise<Dpo
   ) {
     return invalid('ath_mismatch');
   }
-  if (input.nonce !== undefined && payload.nonce !== input.nonce) {
-    return invalid('use_dpop_nonce');
+  if (input.nonces && input.nonces.length > 0) {
+    // Both "absent" and "stale" report the same reason, so the host answers with
+    // one `use_dpop_nonce` challenge either way and the client just retries.
+    if (typeof payload.nonce !== 'string' || !input.nonces.includes(payload.nonce)) {
+      return invalid('use_dpop_nonce');
+    }
   }
 
   return {

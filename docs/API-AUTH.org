@@ -49,9 +49,10 @@ not built.
 
 What exists:
 
-- Schema version 2 with =credentials.kind=, per-ceremony kind scoping on challenges,
-  and the DPoP =jti= replay cache, plus the versioned migration runner all three
-  adapters needed before any of it could be added.
+- Schema versions 2 and 3: =credentials.kind=, per-ceremony kind scoping on
+  challenges, the DPoP =jti= replay cache and the nonce slot table, plus the
+  versioned migration runner all three adapters needed before any of it could be
+  added.
 - =credentialKinds= configuration: =interactive=, =canRegister= and per-kind session
   lifetimes.  Undeclared kinds — including =null= — behave exactly as before.
 - =kind= reported on =SessionIdentity=, on both verification results, and on every
@@ -60,6 +61,11 @@ What exists:
   DPoP proof construction, and =MachineClient=.
 - =verifyDpop= on the service, deriving the expected thumbprint from
   =credentials.public_key= so nothing is stored per session.
+- Optional server-issued DPoP nonces, keyed by time slot in the database so every
+  server in a deployment converges on one value without a shared secret.  The
+  nonce is per /deployment/, not per credential or per session: its only job is to
+  be unguessable in advance.  Opt-in, because a hand-written client must retain
+  the latest =DPoP-Nonce= and retry once when challenged.
 - The demo's =/api/api-keys/*= and =/api/machine/v1/*= routes, an API-credentials UI
   panel, and =npm run api-demo= for the script side.
 
@@ -68,9 +74,6 @@ Not built, and still design only:
 - =credential_kind= on enrollment grants, and the kind-scoped pending-grant index.
   The demo mints credentials through the *session* path, which needs neither; the
   bootstrap-token variant in =docs/API-AUTH/PROVISIONING.md= would.
-- Server-issued DPoP nonces.  =MachineClient= already captures and echoes a
-  =DPoP-Nonce=, and =verifyDpopProof= already checks one when given it, but no route
-  issues one yet.
 - Keystore backends beyond a base64 PKCS#8 key.  The =keystore:= URI is parsed and
   refused with a pointer to /Key Custody/.
 - Kind filters on =revokeUserAuthentication= and =revokeUserSessions=.

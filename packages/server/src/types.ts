@@ -219,6 +219,8 @@ export type CleanupResult = {
   sessions: number;
   /** Expired DPoP proof-replay entries (see {@link LocalWebAuthnStore.claimDpopProof}). */
   dpopProofs: number;
+  /** Expired DPoP nonce slots. */
+  dpopNonces: number;
 };
 
 /** Outcome of {@link LocalWebAuthnStore.revokeCredential}. */
@@ -405,6 +407,26 @@ export type LocalWebAuthnStore = {
   claimDpopProof(jtiHash: Uint8Array, expiresAt: number): Promise<boolean>;
 
   /**
+   * Return the deployment-wide DPoP nonce for `slot`, inserting `candidate` if no
+   * server has claimed that slot yet.
+   *
+   * `slot` is `floor(now / rotationMs)`, so every server computes the same one and
+   * whichever inserts first decides the value — the primary key is the only
+   * coordination needed. Must return the *stored* nonce, not `candidate`, or two
+   * servers would disagree.
+   */
+  claimDpopNonce(slot: number, candidate: string, expiresAt: number): Promise<string>;
+
+  /**
+   * Nonces for the current and previous slot, in any order, omitting slots that
+   * have never been claimed.
+   *
+   * Two are accepted so a rotation landing mid-flight does not reject a proof the
+   * client built moments earlier against the outgoing value.
+   */
+  dpopNonces(currentSlot: number, previousSlot: number): Promise<string[]>;
+
+  /**
    * Remove expired enrollment grants, finished challenges, dead sessions, and
    * spent DPoP proof records.
    *
@@ -559,6 +581,29 @@ export type LocalWebAuthnOptions = {
   users: UserProvider;
   /** Override default token and session lifetimes (all values in milliseconds). */
   durations?: LocalWebAuthnDurations;
+  /**
+   * Enable DPoP nonce issuance (RFC 9449 section 8).
+   *
+   * Presence enables it; absence means {@link LocalWebAuthn.dpopNonce} returns
+   * `null` and asking `verifyDpop` to require one is a configuration error. Left
+   * off by default because it costs the client something real: it must retain the
+   * most recent `DPoP-Nonce` and retry once when the server demands one.
+   * `@localwebauthn/client` already does both, but a hand-written client would
+   * have to.
+   *
+   * Worth enabling once credential keys live in hardware, which is when
+   * "possession of the key" and "able to sign right now" stop being the same
+   * thing — a nonce is what makes that distinction enforceable server-side.
+   */
+  dpopNonce?: {
+    /**
+     * How often the nonce changes, in milliseconds. Defaults to 5 minutes.
+     *
+     * A proof is accepted against the current or previous slot, so this is also
+     * roughly how long a pre-generated proof could remain usable.
+     */
+    rotationMs?: number;
+  };
   /**
    * Per-kind policy, keyed by {@link Credential.kind}.
    *

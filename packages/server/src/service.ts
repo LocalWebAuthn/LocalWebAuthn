@@ -850,6 +850,54 @@ export class LocalWebAuthn {
     return allowed === null ? kindPolicy(this.config, kind).interactive : allowed.includes(kind);
   }
 
+  /** `floor(now / rotationMs)` — the same value on every server, from the clock alone. */
+  #dpopSlot(now: number, rotationMs: number): number {
+    return Math.floor(now / rotationMs);
+  }
+
+  /**
+   * The current nonce, for a `DPoP-Nonce` response header.
+   *
+   * Returns `null` when nonce issuance is not configured, so a host can attach the
+   * header unconditionally and have it simply not appear.
+   *
+   * Every server in a deployment derives the same slot from its clock and claims
+   * it through the store; whichever inserts first decides the value and the rest
+   * read it back. No shared secret and no rotation coordination.
+   */
+  async dpopNonce(): Promise<string | null> {
+    if (!this.config.dpopNonce) {
+      return null;
+    }
+    const { rotationMs } = this.config.dpopNonce;
+    const now = this.#now();
+    const slot = this.#dpopSlot(now, rotationMs);
+    return this.#store.claimDpopNonce(
+      slot,
+      createOpaqueToken(this.#randomBytes),
+      // Outlive the previous-slot grace window before becoming reapable.
+      (slot + 3) * rotationMs,
+    );
+  }
+
+  /** Current and previous slot, so a rotation mid-flight does not reject a fresh proof. */
+  async #acceptableDpopNonces(now: number): Promise<string[]> {
+    if (!this.config.dpopNonce) {
+      return [];
+    }
+    const { rotationMs } = this.config.dpopNonce;
+    const slot = this.#dpopSlot(now, rotationMs);
+    // Claim the current slot first: a client cannot present a nonce for a slot no
+    // server has issued yet, and this makes the current one exist even if the
+    // deployment has served nothing since the slot turned over.
+    await this.#store.claimDpopNonce(
+      slot,
+      createOpaqueToken(this.#randomBytes),
+      (slot + 3) * rotationMs,
+    );
+    return this.#store.dpopNonces(slot, slot - 1);
+  }
+
   /**
    * Verify a DPoP proof (RFC 9449) for a request on an already-resolved session.
    *
@@ -868,10 +916,22 @@ export class LocalWebAuthn {
     url: string;
     sessionToken: string;
     session: SessionIdentity;
-    nonce?: string;
+    /**
+     * Demand a server-issued nonce (RFC 9449 section 8). Requires `dpopNonce` in
+     * configuration; throws `dpop_nonce_required` when the proof carries none or
+     * carries one the server no longer recognises.
+     */
+    requireNonce?: boolean;
   }): Promise<void> {
     if (!input.proof) {
       throw new LocalWebAuthnError('invalid_dpop_proof', 'A DPoP proof is required.', 401);
+    }
+    if (input.requireNonce && !this.config.dpopNonce) {
+      throw new LocalWebAuthnError(
+        'invalid_configuration',
+        'requireNonce needs dpopNonce configuration; otherwise no nonce is ever issued.',
+        500,
+      );
     }
     const credential = await this.#store.getCredential(input.session.credentialId);
     if (!credential || credential.revokedAt !== null) {
@@ -885,12 +945,14 @@ export class LocalWebAuthn {
       url: input.url,
       accessToken: input.sessionToken,
       publicKeyCose: credential.publicKey,
-      nonce: input.nonce,
+      nonces: input.requireNonce ? await this.#acceptableDpopNonces(now) : undefined,
       now,
     });
     if (!verification.valid) {
+      // A nonce problem gets its own code so the host knows to answer with a
+      // `use_dpop_nonce` challenge and a fresh header, rather than a flat refusal.
       throw new LocalWebAuthnError(
-        'invalid_dpop_proof',
+        verification.reason === 'use_dpop_nonce' ? 'dpop_nonce_required' : 'invalid_dpop_proof',
         `The DPoP proof is not valid (${verification.reason}).`,
         401,
       );

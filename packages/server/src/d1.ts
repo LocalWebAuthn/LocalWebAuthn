@@ -363,18 +363,37 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
       this.#database.prepare(SQL.deleteFinishedGrants).bind(now),
       this.#database.prepare(SQL.deleteFinishedChallenges).bind(now),
       this.#database.prepare(SQL.deleteExpiredDpopProofs).bind(now),
+      this.#database.prepare(SQL.deleteExpiredDpopNonces).bind(now),
     ]);
     return {
       sessions: changes(results[0]),
       enrollmentGrants: changes(results[1]),
       challenges: changes(results[2]),
       dpopProofs: changes(results[3]),
+      dpopNonces: changes(results[4]),
     };
   }
 
   async claimDpopProof(jtiHash: Uint8Array, expiresAt: number): Promise<boolean> {
     const result = await this.#database.prepare(SQL.claimDpopProof).bind(jtiHash, expiresAt).run();
     return changes(result) === 1;
+  }
+
+  async claimDpopNonce(slot: number, candidate: string, expiresAt: number): Promise<string> {
+    await this.#database.prepare(SQL.insertDpopNonce).bind(slot, candidate, expiresAt).run();
+    const row = await this.#database
+      .prepare(SQL.selectDpopNonce)
+      .bind(slot)
+      .first<{ nonce: string }>();
+    return row?.nonce ?? candidate;
+  }
+
+  async dpopNonces(currentSlot: number, previousSlot: number): Promise<string[]> {
+    const result = await this.#database
+      .prepare(SQL.selectDpopNonces)
+      .bind(currentSlot, previousSlot)
+      .all<{ nonce: string }>();
+    return result.results.map((row) => row.nonce);
   }
 
   /** The ten `localwebauthn_credentials` column values, in schema order. */

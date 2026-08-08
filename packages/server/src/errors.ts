@@ -15,7 +15,14 @@ export type LocalWebAuthnErrorCode =
    */
   | 'registration_not_permitted'
   /** A DPoP proof was absent, malformed, replayed, or signed by the wrong key. */
-  | 'invalid_dpop_proof';
+  | 'invalid_dpop_proof'
+  /**
+   * A DPoP proof carried no nonce, or one the server no longer recognises. The
+   * host should answer `401` with `WWW-Authenticate: DPoP
+   * error="use_dpop_nonce"` and a fresh `DPoP-Nonce` header, which the client
+   * echoes on its retry.
+   */
+  | 'dpop_nonce_required';
 
 export class LocalWebAuthnError extends Error {
   readonly code: LocalWebAuthnErrorCode;

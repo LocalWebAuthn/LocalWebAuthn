@@ -5,11 +5,11 @@ import {
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-XJU3HWJN.js";
+} from "./chunk-5ACQCBBK.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnSchemaStatements
-} from "./chunk-4KITUZX4.js";
+} from "./chunk-2BSKCSEH.js";
 
 // src/d1.ts
 async function migrateD1(database, now = Date.now()) {
@@ -197,18 +197,29 @@ var D1LocalWebAuthnStore = class {
       this.#database.prepare(SQL.deleteExpiredSessions).bind(now),
       this.#database.prepare(SQL.deleteFinishedGrants).bind(now),
       this.#database.prepare(SQL.deleteFinishedChallenges).bind(now),
-      this.#database.prepare(SQL.deleteExpiredDpopProofs).bind(now)
+      this.#database.prepare(SQL.deleteExpiredDpopProofs).bind(now),
+      this.#database.prepare(SQL.deleteExpiredDpopNonces).bind(now)
     ]);
     return {
       sessions: changes(results[0]),
       enrollmentGrants: changes(results[1]),
       challenges: changes(results[2]),
-      dpopProofs: changes(results[3])
+      dpopProofs: changes(results[3]),
+      dpopNonces: changes(results[4])
     };
   }
   async claimDpopProof(jtiHash, expiresAt) {
     const result = await this.#database.prepare(SQL.claimDpopProof).bind(jtiHash, expiresAt).run();
     return changes(result) === 1;
+  }
+  async claimDpopNonce(slot, candidate, expiresAt) {
+    await this.#database.prepare(SQL.insertDpopNonce).bind(slot, candidate, expiresAt).run();
+    const row = await this.#database.prepare(SQL.selectDpopNonce).bind(slot).first();
+    return row?.nonce ?? candidate;
+  }
+  async dpopNonces(currentSlot, previousSlot) {
+    const result = await this.#database.prepare(SQL.selectDpopNonces).bind(currentSlot, previousSlot).all();
+    return result.results.map((row) => row.nonce);
   }
   /** The ten `localwebauthn_credentials` column values, in schema order. */
   #credentialValues(credential) {

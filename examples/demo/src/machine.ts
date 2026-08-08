@@ -9,10 +9,11 @@
  * the key pair itself and never sends the private half.
  *
  * `/api/machine/v1/*` is script-facing. No cookies, no `Origin` check, tokens in
- * the JSON body and the `Authorization` header. It must be mounted *before* the
- * demo's origin-check middleware: a script sends no `Origin`, so that check would
- * reject it. Nothing is lost — CSRF needs the ambient credentials only a browser
- * attaches, and a script has none.
+ * the JSON body and the `Authorization` header, and a DPoP proof carrying a
+ * server-issued nonce on every request. The origin exemption is declared through
+ * `cookieFreePrefixes`, not implied by mount order — a script sends no `Origin`,
+ * and CSRF needs the ambient credentials only a browser attaches, so there is
+ * nothing for that check to defend here.
  */
 
 import type {
@@ -218,9 +219,28 @@ export function requireMachineSession(
         url: context.req.url,
         sessionToken: token,
         session: resolved.session,
+        requireNonce: true,
       });
     } catch (error) {
+      if (isLocalWebAuthnError(error) && error.code === 'dpop_nonce_required') {
+        // RFC 9449 section 8: hand the client a nonce and let it retry. The nonce
+        // is not a secret — it goes to any caller that asks — so answering an
+        // unauthenticated-looking request with one gives nothing away.
+        const nonce = await authentication.dpopNonce();
+        if (nonce) {
+          context.header('DPoP-Nonce', nonce);
+        }
+        context.header('WWW-Authenticate', 'DPoP error="use_dpop_nonce"');
+        return context.json({ error: error.code, message: error.message }, 401);
+      }
       return errorResponse(context, error);
+    }
+
+    // Rotate the client onto the current nonce while it is still succeeding, so a
+    // slot turning over costs it nothing.
+    const nonce = await authentication.dpopNonce();
+    if (nonce) {
+      context.header('DPoP-Nonce', nonce);
     }
 
     context.set('authenticatedUser', resolved.user);

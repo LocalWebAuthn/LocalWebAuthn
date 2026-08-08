@@ -279,6 +279,35 @@ var SQL = {
     INSERT INTO localwebauthn_dpop_proofs(jti_hash, expires_at)
     VALUES (?, ?)
     ON CONFLICT DO NOTHING`,
+  // -- DPoP nonces ----------------------------------------------------------
+  //
+  // A nonce is the server's contribution of unpredictability to a per-request
+  // proof: everything else in one — `jti`, `iat`, `htm`, `htu`, the key — is
+  // chosen by the client. It stops a key holder pre-generating proofs, because
+  // it cannot sign for a value the server has not issued yet.
+  //
+  // Keyed by time slot rather than held in a mutable "current nonce" row, which
+  // matters for a multi-server deployment: a rotate-in-place row is a
+  // read-modify-write and two servers can lose each other's update. Here the
+  // primary key does the coordinating — whichever server inserts a slot first
+  // wins, and every other server reads that same value back.
+  //
+  // Nonces are stored in the clear, unlike every other token in this schema.
+  // They are not secrets: the server hands the current one to any caller that
+  // asks, in a response header. The property is only that a *future* one cannot
+  // be guessed.
+  /** Claim a slot's nonce; a loser's insert is a no-op and it reads the winner's. */
+  insertDpopNonce: `
+    INSERT INTO localwebauthn_dpop_nonces(slot, nonce, expires_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT DO NOTHING`,
+  selectDpopNonce: `
+    SELECT nonce FROM localwebauthn_dpop_nonces WHERE slot = ?`,
+  /** Current and previous slot, so rotation does not reject an in-flight request. */
+  selectDpopNonces: `
+    SELECT nonce FROM localwebauthn_dpop_nonces WHERE slot = ? OR slot = ?`,
+  deleteExpiredDpopNonces: `
+    DELETE FROM localwebauthn_dpop_nonces WHERE expires_at <= ?`,
   // -- Migrations -----------------------------------------------------------
   createMigrationsTable: `
     CREATE TABLE IF NOT EXISTS localwebauthn_migrations (
