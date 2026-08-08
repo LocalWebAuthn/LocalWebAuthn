@@ -211,6 +211,26 @@ describe('issuing an API credential', () => {
     expect(credentials.filter((credential) => credential.kind === null)).toHaveLength(1);
   });
 
+  it('keeps the API credential out of the person passkey list', async () => {
+    const fixture = setup();
+    const person = await signedInPerson(fixture);
+    await mintApiKey(fixture, person.cookie, 'nightly export');
+
+    // Rendering it under "Passkeys" would show it as "Device-bound", which is
+    // precisely the mislabelling `kind` exists to prevent — and would offer a
+    // revoke button under the wrong heading.
+    const response = await fixture.app.fetch(
+      new Request(`${ORIGIN}/api/session`, { headers: { Cookie: person.cookie } }),
+    );
+    const body = (await response.json()) as {
+      passkeys: { label: string }[];
+      client: { passkeyCount: number };
+    };
+    expect(body.passkeys.map((passkey) => passkey.label)).toEqual(['A Person laptop']);
+    // The administrator table's count means "can sign in", so it excludes it too.
+    expect(body.client.passkeyCount).toBe(1);
+  });
+
   it('refuses to mint without a session', async () => {
     const fixture = setup();
     const response = await fixture.app.fetch(post('/api/api-keys/options', {}));

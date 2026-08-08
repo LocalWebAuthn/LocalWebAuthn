@@ -75,7 +75,12 @@ async function clientPayload(
   client: DemoClient,
   authentication: DemoAuthentication,
 ): Promise<ClientPayload> {
-  const passkeyCount = (await authentication.listCredentials(client.id)).length;
+  // Interactive credentials only: the administrator table's "Passkeys" column and
+  // the signup phase both mean "can this person sign in", which an API credential
+  // cannot do.
+  const passkeyCount = (await authentication.listCredentials(client.id)).filter((credential) =>
+    authentication.interactiveKind(credential.kind),
+  ).length;
   const phase = signupPhase({
     hasActiveCredential: passkeyCount > 0,
     // Demo treats "no passkeys yet" as an outstanding invite for admin tables.
@@ -474,14 +479,20 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
     }
     return context.json({
       client: await clientPayload(current, authentication),
-      passkeys: (await authentication.listCredentials(current.id)).map((credential) => ({
-        id: credential.id,
-        label: credential.label,
-        deviceType: credential.deviceType,
-        backedUp: credential.backedUp,
-        createdAt: credential.createdAt,
-        lastUsedAt: credential.lastUsedAt,
-      })),
+      // Interactive kinds only. An API credential belongs in its own section, and
+      // rendering one here would show it as "Device-bound · Last used", which is
+      // exactly the mislabelling the `kind` column exists to prevent — and would
+      // also offer a revoke button under the wrong heading.
+      passkeys: (await authentication.listCredentials(current.id))
+        .filter((credential) => authentication.interactiveKind(credential.kind))
+        .map((credential) => ({
+          id: credential.id,
+          label: credential.label,
+          deviceType: credential.deviceType,
+          backedUp: credential.backedUp,
+          createdAt: credential.createdAt,
+          lastUsedAt: credential.lastUsedAt,
+        })),
     });
   });
 
