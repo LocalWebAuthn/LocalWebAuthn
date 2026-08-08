@@ -70,6 +70,10 @@ CREATE TABLE IF NOT EXISTS localwebauthn_credentials (
   backed_up INTEGER NOT NULL DEFAULT 0 CHECK (backed_up IN (0, 1)),
   label TEXT NOT NULL DEFAULT 'Passkey',
   kind TEXT,
+  created_via TEXT,
+  parent_credential_id TEXT REFERENCES localwebauthn_credentials(id),
+  grant_id TEXT,
+  approved_by_user_id TEXT,
   created_at INTEGER NOT NULL,
   last_used_at INTEGER,
   revoked_at INTEGER
@@ -80,6 +84,9 @@ CREATE INDEX IF NOT EXISTS localwebauthn_credential_user_idx
 
 CREATE INDEX IF NOT EXISTS localwebauthn_credential_kind_idx
   ON localwebauthn_credentials(user_id, kind, revoked_at);
+
+CREATE INDEX IF NOT EXISTS localwebauthn_credential_parent_idx
+  ON localwebauthn_credentials(parent_credential_id);
 
 CREATE TABLE IF NOT EXISTS localwebauthn_sessions (
   id_hash BLOB PRIMARY KEY,
@@ -188,6 +195,10 @@ CREATE TABLE IF NOT EXISTS localwebauthn_credentials (
   backed_up BOOLEAN NOT NULL DEFAULT FALSE,
   label TEXT NOT NULL DEFAULT 'Passkey',
   kind TEXT,
+  created_via TEXT,
+  parent_credential_id TEXT REFERENCES localwebauthn_credentials(id),
+  grant_id TEXT,
+  approved_by_user_id TEXT,
   created_at BIGINT NOT NULL,
   last_used_at BIGINT,
   revoked_at BIGINT
@@ -198,6 +209,9 @@ CREATE INDEX IF NOT EXISTS localwebauthn_credential_user_idx
 
 CREATE INDEX IF NOT EXISTS localwebauthn_credential_kind_idx
   ON localwebauthn_credentials(user_id, kind, revoked_at);
+
+CREATE INDEX IF NOT EXISTS localwebauthn_credential_parent_idx
+  ON localwebauthn_credentials(parent_credential_id);
 
 CREATE TABLE IF NOT EXISTS localwebauthn_sessions (
   id_hash BYTEA PRIMARY KEY,
@@ -238,11 +252,21 @@ var LOCALWEBAUTHN_MIGRATIONS = [
     statements: [
       // Columns first: the grant index below is defined over `credential_kind`.
       "ALTER TABLE localwebauthn_credentials ADD COLUMN kind TEXT",
+      // Heritage. SQLite permits a REFERENCES clause on ADD COLUMN provided the
+      // default is NULL, which it is, so an upgraded database gets the same real
+      // foreign key a fresh one does.
+      "ALTER TABLE localwebauthn_credentials ADD COLUMN created_via TEXT",
+      `ALTER TABLE localwebauthn_credentials
+         ADD COLUMN parent_credential_id TEXT REFERENCES localwebauthn_credentials(id)`,
+      "ALTER TABLE localwebauthn_credentials ADD COLUMN grant_id TEXT",
+      "ALTER TABLE localwebauthn_credentials ADD COLUMN approved_by_user_id TEXT",
       "ALTER TABLE localwebauthn_challenges ADD COLUMN credential_kind TEXT",
       "ALTER TABLE localwebauthn_challenges ADD COLUMN allowed_credential_kinds TEXT",
       "ALTER TABLE localwebauthn_enrollment_grants ADD COLUMN credential_kind TEXT",
       `CREATE INDEX IF NOT EXISTS localwebauthn_credential_kind_idx
          ON localwebauthn_credentials(user_id, kind, revoked_at)`,
+      `CREATE INDEX IF NOT EXISTS localwebauthn_credential_parent_idx
+         ON localwebauthn_credentials(parent_credential_id)`,
       // Re-scope the pending-grant uniqueness from (user_id) to
       // (user_id, kind). Dropping first is required: an index cannot be
       // redefined in place, and the old one would keep enforcing one pending
@@ -265,6 +289,16 @@ function migrationStatements(fromVersion) {
 }
 function localWebAuthnSchemaStatements() {
   return LOCALWEBAUTHN_SCHEMA_SQL.split(";").map((statement) => statement.replace(/\s+/gu, " ").trim()).filter(Boolean);
+}
+function localWebAuthnMigrationsTableStatement(dialect = "sqlite") {
+  const statements = dialect === "postgres" ? localWebAuthnPostgresSchemaStatements() : localWebAuthnSchemaStatements();
+  const statement = statements.find(
+    (candidate) => /^CREATE TABLE IF NOT EXISTS localwebauthn_migrations\b/u.test(candidate)
+  );
+  if (!statement) {
+    throw new Error("The schema no longer declares localwebauthn_migrations.");
+  }
+  return statement;
 }
 function localWebAuthnPostgresSchemaStatements() {
   return LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL.split(";").map((statement) => statement.replace(/\s+/gu, " ").trim()).filter(Boolean);
@@ -297,6 +331,7 @@ export {
   LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL,
   LOCALWEBAUTHN_MIGRATIONS,
   localWebAuthnSchemaStatements,
+  localWebAuthnMigrationsTableStatement,
   localWebAuthnPostgresSchemaStatements,
   localWebAuthnUpgradeStatements,
   localWebAuthnMigrationStatements

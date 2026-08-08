@@ -26,7 +26,11 @@ import {
   type SessionRow,
   sessionFromRow,
 } from './rows.js';
-import { LOCALWEBAUTHN_SCHEMA_VERSION, localWebAuthnUpgradeStatements } from './schema.js';
+import {
+  LOCALWEBAUTHN_SCHEMA_VERSION,
+  localWebAuthnMigrationsTableStatement,
+  localWebAuthnUpgradeStatements,
+} from './schema.js';
 
 export type SqliteRunResult = {
   changes: number;
@@ -72,7 +76,7 @@ export function migrateSqlite(database: SqliteDatabase, now = Date.now()): void 
   database
     .transaction(() => {
       // The version table has to exist before its own version can be read.
-      database.exec(SQL.createMigrationsTable);
+      database.exec(localWebAuthnMigrationsTableStatement('sqlite'));
       const stored = database.prepare(SQL.selectSchemaVersion).get() as
         { version: number | null } | undefined;
       const from = stored?.version ?? 0;
@@ -200,6 +204,20 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
     return row ? credentialFromRow(row) : null;
   }
 
+  async credentialAncestry(userId: string, credentialId: string): Promise<Credential[]> {
+    const rows = this.#database
+      .prepare(SQL.selectCredentialAncestry)
+      .all(credentialId, userId) as CredentialRow[];
+    return rows.map(credentialFromRow);
+  }
+
+  async credentialDescendants(userId: string, credentialId: string): Promise<Credential[]> {
+    const rows = this.#database
+      .prepare(SQL.selectCredentialDescendants)
+      .all(credentialId, userId) as CredentialRow[];
+    return rows.map(credentialFromRow);
+  }
+
   async completeRegistration(input: CompleteRegistrationInput): Promise<boolean> {
     try {
       return this.#database
@@ -221,6 +239,10 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
               credential.backedUp ? 1 : 0,
               credential.label,
               credential.kind,
+              credential.createdVia,
+              credential.parentCredentialId,
+              credential.grantId,
+              credential.approvedByUserId,
               credential.createdAt,
             );
 

@@ -6,11 +6,12 @@ import {
   enrollmentSessionFromRow,
   sessionFromRow,
   toPositionalPlaceholders
-} from "./chunk-4Z5SB2SA.js";
+} from "./chunk-CSU6OHVF.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
+  localWebAuthnMigrationsTableStatement,
   localWebAuthnUpgradeStatements
-} from "./chunk-V2WY6NG6.js";
+} from "./chunk-WLETUGZ6.js";
 
 // src/postgres.ts
 var PG = Object.fromEntries(
@@ -25,7 +26,7 @@ async function migratePostgres(pool, now = Date.now()) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query(SQL.createMigrationsTable);
+    await client.query(localWebAuthnMigrationsTableStatement("postgres"));
     const stored = await client.query(PG.selectSchemaVersion);
     const from = Number(stored.rows[0]?.version ?? 0);
     for (const statement of localWebAuthnUpgradeStatements(from, "postgres")) {
@@ -128,6 +129,20 @@ var PostgresLocalWebAuthnStore = class {
     const row = result.rows.at(0);
     return row ? credentialFromRow(row) : null;
   }
+  async credentialAncestry(userId, credentialId) {
+    const result = await this.#pool.query(PG.selectCredentialAncestry, [
+      credentialId,
+      userId
+    ]);
+    return result.rows.map(credentialFromRow);
+  }
+  async credentialDescendants(userId, credentialId) {
+    const result = await this.#pool.query(PG.selectCredentialDescendants, [
+      credentialId,
+      userId
+    ]);
+    return result.rows.map(credentialFromRow);
+  }
   async completeRegistration(input) {
     try {
       return await this.#transaction(async (tx) => {
@@ -145,6 +160,10 @@ var PostgresLocalWebAuthnStore = class {
           credential.backedUp,
           credential.label,
           credential.kind,
+          credential.createdVia,
+          credential.parentCredentialId,
+          credential.grantId,
+          credential.approvedByUserId,
           credential.createdAt
         ]);
         if (input.challenge.grantId) {

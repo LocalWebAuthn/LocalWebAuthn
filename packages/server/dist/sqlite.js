@@ -4,11 +4,12 @@ import {
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-4Z5SB2SA.js";
+} from "./chunk-CSU6OHVF.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
+  localWebAuthnMigrationsTableStatement,
   localWebAuthnUpgradeStatements
-} from "./chunk-V2WY6NG6.js";
+} from "./chunk-WLETUGZ6.js";
 
 // src/sqlite.ts
 var Rollback = class extends Error {
@@ -16,7 +17,7 @@ var Rollback = class extends Error {
 function migrateSqlite(database, now = Date.now()) {
   database.exec("PRAGMA foreign_keys = ON");
   database.transaction(() => {
-    database.exec(SQL.createMigrationsTable);
+    database.exec(localWebAuthnMigrationsTableStatement("sqlite"));
     const stored = database.prepare(SQL.selectSchemaVersion).get();
     const from = stored?.version ?? 0;
     for (const statement of localWebAuthnUpgradeStatements(from, "sqlite")) {
@@ -84,6 +85,14 @@ var SqliteLocalWebAuthnStore = class {
     const row = this.#database.prepare(SQL.selectCredentialById).get(credentialId);
     return row ? credentialFromRow(row) : null;
   }
+  async credentialAncestry(userId, credentialId) {
+    const rows = this.#database.prepare(SQL.selectCredentialAncestry).all(credentialId, userId);
+    return rows.map(credentialFromRow);
+  }
+  async credentialDescendants(userId, credentialId) {
+    const rows = this.#database.prepare(SQL.selectCredentialDescendants).all(credentialId, userId);
+    return rows.map(credentialFromRow);
+  }
   async completeRegistration(input) {
     try {
       return this.#database.transaction(() => {
@@ -101,6 +110,10 @@ var SqliteLocalWebAuthnStore = class {
           credential.backedUp ? 1 : 0,
           credential.label,
           credential.kind,
+          credential.createdVia,
+          credential.parentCredentialId,
+          credential.grantId,
+          credential.approvedByUserId,
           credential.createdAt
         );
         if (input.challenge.grantId) {

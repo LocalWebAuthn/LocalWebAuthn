@@ -26,7 +26,11 @@ import {
   type SessionRow,
   sessionFromRow,
 } from './rows.js';
-import { LOCALWEBAUTHN_SCHEMA_VERSION, localWebAuthnUpgradeStatements } from './schema.js';
+import {
+  LOCALWEBAUTHN_SCHEMA_VERSION,
+  localWebAuthnMigrationsTableStatement,
+  localWebAuthnUpgradeStatements,
+} from './schema.js';
 
 /** The shared statements with `?` rewritten to PostgreSQL's `$1`, `$2`, … form. */
 const PG: { [Name in keyof typeof SQL]: string } = Object.fromEntries(
@@ -88,7 +92,7 @@ export async function migratePostgres(pool: PostgresPool, now = Date.now()): Pro
   try {
     await client.query('BEGIN');
     // The version table has to exist before its own version can be read.
-    await client.query(SQL.createMigrationsTable);
+    await client.query(localWebAuthnMigrationsTableStatement('postgres'));
     const stored = await client.query<{ version: number | string | null }>(PG.selectSchemaVersion);
     const from = Number(stored.rows[0]?.version ?? 0);
     for (const statement of localWebAuthnUpgradeStatements(from, 'postgres')) {
@@ -227,6 +231,22 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
     return row ? credentialFromRow(row) : null;
   }
 
+  async credentialAncestry(userId: string, credentialId: string): Promise<Credential[]> {
+    const result = await this.#pool.query<CredentialRow>(PG.selectCredentialAncestry, [
+      credentialId,
+      userId,
+    ]);
+    return result.rows.map(credentialFromRow);
+  }
+
+  async credentialDescendants(userId: string, credentialId: string): Promise<Credential[]> {
+    const result = await this.#pool.query<CredentialRow>(PG.selectCredentialDescendants, [
+      credentialId,
+      userId,
+    ]);
+    return result.rows.map(credentialFromRow);
+  }
+
   async completeRegistration(input: CompleteRegistrationInput): Promise<boolean> {
     try {
       return await this.#transaction(async (tx) => {
@@ -245,6 +265,10 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
           credential.backedUp,
           credential.label,
           credential.kind,
+          credential.createdVia,
+          credential.parentCredentialId,
+          credential.grantId,
+          credential.approvedByUserId,
           credential.createdAt,
         ]);
 

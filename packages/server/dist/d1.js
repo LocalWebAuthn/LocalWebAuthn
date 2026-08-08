@@ -5,11 +5,11 @@ import {
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-4Z5SB2SA.js";
+} from "./chunk-CSU6OHVF.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnSchemaStatements
-} from "./chunk-V2WY6NG6.js";
+} from "./chunk-WLETUGZ6.js";
 
 // src/d1.ts
 async function migrateD1(database, now = Date.now()) {
@@ -91,6 +91,14 @@ var D1LocalWebAuthnStore = class {
   async getCredential(credentialId) {
     const row = await this.#database.prepare(SQL.selectCredentialById).bind(credentialId).first();
     return row ? credentialFromRow(row) : null;
+  }
+  async credentialAncestry(userId, credentialId) {
+    const result = await this.#database.prepare(SQL.selectCredentialAncestry).bind(credentialId, userId).all();
+    return result.results.map(credentialFromRow);
+  }
+  async credentialDescendants(userId, credentialId) {
+    const result = await this.#database.prepare(SQL.selectCredentialDescendants).bind(credentialId, userId).all();
+    return result.results.map(credentialFromRow);
   }
   async completeRegistration(input) {
     const { credential, challenge, enrollmentSessionHash, authenticatedSessionHash, session, now } = input;
@@ -242,6 +250,10 @@ var D1LocalWebAuthnStore = class {
       credential.backedUp ? 1 : 0,
       credential.label,
       credential.kind,
+      credential.createdVia,
+      credential.parentCredentialId,
+      credential.grantId,
+      credential.approvedByUserId,
       credential.createdAt
     ];
   }

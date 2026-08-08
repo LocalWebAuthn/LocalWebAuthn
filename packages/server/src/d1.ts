@@ -210,6 +210,22 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
     return row ? credentialFromRow(row) : null;
   }
 
+  async credentialAncestry(userId: string, credentialId: string): Promise<Credential[]> {
+    const result = await this.#database
+      .prepare(SQL.selectCredentialAncestry)
+      .bind(credentialId, userId)
+      .all<CredentialRow>();
+    return result.results.map(credentialFromRow);
+  }
+
+  async credentialDescendants(userId: string, credentialId: string): Promise<Credential[]> {
+    const result = await this.#database
+      .prepare(SQL.selectCredentialDescendants)
+      .bind(credentialId, userId)
+      .all<CredentialRow>();
+    return result.results.map(credentialFromRow);
+  }
+
   async completeRegistration(input: CompleteRegistrationInput): Promise<boolean> {
     const { credential, challenge, enrollmentSessionHash, authenticatedSessionHash, session, now } =
       input;
@@ -439,6 +455,10 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
       credential.backedUp ? 1 : 0,
       credential.label,
       credential.kind,
+      credential.createdVia,
+      credential.parentCredentialId,
+      credential.grantId,
+      credential.approvedByUserId,
       credential.createdAt,
     ];
   }

@@ -57,10 +57,12 @@ export const SQL = {
       AND completed_at IS NULL
       AND revoked_at IS NULL
       AND expires_at > ?
-    RETURNING id, user_id, session_hash, session_expires_at, credential_kind`,
+    RETURNING id, user_id, session_hash, session_expires_at, credential_kind,
+              approved_by_user_id`,
 
   selectEnrollmentSession: `
-    SELECT id, user_id, session_hash, session_expires_at, credential_kind
+    SELECT id, user_id, session_hash, session_expires_at, credential_kind,
+           approved_by_user_id
     FROM localwebauthn_enrollment_grants
     WHERE session_hash = ?
       AND session_expires_at > ?
@@ -103,7 +105,8 @@ export const SQL = {
   selectCredentialsForUser: `
     SELECT
       id, user_id, public_key, counter, transports_json, device_type,
-      backed_up, label, kind, created_at, last_used_at, revoked_at
+      backed_up, label, kind, created_via, parent_credential_id, grant_id,
+      approved_by_user_id, created_at, last_used_at, revoked_at
     FROM localwebauthn_credentials
     WHERE user_id = ? AND (? = 1 OR revoked_at IS NULL)
     ORDER BY created_at, id`,
@@ -111,15 +114,84 @@ export const SQL = {
   selectCredentialById: `
     SELECT
       id, user_id, public_key, counter, transports_json, device_type,
-      backed_up, label, kind, created_at, last_used_at, revoked_at
+      backed_up, label, kind, created_via, parent_credential_id, grant_id,
+      approved_by_user_id, created_at, last_used_at, revoked_at
     FROM localwebauthn_credentials
     WHERE id = ?`,
 
   insertCredential: `
     INSERT INTO localwebauthn_credentials(
       id, user_id, public_key, counter, transports_json,
-      device_type, backed_up, label, kind, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      device_type, backed_up, label, kind, created_via,
+      parent_credential_id, grant_id, approved_by_user_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+
+  // -- Credential heritage --------------------------------------------------
+  //
+  // Every credential this package creates was authorized either by an enrollment
+  // grant or by an existing credential's session, and both are known at
+  // registration. Recording them makes the chain queryable afterwards, which the
+  // ephemeral rows never allowed: consumed challenges are reaped on the next
+  // cleanup and completed grants on the one after, so the linkage used to vanish
+  // within minutes.
+  //
+  // `WITH RECURSIVE` is available in SQLite 3.8.3+ and PostgreSQL, so these run
+  // unchanged on all three adapters.
+  //
+  // The `depth < 64` guard cannot trigger on well-formed data: a credential can
+  // only be created by one that already exists, so the graph is acyclic by
+  // construction. It is there because an unbounded recursive query is a hang, and
+  // a hang is a worse failure than a truncated answer.
+
+  /**
+   * A credential and its ancestors, root first.
+   *
+   * Binds: credentialId, userId. Depth counts upward from the subject, so the
+   * `ORDER BY` reverses it to put the root -- the credential that came from an
+   * enrollment grant -- at the top.
+   */
+  selectCredentialAncestry: `
+    WITH RECURSIVE localwebauthn_ancestry(id, depth) AS (
+      SELECT id, 0 FROM localwebauthn_credentials WHERE id = ? AND user_id = ?
+      UNION ALL
+      SELECT credentials.parent_credential_id, localwebauthn_ancestry.depth + 1
+      FROM localwebauthn_credentials AS credentials
+      JOIN localwebauthn_ancestry ON credentials.id = localwebauthn_ancestry.id
+      WHERE credentials.parent_credential_id IS NOT NULL AND localwebauthn_ancestry.depth < 64
+    )
+    SELECT
+      id, user_id, public_key, counter, transports_json, device_type,
+      backed_up, label, kind, created_via, parent_credential_id, grant_id,
+      approved_by_user_id, created_at, last_used_at, revoked_at
+    FROM localwebauthn_ancestry
+    JOIN localwebauthn_credentials USING (id)
+    ORDER BY localwebauthn_ancestry.depth DESC`,
+
+  /**
+   * A credential and everything descended from it, nearest first.
+   *
+   * Depth 0 is the credential itself, so this is the exact set the tree revoke
+   * acts on.
+   *
+   * Binds: credentialId, userId.
+   */
+  selectCredentialDescendants: `
+    WITH RECURSIVE localwebauthn_descendants(id, depth) AS (
+      SELECT id, 0 FROM localwebauthn_credentials WHERE id = ? AND user_id = ?
+      UNION ALL
+      SELECT credentials.id, localwebauthn_descendants.depth + 1
+      FROM localwebauthn_credentials AS credentials
+      JOIN localwebauthn_descendants
+        ON credentials.parent_credential_id = localwebauthn_descendants.id
+      WHERE localwebauthn_descendants.depth < 64
+    )
+    SELECT
+      id, user_id, public_key, counter, transports_json, device_type,
+      backed_up, label, kind, created_via, parent_credential_id, grant_id,
+      approved_by_user_id, created_at, last_used_at, revoked_at
+    FROM localwebauthn_descendants
+    JOIN localwebauthn_credentials USING (id)
+    ORDER BY localwebauthn_descendants.depth, id`,
 
   /**
    * Compare-and-swap the signature counter.
@@ -417,12 +489,6 @@ export const SQL = {
 
   // -- Migrations -----------------------------------------------------------
 
-  createMigrationsTable: `
-    CREATE TABLE IF NOT EXISTS localwebauthn_migrations (
-      version INTEGER PRIMARY KEY,
-      applied_at INTEGER NOT NULL
-    )`,
-
   /** Highest applied schema version, or no rows on a fresh database. */
   selectSchemaVersion: `
     SELECT MAX(version) AS version FROM localwebauthn_migrations`,
@@ -446,13 +512,14 @@ export const SQL = {
  * path it is on, so neither statement carries the other's parameters.
  */
 export const D1_SQL = {
-  /** Grant path: 10 credential columns, then grant id, user id, session hash, now. */
+  /** Grant path: 14 credential columns, then grant id, user id, session hash, now. */
   insertCredentialIfGrantValid: `
     INSERT INTO localwebauthn_credentials(
       id, user_id, public_key, counter, transports_json,
-      device_type, backed_up, label, kind, created_at
+      device_type, backed_up, label, kind, created_via,
+      parent_credential_id, grant_id, approved_by_user_id, created_at
     )
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     WHERE EXISTS (
       SELECT 1 FROM localwebauthn_enrollment_grants
       WHERE id = ?
@@ -463,13 +530,14 @@ export const D1_SQL = {
         AND revoked_at IS NULL
     )`,
 
-  /** Session path: 10 credential columns, then session hash, user id, now. */
+  /** Session path: 14 credential columns, then session hash, user id, now. */
   insertCredentialIfSessionValid: `
     INSERT INTO localwebauthn_credentials(
       id, user_id, public_key, counter, transports_json,
-      device_type, backed_up, label, kind, created_at
+      device_type, backed_up, label, kind, created_via,
+      parent_credential_id, grant_id, approved_by_user_id, created_at
     )
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     WHERE EXISTS (
       SELECT 1
       FROM localwebauthn_sessions AS sessions

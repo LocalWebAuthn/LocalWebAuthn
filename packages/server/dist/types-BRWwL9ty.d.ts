@@ -80,6 +80,43 @@ type Credential = {
      * hangs off it.
      */
     kind: string | null;
+    /**
+     * How this credential came to exist: from an enrollment grant, or authorized by
+     * an existing credential's session.
+     *
+     * `null` for credentials registered before heritage was recorded — honestly
+     * "unknown" rather than guessed, since the rows that carried the answer were
+     * ephemeral and are long gone.
+     */
+    createdVia: CredentialProvenance | null;
+    /**
+     * The credential whose session authorized this one, when `createdVia` is
+     * `'credential'`.
+     *
+     * A real foreign key, which is only safe because credentials are never deleted —
+     * cleanup does not touch them and revocation only stamps `revokedAt` — so a
+     * heritage chain never breaks.
+     *
+     * This is what makes a compromise remediable. A stolen session can enroll another
+     * passkey (that is the intended "add a passkey" feature for a person), and
+     * without a parent link the new credential is indistinguishable from a legitimate
+     * one after the fact. See {@link LocalWebAuthn.revokeCredentialTree}.
+     */
+    parentCredentialId: string | null;
+    /**
+     * The enrollment grant that authorized this credential, when `createdVia` is
+     * `'enrollment'`.
+     *
+     * Deliberately *not* a foreign key: grants are reaped by `cleanup`, so this is a
+     * copied fact about the past rather than a live reference.
+     */
+    grantId: string | null;
+    /**
+     * Who approved the enrollment, copied off the grant so it outlives the grant
+     * row. `null` on the credential path, where nobody approved anything — an
+     * existing credential authorized itself a sibling.
+     */
+    approvedByUserId: string | null;
     /** Unix-millisecond timestamp of registration. */
     createdAt: number;
     /** Unix-millisecond timestamp of last authentication, or `null`. */
@@ -142,8 +179,19 @@ type EnrollmentSession = {
     sessionExpiresAt: number;
     /** From the grant; see {@link EnrollmentGrantRecord.credentialKind}. */
     credentialKind: string | null;
+    /** From the grant, copied onto the credential so it outlives the grant row. */
+    approvedByUserId: string | null;
 };
 type ChallengeKind = 'registration' | 'authentication';
+/**
+ * How a credential was authorized into existence.
+ *
+ * - `'enrollment'` — a single-use enrollment grant, i.e. somebody with authority
+ *   issued a token out of band.
+ * - `'credential'` — an existing credential's live session, i.e. "add another
+ *   passkey while signed in".
+ */
+type CredentialProvenance = 'enrollment' | 'credential';
 type ChallengeRecord = {
     idHash: Uint8Array;
     kind: ChallengeKind;
@@ -284,6 +332,20 @@ type LocalWebAuthnStore = {
     listCredentials(userId: string, includeRevoked?: boolean): Promise<Credential[]>;
     /** Look up a single credential by its WebAuthn credential ID. */
     getCredential(credentialId: string): Promise<Credential | null>;
+    /**
+     * A credential and its ancestors, root first.
+     *
+     * The root is the credential that came from an enrollment grant. Returns an
+     * empty array when the credential does not exist or belongs to another user.
+     */
+    credentialAncestry(userId: string, credentialId: string): Promise<Credential[]>;
+    /**
+     * A credential and everything descended from it, nearest first.
+     *
+     * Index 0 is the credential itself, so this is exactly the set
+     * {@link LocalWebAuthn.revokeCredentialTree} acts on.
+     */
+    credentialDescendants(userId: string, credentialId: string): Promise<Credential[]>;
     /**
      * Atomically insert a credential, complete its enrollment grant (if any),
      * and create the initial session.

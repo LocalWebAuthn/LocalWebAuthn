@@ -44,6 +44,10 @@ function credential(id: string, userId = 'user-1') {
     backedUp: true,
     label: 'Primary passkey',
     kind: null,
+    createdVia: 'enrollment' as const,
+    parentCredentialId: null,
+    grantId: 'grant-1',
+    approvedByUserId: 'admin-1',
     createdAt: now,
   };
 }
@@ -193,6 +197,78 @@ function storeConformance(
 ) {
   const suite = options.skip ? describe.skip : describe;
   suite(`${name} store`, () => {
+    it('walks credential heritage in both directions', async () => {
+      const fixture = await createFixture();
+      try {
+        // root <- child <- grandchild, plus a sibling of child under root.
+        await exchangedGrant(fixture.store);
+        await fixture.store.completeRegistration(registrationInput('grant-1'));
+        const link = async (id: string, parent: string, byte: number) => {
+          await fixture.store.completeRegistration({
+            ...registrationInput('grant-1'),
+            challenge: {
+              kind: 'registration',
+              challenge: 'registration-challenge',
+              userId: 'user-1',
+              grantId: null,
+              authorizationSessionHash: bytes(4),
+              credentialKind: null,
+              allowedCredentialKinds: null,
+            },
+            enrollmentSessionHash: null,
+            authenticatedSessionHash: bytes(4),
+            credential: {
+              ...credential(id),
+              createdVia: 'credential' as const,
+              parentCredentialId: parent,
+              grantId: null,
+              approvedByUserId: null,
+            },
+            session: {
+              idHash: bytes(byte),
+              userId: 'user-1',
+              credentialId: id,
+              authenticatedAt: now,
+              expiresAt: now + 10_000,
+              lastSeenAt: now,
+            },
+          });
+        };
+        await link('credential-2', 'credential-1', 20);
+        await link('credential-3', 'credential-2', 21);
+        await link('credential-sibling', 'credential-1', 22);
+
+        // Ancestry is root first, so the enrollment-derived credential leads.
+        const ancestry = await fixture.store.credentialAncestry('user-1', 'credential-3');
+        expect(ancestry.map((entry) => entry.id)).toEqual([
+          'credential-1',
+          'credential-2',
+          'credential-3',
+        ]);
+        expect(ancestry[0]).toMatchObject({ createdVia: 'enrollment', grantId: 'grant-1' });
+
+        // Descendants include the subject at index 0 and exclude the sibling.
+        const subtree = await fixture.store.credentialDescendants('user-1', 'credential-2');
+        expect(subtree.map((entry) => entry.id)).toEqual(['credential-2', 'credential-3']);
+
+        const whole = await fixture.store.credentialDescendants('user-1', 'credential-1');
+        expect(whole.map((entry) => entry.id).sort()).toEqual([
+          'credential-1',
+          'credential-2',
+          'credential-3',
+          'credential-sibling',
+        ]);
+
+        // Scoped by user, and quiet about credentials that do not exist.
+        await expect(fixture.store.credentialAncestry('other', 'credential-3')).resolves.toEqual(
+          [],
+        );
+        await expect(fixture.store.credentialDescendants('user-1', 'nope')).resolves.toEqual([]);
+      } finally {
+        await fixture.close();
+      }
+    });
+
     it('converges on one DPoP nonce per slot', async () => {
       const fixture = await createFixture();
       try {

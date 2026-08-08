@@ -1,4 +1,4 @@
-import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, g as RevokeCredentialResult, h as CleanupResult } from './types-DdbmOKqa.js';
+import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, g as RevokeCredentialResult, h as CleanupResult } from './types-BRWwL9ty.js';
 import '@simplewebauthn/server';
 
 type PostgresQueryResult<Row> = {
@@ -55,6 +55,8 @@ declare class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
     consumeChallenge(idHash: Uint8Array, kind: ChallengeKind, now: number): Promise<ConsumedChallenge | null>;
     listCredentials(userId: string, includeRevoked?: boolean): Promise<Credential[]>;
     getCredential(credentialId: string): Promise<Credential | null>;
+    credentialAncestry(userId: string, credentialId: string): Promise<Credential[]>;
+    credentialDescendants(userId: string, credentialId: string): Promise<Credential[]>;
     completeRegistration(input: CompleteRegistrationInput): Promise<boolean>;
     completeAuthentication(input: CompleteAuthenticationInput): Promise<boolean>;
     resolveSession(idHash: Uint8Array, now: number, idleExpiresBefore: number): Promise<SessionIdentity | null>;

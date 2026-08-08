@@ -281,6 +281,169 @@ describe('restrictions on API credentials', () => {
   });
 });
 
+describe('credential heritage', () => {
+  it('records where a credential came from, and when', async () => {
+    const { auth } = harness();
+    const issue = await auth.issueEnrollment('user-1', 'admin-1');
+    const exchange = await auth.exchangeEnrollment(issue.enrollmentToken);
+    const root = await enroll(
+      auth,
+      undefined,
+      exchange.enrollmentSessionToken,
+      undefined,
+      'laptop',
+    );
+    const child = await enroll(auth, root.verified.sessionToken, undefined, undefined, 'phone');
+
+    const credentials = await auth.listCredentials('user-1');
+    const rootRow = credentials.find((c) => c.id === root.verified.credentialId);
+    const childRow = credentials.find((c) => c.id === child.verified.credentialId);
+
+    // The root came from an enrollment token somebody with authority issued.
+    expect(rootRow).toMatchObject({
+      createdVia: 'enrollment',
+      grantId: issue.grantId,
+      approvedByUserId: 'admin-1',
+      parentCredentialId: null,
+    });
+    // The child was authorized by the root's session.
+    expect(childRow).toMatchObject({
+      createdVia: 'credential',
+      parentCredentialId: root.verified.credentialId,
+      grantId: null,
+      approvedByUserId: null,
+    });
+    // "When" was already answered.
+    expect(childRow?.createdAt).toBeGreaterThanOrEqual(rootRow?.createdAt ?? 0);
+  });
+
+  it('walks the chain back to the enrollment that started it', async () => {
+    const { auth } = harness();
+    const issue = await auth.issueEnrollment('user-1', 'admin-1');
+    const exchange = await auth.exchangeEnrollment(issue.enrollmentToken);
+    const a = await enroll(auth, undefined, exchange.enrollmentSessionToken, undefined, 'a');
+    const b = await enroll(auth, a.verified.sessionToken, undefined, undefined, 'b');
+    const c = await enroll(auth, b.verified.sessionToken, undefined, undefined, 'c');
+
+    const lineage = await auth.credentialLineage('user-1', c.verified.credentialId);
+    // Root first, so the first entry is the one an administrator approved.
+    expect(lineage.map((credential) => credential.label)).toEqual(['a', 'b', 'c']);
+    expect(lineage[0].createdVia).toBe('enrollment');
+    expect(lineage[0].approvedByUserId).toBe('admin-1');
+
+    // The root's own lineage is just itself.
+    await expect(auth.credentialLineage('user-1', a.verified.credentialId)).resolves.toHaveLength(
+      1,
+    );
+    // An unknown credential, or another user's, yields nothing.
+    await expect(auth.credentialLineage('user-1', 'nope')).resolves.toEqual([]);
+    await expect(auth.credentialLineage('other', c.verified.credentialId)).resolves.toEqual([]);
+  });
+
+  it('survives the cleanup that used to destroy the trail', async () => {
+    const { auth } = harness();
+    const issue = await auth.issueEnrollment('user-1', 'admin-1');
+    const exchange = await auth.exchangeEnrollment(issue.enrollmentToken);
+    const root = await enroll(auth, undefined, exchange.enrollmentSessionToken, undefined, 'root');
+    const child = await enroll(auth, root.verified.sessionToken, undefined, undefined, 'child');
+
+    // Consumed challenges go on the first pass, the completed grant on the second.
+    // Those rows were the only thing that ever linked these two.
+    await auth.cleanup();
+    await auth.cleanup();
+
+    const lineage = await auth.credentialLineage('user-1', child.verified.credentialId);
+    expect(lineage.map((credential) => credential.label)).toEqual(['root', 'child']);
+    expect(lineage[0].grantId).toBe(issue.grantId);
+  });
+
+  it('reports the blast radius of a compromised credential', async () => {
+    const { auth } = harness();
+    const issue = await auth.issueEnrollment('user-1');
+    const exchange = await auth.exchangeEnrollment(issue.enrollmentToken);
+    const root = await enroll(auth, undefined, exchange.enrollmentSessionToken, undefined, 'root');
+    const stolen = await enroll(auth, root.verified.sessionToken, undefined, undefined, 'stolen');
+    await enroll(auth, stolen.verified.sessionToken, undefined, undefined, 'spawn');
+    // A sibling of the compromised credential is not in its subtree.
+    await enroll(auth, root.verified.sessionToken, undefined, undefined, 'sibling');
+
+    const subtree = await auth.credentialDescendants('user-1', stolen.verified.credentialId);
+    expect(subtree.map((credential) => credential.label)).toEqual(['stolen', 'spawn']);
+
+    const wholeTree = await auth.credentialDescendants('user-1', root.verified.credentialId);
+    expect(wholeTree.map((credential) => credential.label).sort()).toEqual([
+      'root',
+      'sibling',
+      'spawn',
+      'stolen',
+    ]);
+  });
+
+  it('revokes a compromised credential together with what it enrolled', async () => {
+    const { auth } = harness();
+    const issue = await auth.issueEnrollment('user-1');
+    const exchange = await auth.exchangeEnrollment(issue.enrollmentToken);
+    const root = await enroll(auth, undefined, exchange.enrollmentSessionToken, undefined, 'root');
+    // The attack: a stolen session enrols a passkey of the attacker's own, which is
+    // the intended "add a passkey" feature and so cannot simply be forbidden.
+    const stolen = await enroll(auth, root.verified.sessionToken, undefined, undefined, 'stolen');
+    const spawn = await enroll(auth, stolen.verified.sessionToken, undefined, undefined, 'spawn');
+
+    const revoked = await auth.revokeCredentialTree('user-1', stolen.verified.credentialId);
+    expect(revoked).toEqual([stolen.verified.credentialId, spawn.verified.credentialId]);
+
+    const active = await auth.listCredentials('user-1');
+    expect(active.map((credential) => credential.label)).toEqual(['root']);
+
+    // Idempotent: a second call finds nothing left to revoke.
+    await expect(
+      auth.revokeCredentialTree('user-1', stolen.verified.credentialId),
+    ).resolves.toEqual([]);
+  });
+
+  it('will empty the account rather than leave a half-revoked tree', async () => {
+    const { auth } = harness();
+    const issue = await auth.issueEnrollment('user-1');
+    const exchange = await auth.exchangeEnrollment(issue.enrollmentToken);
+    const root = await enroll(auth, undefined, exchange.enrollmentSessionToken, undefined, 'root');
+    await enroll(auth, root.verified.sessionToken, undefined, undefined, 'child');
+
+    // Stopping short of the last credential would leave a partially revoked
+    // subtree, which after a compromise is worse than requiring re-enrollment.
+    const revoked = await auth.revokeCredentialTree('user-1', root.verified.credentialId);
+    expect(revoked).toHaveLength(2);
+    await expect(auth.listCredentials('user-1')).resolves.toEqual([]);
+  });
+
+  it('leaves pre-heritage credentials honestly unknown', async () => {
+    const { auth, database } = harness();
+    const issue = await auth.issueEnrollment('user-1');
+    const exchange = await auth.exchangeEnrollment(issue.enrollmentToken);
+    const root = await enroll(
+      auth,
+      undefined,
+      exchange.enrollmentSessionToken,
+      undefined,
+      'legacy',
+    );
+    // Simulate a row registered before heritage existed.
+    database
+      .prepare(
+        `UPDATE localwebauthn_credentials
+         SET created_via = NULL, grant_id = NULL, approved_by_user_id = NULL
+         WHERE id = ?`,
+      )
+      .run(root.verified.credentialId);
+
+    const [credential] = await auth.listCredentials('user-1');
+    expect(credential.createdVia).toBeNull();
+    // The walk still terminates, reporting the credential itself and nothing more.
+    await expect(
+      auth.credentialLineage('user-1', root.verified.credentialId),
+    ).resolves.toHaveLength(1);
+  });
+});
+
 describe('the kind on an enrollment grant', () => {
   /** Register through the grant path at a route that passes no kind of its own. */
   async function redeem(auth: LocalWebAuthn, token: string, routeKind?: string) {

@@ -23,6 +23,10 @@ export type CredentialRow = {
   backed_up: BooleanColumn;
   label: string;
   kind: string | null;
+  created_via: string | null;
+  parent_credential_id: string | null;
+  grant_id: string | null;
+  approved_by_user_id: string | null;
   created_at: NumericColumn;
   last_used_at: NumericColumn | null;
   revoked_at: NumericColumn | null;
@@ -44,6 +48,7 @@ export type EnrollmentSessionRow = {
   session_hash: unknown;
   session_expires_at: NumericColumn;
   credential_kind: string | null;
+  approved_by_user_id: string | null;
 };
 
 export type SessionRow = {
@@ -107,6 +112,11 @@ export function credentialFromRow(row: CredentialRow): Credential {
     backedUp: row.backed_up === 1 || row.backed_up === true,
     label: row.label,
     kind: row.kind,
+    createdVia:
+      row.created_via === 'enrollment' || row.created_via === 'credential' ? row.created_via : null,
+    parentCredentialId: row.parent_credential_id,
+    grantId: row.grant_id,
+    approvedByUserId: row.approved_by_user_id,
     createdAt: toNumber(row.created_at),
     lastUsedAt: toNullableNumber(row.last_used_at),
     revokedAt: toNullableNumber(row.revoked_at),
@@ -155,6 +165,7 @@ export function enrollmentSessionFromRow(row: EnrollmentSessionRow): EnrollmentS
     sessionHash: toBytes(row.session_hash),
     sessionExpiresAt: toNumber(row.session_expires_at),
     credentialKind: row.credential_kind,
+    approvedByUserId: row.approved_by_user_id,
   };
 }
 

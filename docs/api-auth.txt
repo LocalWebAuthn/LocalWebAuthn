@@ -111,6 +111,12 @@ _________________
     the class it may create, plus the pending-grant index scoped by it
     so provisioning a deployment key does not cancel a person's
     in-flight enrollment link.
+  - Credential heritage: `created_via', `parent_credential_id',
+    `grant_id' and `approved_by_user_id', with `credentialLineage',
+    `credentialDescendants' and `revokeCredentialTree'.  The last is the
+    remediation primitive for a stolen session that enrolled a passkey
+    of its own --- which `canRegister' does not prevent for a person,
+    because adding a passkey while signed in is the feature.
   - Kind filters on `revokeUserSessions' and `revokeUserAuthentication',
     so signing a person out of their devices does not stop their nightly
     export.

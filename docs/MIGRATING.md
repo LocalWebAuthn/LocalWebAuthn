@@ -12,6 +12,9 @@ a 1.x database upgrades it in place. Adding a column is why that machinery had t
 Version 2 adds:
 
 - `localwebauthn_credentials.kind` — nullable, host-defined credential class.
+- `localwebauthn_credentials.created_via`, `parent_credential_id`, `grant_id` and
+  `approved_by_user_id` — credential heritage, plus
+  `localwebauthn_credential_parent_idx` for the descendant walk.
 - `localwebauthn_challenges.credential_kind` — the kind a registration ceremony creates.
 - `localwebauthn_challenges.allowed_credential_kinds` — JSON array of kinds an
   authentication ceremony accepts; `NULL` is unconstrained.
@@ -161,6 +164,44 @@ now report `credentialKind`, as does `SessionIdentity`.
 the new `registration_not_permitted` code. That closes a hole older than this release: any
 live session could authorize registering another credential, so a leaked machine key could
 mint a spare and outlive revocation of the first, making revocation useless as a remedy.
+
+### Credential heritage
+
+Every credential this package creates was authorized either by an enrollment grant or by
+an existing credential's session, and both were known at registration and then thrown
+away. The linkage lived on the challenge row (`grant_id`, `authorization_session_hash`)
+and cleanup reaps consumed challenges on its next pass and completed grants on the one
+after, so provenance used to vanish within minutes.
+
+Four columns now record it, and the interesting part is that the credential must **copy**
+what it needs, because everything else it could point at is ephemeral by design:
+
+- `parent_credential_id` is a real foreign key — safe only because credentials are never
+  deleted, so a chain never breaks.
+- `grant_id` and `approved_by_user_id` are **not** foreign keys: grants are reaped, so
+  these are copied facts about the past.
+
+```ts
+await auth.credentialLineage(userId, credentialId); // root first, back to the enrollment
+await auth.credentialDescendants(userId, credentialId); // index 0 is the credential itself
+await auth.revokeCredentialTree(userId, credentialId); // the remediation primitive
+```
+
+`revokeCredentialTree` exists because of a live attack that `canRegister` does not
+address. A stolen session can enroll another passkey — that is the intended "add a
+passkey" feature for a person, and `canRegister` only restrains non-interactive kinds — so
+revoking the credential you suspect leaves the attacker's behind, indistinguishable from a
+legitimate one after the fact. It revokes with `allowLastCredential` and may therefore
+empty the account: stopping short would leave a half-revoked subtree, which after a
+compromise is worse than requiring re-enrollment.
+
+Credentials registered before this keep `created_via: NULL` — honestly unknown rather than
+guessed, since the rows that held the answer are long gone. Custom stores add
+`credentialAncestry` and `credentialDescendants`, both `WITH RECURSIVE` (SQLite 3.8.3+ and
+PostgreSQL, so unchanged across all three adapters) with a `depth < 64` guard. The guard
+cannot trigger on well-formed data, since a credential can only be created by one that
+already exists; it is there because an unbounded recursive query is a hang, and a hang is a
+worse failure than a truncated answer.
 
 ### Hosts must gate their session middleware on credential kind
 

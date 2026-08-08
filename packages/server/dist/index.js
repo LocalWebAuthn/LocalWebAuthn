@@ -832,6 +832,14 @@ var LocalWebAuthn = class {
         // Taken from the challenge, which the host wrote before the client saw
         // it — never from `input`, which is shaped by the request body.
         kind: challenge.credentialKind,
+        // Heritage, from the authorization that permitted this registration. The
+        // rows that carry it — the consumed challenge, the completed grant, the
+        // authorizing session — are all reaped within minutes, so this is the only
+        // durable record of where the credential came from.
+        createdVia: authorization.grantId === null ? "credential" : "enrollment",
+        parentCredentialId: authorization.parentCredentialId,
+        grantId: authorization.grantId,
+        approvedByUserId: authorization.approvedByUserId,
         createdAt: now
       },
       session: {
@@ -1167,6 +1175,69 @@ var LocalWebAuthn = class {
   interactiveKind(kind) {
     return kindPolicy(this.config, kind).interactive;
   }
+  /**
+   * A credential and its ancestors, root first.
+   *
+   * The root is whichever credential came from an enrollment grant, so the chain
+   * answers "who authorized this, and who authorized them" back to an
+   * out-of-band approval. Credentials registered before heritage was recorded
+   * have `parentCredentialId: null` and terminate the walk early with
+   * `createdVia: null` — unknown rather than guessed.
+   *
+   * Returns `[]` for an unknown credential, or one belonging to another user.
+   */
+  credentialLineage(userId, credentialId) {
+    return this.#store.credentialAncestry(userId, credentialId);
+  }
+  /**
+   * A credential and everything descended from it, nearest first.
+   *
+   * Index 0 is the credential itself. This is the blast radius of a compromised
+   * credential: everything it was used to enroll, and everything those enrolled.
+   */
+  credentialDescendants(userId, credentialId) {
+    return this.#store.credentialDescendants(userId, credentialId);
+  }
+  /**
+   * Revoke a credential and every credential descended from it.
+   *
+   * The remediation primitive for a compromised credential. A stolen session can
+   * enroll another passkey — that is the intended "add a passkey" feature for a
+   * person, and `canRegister` only restrains non-interactive kinds — so revoking
+   * the credential you suspect can leave the attacker's behind, indistinguishable
+   * from a legitimate one after the fact. This revokes the subtree.
+   *
+   * Revokes with `allowLastCredential`, because stopping short of emptying the
+   * account would leave a partially-revoked tree, which is worse than requiring
+   * re-enrollment after a compromise. The account may therefore be left with no
+   * usable credential; that is the intent.
+   *
+   * @returns IDs actually revoked, root first. Already-revoked ones are skipped.
+   */
+  async revokeCredentialTree(userId, credentialId) {
+    const now = this.#now();
+    const subtree = await this.#store.credentialDescendants(userId, credentialId);
+    const revoked = [];
+    for (const credential of subtree) {
+      if (credential.revokedAt !== null) {
+        continue;
+      }
+      const result = await this.#store.revokeCredential(userId, credential.id, now, {
+        allowLastCredential: true
+      });
+      if (result === "revoked") {
+        revoked.push(credential.id);
+        await this.#emit({
+          type: "credential.revoked",
+          at: now,
+          userId,
+          credentialId: credential.id,
+          credentialKind: credential.kind
+        });
+      }
+    }
+    return revoked;
+  }
   /** List a user's credentials; revoked ones only when `includeRevoked` is `true`. */
   listCredentials(userId, includeRevoked = false) {
     return this.#store.listCredentials(userId, includeRevoked);
@@ -1271,7 +1342,9 @@ var LocalWebAuthn = class {
           grantId: enrollment.grantId,
           enrollmentSessionHash,
           authenticatedSessionHash: null,
-          grantCredentialKind: enrollment.credentialKind
+          grantCredentialKind: enrollment.credentialKind,
+          approvedByUserId: enrollment.approvedByUserId,
+          parentCredentialId: null
         };
       }
     } else if (input.sessionToken) {
@@ -1290,7 +1363,11 @@ var LocalWebAuthn = class {
           grantId: null,
           enrollmentSessionHash: null,
           authenticatedSessionHash,
-          grantCredentialKind: null
+          grantCredentialKind: null,
+          approvedByUserId: null,
+          // The session that authorized this registration knows which credential
+          // opened it, so the parent link costs no extra lookup.
+          parentCredentialId: resolved.session.credentialId
         };
       }
     }
@@ -1428,7 +1505,13 @@ var LocalWebAuthn = class {
         enrollmentSessionHash,
         this.#now()
       );
-      return enrollment?.grantId === challenge.grantId ? { enrollmentSessionHash, authenticatedSessionHash: null } : null;
+      return enrollment?.grantId === challenge.grantId ? {
+        enrollmentSessionHash,
+        authenticatedSessionHash: null,
+        grantId: enrollment.grantId,
+        approvedByUserId: enrollment.approvedByUserId,
+        parentCredentialId: null
+      } : null;
     }
     if (challenge.authorizationSessionHash && input.sessionToken) {
       const authenticatedSessionHash = await sha256(input.sessionToken);
@@ -1436,7 +1519,16 @@ var LocalWebAuthn = class {
         return null;
       }
       const session = await this.resolveSession(input.sessionToken, false);
-      return session ? { enrollmentSessionHash: null, authenticatedSessionHash } : null;
+      return session ? {
+        enrollmentSessionHash: null,
+        authenticatedSessionHash,
+        grantId: null,
+        approvedByUserId: null,
+        // Re-read here rather than carried from `registrationOptions`: this is
+        // the session that still holds at commit time, which is the one that
+        // actually authorized the credential.
+        parentCredentialId: session.session.credentialId
+      } : null;
     }
     return null;
   }

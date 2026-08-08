@@ -3,9 +3,11 @@
  *
  * - `1` — the original tables. The only version ever released.
  * - `2` — everything machine credentials need, as one step: `kind` on
- *   credentials, per-ceremony kind scoping on challenges, `credential_kind` on
- *   enrollment grants with the pending-grant uniqueness re-scoped by it, and the
- *   DPoP proof-replay and nonce-slot tables. See {@link LOCALWEBAUTHN_MIGRATIONS}.
+ *   credentials, credential heritage (`created_via`, `parent_credential_id`,
+ *   `grant_id`, `approved_by_user_id`), per-ceremony kind scoping on challenges,
+ *   `credential_kind` on enrollment grants with the pending-grant uniqueness
+ *   re-scoped by it, and the DPoP proof-replay and nonce-slot tables. See
+ *   {@link LOCALWEBAUTHN_MIGRATIONS}.
  *
  * Kept to two versions on purpose. The work arrived in several passes, each of
  * which briefly had its own version, but since `1` is the only version that was
@@ -32,6 +34,14 @@ export const LOCALWEBAUTHN_SCHEMA_VERSION = 2;
  *   default kind, which is every grant a host that ignores kinds ever issues.
  * - `localwebauthn_credential_kind_idx` supports the kind-scoped last-credential
  *   guard and the kind-filtered revoke paths.
+ * - `localwebauthn_credential_parent_idx` supports the descendant walk, which
+ *   follows `parent_credential_id` downward and would otherwise scan.
+ *
+ * `parent_credential_id` is a real foreign key, which is only safe because
+ * credentials are never deleted — cleanup does not touch them and revocation only
+ * stamps `revoked_at`. So a heritage chain never breaks. `grant_id` and
+ * `approved_by_user_id` are deliberately *not* foreign keys: grants are reaped, so
+ * those two are copied facts about the past rather than live references.
  */
 export const LOCALWEBAUTHN_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS localwebauthn_migrations (
@@ -103,6 +113,10 @@ CREATE TABLE IF NOT EXISTS localwebauthn_credentials (
   backed_up INTEGER NOT NULL DEFAULT 0 CHECK (backed_up IN (0, 1)),
   label TEXT NOT NULL DEFAULT 'Passkey',
   kind TEXT,
+  created_via TEXT,
+  parent_credential_id TEXT REFERENCES localwebauthn_credentials(id),
+  grant_id TEXT,
+  approved_by_user_id TEXT,
   created_at INTEGER NOT NULL,
   last_used_at INTEGER,
   revoked_at INTEGER
@@ -113,6 +127,9 @@ CREATE INDEX IF NOT EXISTS localwebauthn_credential_user_idx
 
 CREATE INDEX IF NOT EXISTS localwebauthn_credential_kind_idx
   ON localwebauthn_credentials(user_id, kind, revoked_at);
+
+CREATE INDEX IF NOT EXISTS localwebauthn_credential_parent_idx
+  ON localwebauthn_credentials(parent_credential_id);
 
 CREATE TABLE IF NOT EXISTS localwebauthn_sessions (
   id_hash BLOB PRIMARY KEY,
@@ -234,6 +251,10 @@ CREATE TABLE IF NOT EXISTS localwebauthn_credentials (
   backed_up BOOLEAN NOT NULL DEFAULT FALSE,
   label TEXT NOT NULL DEFAULT 'Passkey',
   kind TEXT,
+  created_via TEXT,
+  parent_credential_id TEXT REFERENCES localwebauthn_credentials(id),
+  grant_id TEXT,
+  approved_by_user_id TEXT,
   created_at BIGINT NOT NULL,
   last_used_at BIGINT,
   revoked_at BIGINT
@@ -244,6 +265,9 @@ CREATE INDEX IF NOT EXISTS localwebauthn_credential_user_idx
 
 CREATE INDEX IF NOT EXISTS localwebauthn_credential_kind_idx
   ON localwebauthn_credentials(user_id, kind, revoked_at);
+
+CREATE INDEX IF NOT EXISTS localwebauthn_credential_parent_idx
+  ON localwebauthn_credentials(parent_credential_id);
 
 CREATE TABLE IF NOT EXISTS localwebauthn_sessions (
   id_hash BYTEA PRIMARY KEY,
@@ -304,11 +328,21 @@ export const LOCALWEBAUTHN_MIGRATIONS: { version: number; statements: string[] }
     statements: [
       // Columns first: the grant index below is defined over `credential_kind`.
       'ALTER TABLE localwebauthn_credentials ADD COLUMN kind TEXT',
+      // Heritage. SQLite permits a REFERENCES clause on ADD COLUMN provided the
+      // default is NULL, which it is, so an upgraded database gets the same real
+      // foreign key a fresh one does.
+      'ALTER TABLE localwebauthn_credentials ADD COLUMN created_via TEXT',
+      `ALTER TABLE localwebauthn_credentials
+         ADD COLUMN parent_credential_id TEXT REFERENCES localwebauthn_credentials(id)`,
+      'ALTER TABLE localwebauthn_credentials ADD COLUMN grant_id TEXT',
+      'ALTER TABLE localwebauthn_credentials ADD COLUMN approved_by_user_id TEXT',
       'ALTER TABLE localwebauthn_challenges ADD COLUMN credential_kind TEXT',
       'ALTER TABLE localwebauthn_challenges ADD COLUMN allowed_credential_kinds TEXT',
       'ALTER TABLE localwebauthn_enrollment_grants ADD COLUMN credential_kind TEXT',
       `CREATE INDEX IF NOT EXISTS localwebauthn_credential_kind_idx
          ON localwebauthn_credentials(user_id, kind, revoked_at)`,
+      `CREATE INDEX IF NOT EXISTS localwebauthn_credential_parent_idx
+         ON localwebauthn_credentials(parent_credential_id)`,
       // Re-scope the pending-grant uniqueness from (user_id) to
       // (user_id, kind). Dropping first is required: an index cannot be
       // redefined in place, and the old one would keep enforcing one pending
@@ -336,6 +370,33 @@ export function localWebAuthnSchemaStatements(): string[] {
   return LOCALWEBAUTHN_SCHEMA_SQL.split(';')
     .map((statement) => statement.replace(/\s+/gu, ' ').trim())
     .filter(Boolean);
+}
+
+/**
+ * The `localwebauthn_migrations` DDL alone, in the requested dialect.
+ *
+ * The migration runner has to create this table before it can read its own stored
+ * version, which means running one statement ahead of the schema. Deriving it from
+ * the schema rather than repeating it is not tidiness: a hand-written copy declared
+ * `applied_at INTEGER`, and PostgreSQL's `INTEGER` is 32-bit, so a millisecond
+ * timestamp overflowed — and because the copy ran first, the correct `BIGINT`
+ * version behind `IF NOT EXISTS` never applied. Only a fresh PostgreSQL database
+ * showed it.
+ */
+export function localWebAuthnMigrationsTableStatement(
+  dialect: 'sqlite' | 'postgres' = 'sqlite',
+): string {
+  const statements =
+    dialect === 'postgres'
+      ? localWebAuthnPostgresSchemaStatements()
+      : localWebAuthnSchemaStatements();
+  const statement = statements.find((candidate) =>
+    /^CREATE TABLE IF NOT EXISTS localwebauthn_migrations\b/u.test(candidate),
+  );
+  if (!statement) {
+    throw new Error('The schema no longer declares localwebauthn_migrations.');
+  }
+  return statement;
 }
 
 export function localWebAuthnPostgresSchemaStatements(): string[] {

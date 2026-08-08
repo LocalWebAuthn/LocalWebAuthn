@@ -1,5 +1,5 @@
-import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsInput, m as RegistrationOptionsResult, n as RegistrationVerificationInput, o as RegistrationVerificationResult, A as AuthenticationOptionsInput, p as AuthenticationOptionsResult, q as AuthenticationVerificationInput, r as AuthenticationVerificationResult, s as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-DdbmOKqa.js';
-export { t as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, u as LocalWebAuthnDurations, v as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, w as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-DdbmOKqa.js';
+import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsInput, m as RegistrationOptionsResult, n as RegistrationVerificationInput, o as RegistrationVerificationResult, A as AuthenticationOptionsInput, p as AuthenticationOptionsResult, q as AuthenticationVerificationInput, r as AuthenticationVerificationResult, s as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-BRWwL9ty.js';
+export { t as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, u as LocalWebAuthnDurations, v as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, w as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-BRWwL9ty.js';
 export { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 declare function defaultRandomBytes(length: number): Uint8Array;
@@ -408,6 +408,42 @@ declare class LocalWebAuthn {
      * behaviour from before `credentialKinds` existed.
      */
     interactiveKind(kind: string | null): boolean;
+    /**
+     * A credential and its ancestors, root first.
+     *
+     * The root is whichever credential came from an enrollment grant, so the chain
+     * answers "who authorized this, and who authorized them" back to an
+     * out-of-band approval. Credentials registered before heritage was recorded
+     * have `parentCredentialId: null` and terminate the walk early with
+     * `createdVia: null` — unknown rather than guessed.
+     *
+     * Returns `[]` for an unknown credential, or one belonging to another user.
+     */
+    credentialLineage(userId: string, credentialId: string): Promise<Credential[]>;
+    /**
+     * A credential and everything descended from it, nearest first.
+     *
+     * Index 0 is the credential itself. This is the blast radius of a compromised
+     * credential: everything it was used to enroll, and everything those enrolled.
+     */
+    credentialDescendants(userId: string, credentialId: string): Promise<Credential[]>;
+    /**
+     * Revoke a credential and every credential descended from it.
+     *
+     * The remediation primitive for a compromised credential. A stolen session can
+     * enroll another passkey — that is the intended "add a passkey" feature for a
+     * person, and `canRegister` only restrains non-interactive kinds — so revoking
+     * the credential you suspect can leave the attacker's behind, indistinguishable
+     * from a legitimate one after the fact. This revokes the subtree.
+     *
+     * Revokes with `allowLastCredential`, because stopping short of emptying the
+     * account would leave a partially-revoked tree, which is worse than requiring
+     * re-enrollment after a compromise. The account may therefore be left with no
+     * usable credential; that is the intent.
+     *
+     * @returns IDs actually revoked, root first. Already-revoked ones are skipped.
+     */
+    revokeCredentialTree(userId: string, credentialId: string): Promise<string[]>;
     /** List a user's credentials; revoked ones only when `includeRevoked` is `true`. */
     listCredentials(userId: string, includeRevoked?: boolean): Promise<Credential[]>;
     /**
