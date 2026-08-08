@@ -1,5 +1,5 @@
-import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsInput, m as RegistrationOptionsResult, n as RegistrationVerificationInput, o as RegistrationVerificationResult, A as AuthenticationOptionsInput, p as AuthenticationOptionsResult, q as AuthenticationVerificationInput, r as AuthenticationVerificationResult, s as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-CuLhqdg0.js';
-export { t as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, u as LocalWebAuthnDurations, v as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, w as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-CuLhqdg0.js';
+import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsInput, m as RegistrationOptionsResult, n as RegistrationVerificationInput, o as RegistrationVerificationResult, A as AuthenticationOptionsInput, p as AuthenticationOptionsResult, q as AuthenticationVerificationInput, r as AuthenticationVerificationResult, s as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-Ixk0qQ-9.js';
+export { t as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, u as LocalWebAuthnDurations, v as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, w as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-Ixk0qQ-9.js';
 export { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 declare function defaultRandomBytes(length: number): Uint8Array;
@@ -370,13 +370,41 @@ declare class LocalWebAuthn {
      * suspect. Emits a `user.sessions_revoked` event when at least one session
      * was revoked.
      *
+     * Pass `kinds` to scope the revoke to sessions opened by credentials of those
+     * {@link Credential.kind} values — "sign this person out of their devices
+     * without stopping the nightly export". `null` is a legal member and matches
+     * unclassified credentials.
+     *
      * @param userId - The application user whose sessions end.
      * @param options.exceptSessionToken - Raw session token to leave live.
+     * @param options.kinds - Restrict to sessions from credentials of these kinds.
      * @returns The number of live sessions revoked.
      */
     revokeUserSessions(userId: string, options?: {
         exceptSessionToken?: string;
+        kinds?: (string | null)[];
     }): Promise<number>;
+    /**
+     * Whether a credential of this {@link Credential.kind} may act through an
+     * interactive (browser, cookie-bearing) route.
+     *
+     * Hosts that accept machine credentials **must** consult this at their session
+     * middleware, not only at authentication. A machine credential holds a valid
+     * session token, and a script can present it as a `Cookie` and write its own
+     * `Origin` — so without this check it reaches every cookie-authenticated route.
+     *
+     * The one that matters is enrollment issuance. `canRegister: false` closes the
+     * session registration path, but the *grant* path is authorized purely by
+     * possession of a single-use enrollment token, with no session to inspect — so
+     * the package cannot gate it, and a machine that can obtain a grant registers a
+     * fresh credential and defeats `canRegister` entirely. Refusing non-interactive
+     * kinds at the session middleware is what closes that, and it has to be the
+     * host because only the host knows who is calling `issueEnrollment`.
+     *
+     * An undeclared kind — including `null` — is interactive, matching the
+     * behaviour from before `credentialKinds` existed.
+     */
+    interactiveKind(kind: string | null): boolean;
     /** List a user's credentials; revoked ones only when `includeRevoked` is `true`. */
     listCredentials(userId: string, includeRevoked?: boolean): Promise<Credential[]>;
     /**
@@ -398,8 +426,22 @@ declare class LocalWebAuthn {
      * The user must re-enroll through a fresh {@link issueEnrollment} to sign in
      * again. To end sessions while keeping passkeys, use
      * {@link revokeUserSessions} instead.
+     *
+     * Pass `kinds` to scope the revoke to credentials of those
+     * {@link Credential.kind} values — "revoke this person's machine access,
+     * leave their passkeys" — with two differences from the unscoped form:
+     *
+     * - Pending enrollment grants and unconsumed challenges are **left alone**. A
+     *   grant carries no kind, so cancelling a person's in-flight enrollment while
+     *   revoking their service credentials would be silently wrong.
+     * - It is not a lockout. A surviving credential of another kind still
+     *   authenticates as this user, so `{ kinds: ['person'] }` does *not* stop the
+     *   account being used — it stops the person's own devices being used. Suspend
+     *   the user through `getUser` returning `active: false` if that is the intent.
      */
-    revokeUserAuthentication(userId: string): Promise<void>;
+    revokeUserAuthentication(userId: string, options?: {
+        kinds?: (string | null)[];
+    }): Promise<void>;
     /**
      * Reap expired enrollment grants, finished challenges, and dead sessions.
      * Schedule periodically (every few minutes is ample); credentials are never

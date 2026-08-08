@@ -240,6 +240,37 @@ var SQL = {
   revokeUserSessions: `
     UPDATE localwebauthn_sessions
     SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`,
+  /**
+   * As {@link SQL.revokeLiveUserSessions}, for one credential.
+   *
+   * A kind-filtered bulk revoke loops this rather than binding a variable-length
+   * `IN (...)` list, which the shared static SQL cannot express and which would
+   * otherwise have to be built per call. Revocation is an administrative
+   * operation, so a statement per credential is the better trade than dynamic SQL
+   * that no longer lives in this module.
+   *
+   * Binds: now, credentialId, now, idleExpiresBefore.
+   */
+  revokeLiveCredentialSessions: `
+    UPDATE localwebauthn_sessions
+    SET revoked_at = ?
+    WHERE credential_id = ?
+      AND revoked_at IS NULL
+      AND expires_at > ?
+      AND last_seen_at > ?`,
+  /**
+   * As above, sparing one session.
+   *
+   * Binds: now, credentialId, now, idleExpiresBefore, exceptIdHash.
+   */
+  revokeLiveCredentialSessionsExcept: `
+    UPDATE localwebauthn_sessions
+    SET revoked_at = ?
+    WHERE credential_id = ?
+      AND revoked_at IS NULL
+      AND expires_at > ?
+      AND last_seen_at > ?
+      AND id_hash <> ?`,
   // -- User-wide revocation -------------------------------------------------
   revokeUserGrants: `
     UPDATE localwebauthn_enrollment_grants

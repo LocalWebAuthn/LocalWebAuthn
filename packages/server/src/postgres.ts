@@ -397,6 +397,29 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
     });
   }
 
+  async revokeLiveCredentialSessions(
+    credentialId: string,
+    now: number,
+    idleExpiresBefore: number,
+    exceptSessionHash?: Uint8Array,
+  ): Promise<number> {
+    const result = exceptSessionHash
+      ? await this.#pool.query(PG.revokeLiveCredentialSessionsExcept, [
+          now,
+          credentialId,
+          now,
+          idleExpiresBefore,
+          exceptSessionHash,
+        ])
+      : await this.#pool.query(PG.revokeLiveCredentialSessions, [
+          now,
+          credentialId,
+          now,
+          idleExpiresBefore,
+        ]);
+    return result.rowCount ?? 0;
+  }
+
   async claimDpopProof(jtiHash: Uint8Array, expiresAt: number): Promise<boolean> {
     const result = await this.#pool.query(PG.claimDpopProof, [jtiHash, expiresAt]);
     return result.rowCount === 1;

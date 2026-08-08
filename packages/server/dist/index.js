@@ -1084,22 +1084,76 @@ var LocalWebAuthn = class {
    * suspect. Emits a `user.sessions_revoked` event when at least one session
    * was revoked.
    *
+   * Pass `kinds` to scope the revoke to sessions opened by credentials of those
+   * {@link Credential.kind} values — "sign this person out of their devices
+   * without stopping the nightly export". `null` is a legal member and matches
+   * unclassified credentials.
+   *
    * @param userId - The application user whose sessions end.
    * @param options.exceptSessionToken - Raw session token to leave live.
+   * @param options.kinds - Restrict to sessions from credentials of these kinds.
    * @returns The number of live sessions revoked.
    */
   async revokeUserSessions(userId, options = {}) {
     const now = this.#now();
-    const count = await this.#store.revokeUserSessions(
-      userId,
-      now,
-      now - this.config.durations.sessionIdleMs,
-      options.exceptSessionToken ? await sha256(options.exceptSessionToken) : void 0
-    );
+    const exceptHash = options.exceptSessionToken ? await sha256(options.exceptSessionToken) : void 0;
+    let count;
+    if (options.kinds) {
+      const kinds = new Set(options.kinds);
+      const credentials = await this.#store.listCredentials(userId, true);
+      count = 0;
+      for (const credential of credentials) {
+        if (!kinds.has(credential.kind)) {
+          continue;
+        }
+        count += await this.#store.revokeLiveCredentialSessions(
+          credential.id,
+          now,
+          now - kindPolicy(this.config, credential.kind).sessionIdleMs,
+          exceptHash
+        );
+      }
+    } else {
+      count = await this.#store.revokeUserSessions(
+        userId,
+        now,
+        now - this.#widestIdleMs,
+        exceptHash
+      );
+    }
     if (count > 0) {
-      await this.#emit({ type: "user.sessions_revoked", at: now, userId, count });
+      await this.#emit({
+        type: "user.sessions_revoked",
+        at: now,
+        userId,
+        count,
+        ...options.kinds ? { kinds: options.kinds } : {}
+      });
     }
     return count;
+  }
+  /**
+   * Whether a credential of this {@link Credential.kind} may act through an
+   * interactive (browser, cookie-bearing) route.
+   *
+   * Hosts that accept machine credentials **must** consult this at their session
+   * middleware, not only at authentication. A machine credential holds a valid
+   * session token, and a script can present it as a `Cookie` and write its own
+   * `Origin` — so without this check it reaches every cookie-authenticated route.
+   *
+   * The one that matters is enrollment issuance. `canRegister: false` closes the
+   * session registration path, but the *grant* path is authorized purely by
+   * possession of a single-use enrollment token, with no session to inspect — so
+   * the package cannot gate it, and a machine that can obtain a grant registers a
+   * fresh credential and defeats `canRegister` entirely. Refusing non-interactive
+   * kinds at the session middleware is what closes that, and it has to be the
+   * host because only the host knows who is calling `issueEnrollment`.
+   *
+   * An undeclared kind — including `null` — is interactive, matching the
+   * behaviour from before `credentialKinds` existed.
+   */
+  interactiveKind(kind) {
+    return kindPolicy(this.config, kind).interactive;
   }
   /** List a user's credentials; revoked ones only when `includeRevoked` is `true`. */
   listCredentials(userId, includeRevoked = false) {
@@ -1142,11 +1196,41 @@ var LocalWebAuthn = class {
    * The user must re-enroll through a fresh {@link issueEnrollment} to sign in
    * again. To end sessions while keeping passkeys, use
    * {@link revokeUserSessions} instead.
+   *
+   * Pass `kinds` to scope the revoke to credentials of those
+   * {@link Credential.kind} values — "revoke this person's machine access,
+   * leave their passkeys" — with two differences from the unscoped form:
+   *
+   * - Pending enrollment grants and unconsumed challenges are **left alone**. A
+   *   grant carries no kind, so cancelling a person's in-flight enrollment while
+   *   revoking their service credentials would be silently wrong.
+   * - It is not a lockout. A surviving credential of another kind still
+   *   authenticates as this user, so `{ kinds: ['person'] }` does *not* stop the
+   *   account being used — it stops the person's own devices being used. Suspend
+   *   the user through `getUser` returning `active: false` if that is the intent.
    */
-  async revokeUserAuthentication(userId) {
+  async revokeUserAuthentication(userId, options = {}) {
     const now = this.#now();
-    await this.#store.revokeUserAuthentication(userId, now);
-    await this.#emit({ type: "user.authentication_revoked", at: now, userId });
+    if (options.kinds) {
+      const kinds = new Set(options.kinds);
+      const credentials = await this.#store.listCredentials(userId, true);
+      for (const credential of credentials) {
+        if (credential.revokedAt !== null || !kinds.has(credential.kind)) {
+          continue;
+        }
+        await this.#store.revokeCredential(userId, credential.id, now, {
+          allowLastCredential: true
+        });
+      }
+    } else {
+      await this.#store.revokeUserAuthentication(userId, now);
+    }
+    await this.#emit({
+      type: "user.authentication_revoked",
+      at: now,
+      userId,
+      ...options.kinds ? { kinds: options.kinds } : {}
+    });
   }
   /**
    * Reap expired enrollment grants, finished challenges, and dead sessions.

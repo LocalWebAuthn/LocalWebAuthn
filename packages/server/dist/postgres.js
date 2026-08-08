@@ -6,7 +6,7 @@ import {
   enrollmentSessionFromRow,
   sessionFromRow,
   toPositionalPlaceholders
-} from "./chunk-5ACQCBBK.js";
+} from "./chunk-LMFILUYY.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnUpgradeStatements
@@ -266,6 +266,21 @@ var PostgresLocalWebAuthnStore = class {
         dpopNonces: dpopNonces.rowCount ?? 0
       };
     });
+  }
+  async revokeLiveCredentialSessions(credentialId, now, idleExpiresBefore, exceptSessionHash) {
+    const result = exceptSessionHash ? await this.#pool.query(PG.revokeLiveCredentialSessionsExcept, [
+      now,
+      credentialId,
+      now,
+      idleExpiresBefore,
+      exceptSessionHash
+    ]) : await this.#pool.query(PG.revokeLiveCredentialSessions, [
+      now,
+      credentialId,
+      now,
+      idleExpiresBefore
+    ]);
+    return result.rowCount ?? 0;
   }
   async claimDpopProof(jtiHash, expiresAt) {
     const result = await this.#pool.query(PG.claimDpopProof, [jtiHash, expiresAt]);

@@ -317,6 +317,14 @@ type LocalWebAuthnStore = {
      */
     revokeUserSessions(userId: string, now: number, idleExpiresBefore: number, exceptSessionHash?: Uint8Array): Promise<number>;
     /**
+     * As {@link revokeUserSessions}, scoped to one credential.
+     *
+     * Used by the kind-filtered form of {@link LocalWebAuthn.revokeUserSessions},
+     * which loops over the matching credentials. Same liveness predicates, so the
+     * returned counts sum to the same meaning.
+     */
+    revokeLiveCredentialSessions(credentialId: string, now: number, idleExpiresBefore: number, exceptSessionHash?: Uint8Array): Promise<number>;
+    /**
      * Revoke a single credential and all its sessions.
      *
      * When `allowLastCredential` is false (the default), the store must refuse
@@ -398,11 +406,18 @@ type LocalWebAuthnEvent = {
     userId: string;
     /** Live sessions revoked; an excepted session is not counted. */
     count: number;
+    /** Credential kinds the revoke was scoped to, when it was scoped. */
+    kinds?: (string | null)[];
 } | {
-    /** Bulk recovery revoke: credentials, sessions, grants, and challenges. */
+    /**
+     * Bulk recovery revoke: credentials, sessions, and — only when unscoped —
+     * grants and challenges.
+     */
     type: 'user.authentication_revoked';
     at: number;
     userId: string;
+    /** Credential kinds the revoke was scoped to, when it was scoped. */
+    kinds?: (string | null)[];
 };
 type LocalWebAuthnDurations = {
     enrollmentGrantMs?: number;

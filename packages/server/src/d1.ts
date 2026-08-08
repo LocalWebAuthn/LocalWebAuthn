@@ -379,6 +379,22 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
     return changes(result) === 1;
   }
 
+  async revokeLiveCredentialSessions(
+    credentialId: string,
+    now: number,
+    idleExpiresBefore: number,
+    exceptSessionHash?: Uint8Array,
+  ): Promise<number> {
+    const statement = exceptSessionHash
+      ? this.#database
+          .prepare(SQL.revokeLiveCredentialSessionsExcept)
+          .bind(now, credentialId, now, idleExpiresBefore, exceptSessionHash)
+      : this.#database
+          .prepare(SQL.revokeLiveCredentialSessions)
+          .bind(now, credentialId, now, idleExpiresBefore);
+    return changes(await statement.run());
+  }
+
   async claimDpopNonce(slot: number, candidate: string, expiresAt: number): Promise<string> {
     await this.#database.prepare(SQL.insertDpopNonce).bind(slot, candidate, expiresAt).run();
     const row = await this.#database

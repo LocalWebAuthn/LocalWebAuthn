@@ -524,3 +524,77 @@ describe('restrictions enforced over HTTP', () => {
     expect(await response.json()).toMatchObject({ error: 'forbidden' });
   });
 });
+
+describe('a machine session cannot escalate through the grant path', () => {
+  /**
+   * Regression test for a real hole.
+   *
+   * `canRegister: false` gates the *session* registration path. The *grant* path
+   * is a second route to registration, gated only by possession of a single-use
+   * enrollment token — it has no authorizing session, so the package cannot apply
+   * `canRegister` there at all. The chain that mattered:
+   *
+   *   machine session token -> presented as a Cookie -> /api/clients/:id/enrollment
+   *   -> enrollment token -> exchange -> registrationOptions({ enrollmentSessionToken })
+   *   -> a brand new credential, with canRegister:false fully bypassed.
+   *
+   * The fix is host-side and has to be, since only the host knows who is calling
+   * `issueEnrollment`: `requireAuthentication` refuses a non-interactive kind.
+   */
+  async function machineSession(fixture: ReturnType<typeof setup>, cookie: string) {
+    const { payload, privateKey } = await mintApiKey(fixture, cookie, 'nightly export');
+    const client = new MachineClient({
+      payload,
+      keyStore: await importKeyStore(privateKey, ES256),
+      fetch: appFetch(fixture.app),
+    });
+    return (await client.authenticate()).token;
+  }
+
+  it('cannot mint an enrollment grant', async () => {
+    const fixture = setup();
+    const person = await signedInPerson(fixture);
+    const token = await machineSession(fixture, person.cookie);
+
+    // A script sets Cookie and Origin freely; only the credential kind stops it.
+    const response = await fixture.app.fetch(
+      post(`/api/clients/${person.userId}/enrollment`, {}, `lwa_demo_session=${token}`),
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: 'forbidden' });
+  });
+
+  it('cannot reach any other privileged browser route', async () => {
+    const fixture = setup();
+    const person = await signedInPerson(fixture);
+    const token = await machineSession(fixture, person.cookie);
+    const cookie = `lwa_demo_session=${token}`;
+
+    // One middleware guards them all, so this stays true for routes added later.
+    for (const path of ['/api/session', '/api/clients', '/api/api-keys']) {
+      const response = await fixture.app.fetch(
+        new Request(`${ORIGIN}${path}`, { headers: { Cookie: cookie } }),
+      );
+      expect(response.status).toBe(403);
+    }
+    for (const path of ['/api/session/revoke-others', '/api/clients']) {
+      expect((await fixture.app.fetch(post(path, {}, cookie))).status).toBe(403);
+    }
+  });
+
+  it('still lets the person through those routes', async () => {
+    const fixture = setup();
+    const person = await signedInPerson(fixture);
+    expect(
+      (
+        await fixture.app.fetch(
+          new Request(`${ORIGIN}/api/session`, { headers: { Cookie: person.cookie } }),
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (await fixture.app.fetch(post(`/api/clients/${person.userId}/enrollment`, {}, person.cookie)))
+        .status,
+    ).toBe(200);
+  });
+});

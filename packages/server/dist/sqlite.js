@@ -4,7 +4,7 @@ import {
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-5ACQCBBK.js";
+} from "./chunk-LMFILUYY.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnUpgradeStatements
@@ -147,6 +147,9 @@ var SqliteLocalWebAuthnStore = class {
       return this.#database.prepare(SQL.revokeLiveUserSessionsExcept).run(now, userId, now, idleExpiresBefore, exceptSessionHash).changes;
     }
     return this.#database.prepare(SQL.revokeLiveUserSessions).run(now, userId, now, idleExpiresBefore).changes;
+  }
+  async revokeLiveCredentialSessions(credentialId, now, idleExpiresBefore, exceptSessionHash) {
+    return exceptSessionHash ? this.#database.prepare(SQL.revokeLiveCredentialSessionsExcept).run(now, credentialId, now, idleExpiresBefore, exceptSessionHash).changes : this.#database.prepare(SQL.revokeLiveCredentialSessions).run(now, credentialId, now, idleExpiresBefore).changes;
   }
   async revokeCredential(userId, credentialId, now, options = {}) {
     return this.#database.transaction(() => {

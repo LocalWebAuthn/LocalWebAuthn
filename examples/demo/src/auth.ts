@@ -217,6 +217,26 @@ export function currentSessionToken(
   return getCookie(context, cookiesFor(config.publicOrigin).session);
 }
 
+/**
+ * Require a live cookie session from an *interactive* credential.
+ *
+ * The kind check is the load-bearing part, and it is fail-closed for every route
+ * that uses this middleware — present and future.
+ *
+ * A machine credential holds a perfectly valid session token, and nothing stops a
+ * script presenting it as a `Cookie` and writing its own `Origin` header. Without
+ * the check it would pass here and reach whatever the route does next — including
+ * `issueEnrollment`. That matters more than it looks: an enrollment token leads to
+ * the *grant* registration path, which carries no `canRegister` gate because it
+ * has no authorizing session to inspect, only possession of a single-use token. So
+ * a machine that can obtain a grant can register a fresh credential and defeat
+ * `canRegister: false` entirely.
+ *
+ * The rule reuses the kind's own `interactive` declaration rather than adding
+ * another switch: a kind that may not *open* a session at the browser login route
+ * may not *use* one at a browser route either. One declaration, two enforcement
+ * points.
+ */
 export function requireAuthentication(
   authentication: DemoAuthentication,
   config: DemoAuthConfig,
@@ -232,6 +252,15 @@ export function requireAuthentication(
           message: 'A passkey session is required.',
         },
         401,
+      );
+    }
+    if (!authentication.interactiveKind(resolved.session.credentialKind)) {
+      return context.json(
+        {
+          error: 'forbidden',
+          message: 'This endpoint requires an interactive credential.',
+        },
+        403,
       );
     }
     context.set('authenticatedUser', resolved.user);

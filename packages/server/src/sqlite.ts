@@ -295,6 +295,21 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
       .run(now, userId, now, idleExpiresBefore).changes;
   }
 
+  async revokeLiveCredentialSessions(
+    credentialId: string,
+    now: number,
+    idleExpiresBefore: number,
+    exceptSessionHash?: Uint8Array,
+  ): Promise<number> {
+    return exceptSessionHash
+      ? this.#database
+          .prepare(SQL.revokeLiveCredentialSessionsExcept)
+          .run(now, credentialId, now, idleExpiresBefore, exceptSessionHash).changes
+      : this.#database
+          .prepare(SQL.revokeLiveCredentialSessions)
+          .run(now, credentialId, now, idleExpiresBefore).changes;
+  }
+
   async revokeCredential(
     userId: string,
     credentialId: string,

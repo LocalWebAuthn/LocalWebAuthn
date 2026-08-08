@@ -28,7 +28,7 @@ import {
   parseCredentialPayload,
   type SoftwareCredential,
 } from '../../packages/client/src/index.js';
-import type { AuthUser } from '../../packages/server/src/index.js';
+import type { AuthUser, LocalWebAuthnEvent } from '../../packages/server/src/index.js';
 import { createUserHandle, LocalWebAuthn } from '../../packages/server/src/index.js';
 import { verifyDpopProof } from '../../packages/server/src/dpop.js';
 import { migrateSqlite, SqliteLocalWebAuthnStore } from '../../packages/server/src/sqlite.js';
@@ -278,6 +278,135 @@ describe('restrictions on API credentials', () => {
       ['service'],
     );
     expect(authenticated.expiresAt).toBeLessThanOrEqual(before + 60_000 + 1_000);
+  });
+});
+
+describe('kind-filtered revocation', () => {
+  /** A person with one passkey and one API credential, each with a live session. */
+  async function bothKinds() {
+    const fixture = harness({ service: { interactive: false, canRegister: false } });
+    const person = await bootstrap(fixture.auth, 'person', 'laptop');
+    const service = await enroll(
+      fixture.auth,
+      person.verified.sessionToken,
+      undefined,
+      'service',
+      'nightly export',
+    );
+    const credentials = await fixture.auth.listCredentials('user-1');
+    const serviceCredential = credentials.find((credential) => credential.kind === 'service');
+    // A second, independent service session, so counts are distinguishable.
+    const extra = await assertOnce(
+      fixture.auth,
+      service.keyStore,
+      {
+        credentialId: service.credentialId,
+        userHandle: fixture.user.webAuthnUserHandle,
+        rpId: RP_ID,
+        origin: ORIGIN,
+      },
+      ['service'],
+    );
+    return { ...fixture, person, service, serviceCredential, extra };
+  }
+
+  it('signs the person out without stopping the service credential', async () => {
+    const { auth, person, extra } = await bothKinds();
+
+    const count = await auth.revokeUserSessions('user-1', { kinds: ['person'] });
+    expect(count).toBe(1);
+    expect(await auth.resolveSession(person.verified.sessionToken)).toBeNull();
+    // The nightly export keeps running.
+    expect(await auth.resolveSession(extra.sessionToken)).not.toBeNull();
+  });
+
+  it('signs the service credential out without touching the person', async () => {
+    const { auth, person, service, extra } = await bothKinds();
+
+    const count = await auth.revokeUserSessions('user-1', { kinds: ['service'] });
+    // Both service sessions: the one registration opened and the extra ceremony.
+    expect(count).toBe(2);
+    expect(await auth.resolveSession(person.verified.sessionToken)).not.toBeNull();
+    expect(await auth.resolveSession(extra.sessionToken)).toBeNull();
+    expect(await auth.resolveSession(service.verified.sessionToken)).toBeNull();
+  });
+
+  it('revokes machine credentials and leaves the passkeys', async () => {
+    const { auth, person, serviceCredential } = await bothKinds();
+
+    await auth.revokeUserAuthentication('user-1', { kinds: ['service'] });
+
+    const active = await auth.listCredentials('user-1');
+    expect(active).toHaveLength(1);
+    expect(active[0].kind).toBe('person');
+    const all = await auth.listCredentials('user-1', true);
+    expect(all.find((c) => c.id === serviceCredential?.id)?.revokedAt).not.toBeNull();
+    // The person is still signed in.
+    expect(await auth.resolveSession(person.verified.sessionToken)).not.toBeNull();
+  });
+
+  it('leaves pending grants alone when scoped, unlike the unscoped form', async () => {
+    const { auth } = await bothKinds();
+    // A grant carries no kind, so a scoped revoke must not cancel it.
+    const issue = await auth.issueEnrollment('user-1');
+    await auth.revokeUserAuthentication('user-1', { kinds: ['service'] });
+    await expect(auth.exchangeEnrollment(issue.enrollmentToken)).resolves.toHaveProperty(
+      'enrollmentSessionToken',
+    );
+
+    const second = await auth.issueEnrollment('user-1');
+    await auth.revokeUserAuthentication('user-1');
+    await expect(auth.exchangeEnrollment(second.enrollmentToken)).rejects.toMatchObject({
+      code: 'invalid_enrollment',
+    });
+  });
+
+  it('reports the scope on the event', async () => {
+    const events: LocalWebAuthnEvent[] = [];
+    const database = new Database(':memory:');
+    migrateSqlite(database);
+    const user: AuthUser = {
+      id: 'user-1',
+      name: 'person@example.test',
+      displayName: 'A Person',
+      active: true,
+      webAuthnUserHandle: createUserHandle(),
+    };
+    const auth = new LocalWebAuthn({
+      rpName: 'Round Trip',
+      rpId: RP_ID,
+      expectedOrigins: ORIGIN,
+      store: new SqliteLocalWebAuthnStore(database),
+      users: { getUser: async (id) => (id === user.id ? user : null) },
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+    await bootstrap(auth, 'person');
+
+    await auth.revokeUserSessions('user-1', { kinds: ['person'] });
+    await auth.revokeUserAuthentication('user-1', { kinds: ['person'] });
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'user.sessions_revoked', kinds: ['person'] }),
+        expect.objectContaining({ type: 'user.authentication_revoked', kinds: ['person'] }),
+      ]),
+    );
+  });
+
+  it('matches unclassified credentials with a null kind', async () => {
+    const { auth } = harness();
+    const legacy = await bootstrap(auth);
+    expect(await auth.revokeUserSessions('user-1', { kinds: [null] })).toBe(1);
+    expect(await auth.resolveSession(legacy.verified.sessionToken)).toBeNull();
+  });
+
+  it('is unchanged when no kinds are given', async () => {
+    const { auth, person, extra } = await bothKinds();
+    expect(await auth.revokeUserSessions('user-1')).toBe(3);
+    expect(await auth.resolveSession(person.verified.sessionToken)).toBeNull();
+    expect(await auth.resolveSession(extra.sessionToken)).toBeNull();
   });
 });
 

@@ -87,6 +87,22 @@ new LocalWebAuthn({
 });
 ```
 
+Both bulk revoke methods now take a kind filter:
+
+```ts
+revokeUserSessions(userId, { kinds: ['person'] }); // sign the person out, keep the export
+revokeUserAuthentication(userId, { kinds: ['service'] }); // revoke machine access only
+```
+
+Two things to know about the scoped form of `revokeUserAuthentication`. It leaves
+pending grants and unconsumed challenges alone, because a grant carries no kind and
+cancelling a person's in-flight enrollment while revoking their service credentials
+would be silently wrong. And it is **not a lockout**: a surviving credential of
+another kind still authenticates as that user, so suspend through `getUser` returning
+`active: false` if that is the intent. Custom stores add
+`revokeLiveCredentialSessions`, which the filtered path loops over rather than binding
+a variable-length `IN (...)` the shared static SQL cannot express.
+
 `verifyRegistration` deliberately takes **no** kind input — a client must not be able to
 classify itself. `RegistrationVerificationResult` and `AuthenticationVerificationResult`
 now report `credentialKind`, as does `SessionIdentity`.
@@ -95,6 +111,29 @@ now report `credentialKind`, as does `SessionIdentity`.
 the new `registration_not_permitted` code. That closes a hole older than this release: any
 live session could authorize registering another credential, so a leaked machine key could
 mint a spare and outlive revocation of the first, making revocation useless as a remedy.
+
+### Hosts must gate their session middleware on credential kind
+
+`canRegister: false` closes the _session_ registration path. It cannot close the
+_grant_ path — that one is authorized by possession of a single-use enrollment token
+with no session involved, so the package has no `credentialKind` to inspect and no way
+to tell a person from a program.
+
+So a host that accepts machine credentials **must** refuse them at its cookie-session
+middleware, or this chain reopens self-replication:
+
+```
+machine session token -> presented as a Cookie -> POST .../enrollment
+  -> enrollment token -> exchange -> registrationOptions({ enrollmentSessionToken })
+  -> a new credential, canRegister:false bypassed
+```
+
+`SessionIdentity.credentialKind` and `auth.config.credentialKinds` are both public, so
+the check is two lines. The demo reuses the kind's own `interactive` declaration: a
+kind that may not open a session at the browser login route may not use one at a
+browser route either.
+
+### New service API, continued
 
 `verifyDpop` verifies an RFC 9449 proof against the session's credential. There is no
 per-session key material to store: the expected thumbprint is derived from

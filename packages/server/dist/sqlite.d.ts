@@ -1,4 +1,4 @@
-import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, g as RevokeCredentialResult, h as CleanupResult } from './types-CuLhqdg0.js';
+import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, g as RevokeCredentialResult, h as CleanupResult } from './types-Ixk0qQ-9.js';
 import '@simplewebauthn/server';
 
 type SqliteRunResult = {
@@ -50,6 +50,7 @@ declare class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
     touchSession(idHash: Uint8Array, now: number): Promise<boolean>;
     revokeSession(idHash: Uint8Array, now: number): Promise<RevokedSession | null>;
     revokeUserSessions(userId: string, now: number, idleExpiresBefore: number, exceptSessionHash?: Uint8Array): Promise<number>;
+    revokeLiveCredentialSessions(credentialId: string, now: number, idleExpiresBefore: number, exceptSessionHash?: Uint8Array): Promise<number>;
     revokeCredential(userId: string, credentialId: string, now: number, options?: {
         allowLastCredential?: boolean;
     }): Promise<RevokeCredentialResult>;

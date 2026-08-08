@@ -5,7 +5,7 @@ import {
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-5ACQCBBK.js";
+} from "./chunk-LMFILUYY.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnSchemaStatements
@@ -211,6 +211,10 @@ var D1LocalWebAuthnStore = class {
   async claimDpopProof(jtiHash, expiresAt) {
     const result = await this.#database.prepare(SQL.claimDpopProof).bind(jtiHash, expiresAt).run();
     return changes(result) === 1;
+  }
+  async revokeLiveCredentialSessions(credentialId, now, idleExpiresBefore, exceptSessionHash) {
+    const statement = exceptSessionHash ? this.#database.prepare(SQL.revokeLiveCredentialSessionsExcept).bind(now, credentialId, now, idleExpiresBefore, exceptSessionHash) : this.#database.prepare(SQL.revokeLiveCredentialSessions).bind(now, credentialId, now, idleExpiresBefore);
+    return changes(await statement.run());
   }
   async claimDpopNonce(slot, candidate, expiresAt) {
     await this.#database.prepare(SQL.insertDpopNonce).bind(slot, candidate, expiresAt).run();

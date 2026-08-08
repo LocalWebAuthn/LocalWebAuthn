@@ -71,9 +71,10 @@ _________________
 .. 6. Concurrency and session lifetime
 6. Restrictions on API Credentials
 .. 1. The rules
-.. 2. The three that are easy to get wrong
-.. 3. What is deliberately not restricted
-.. 4. API versioning
+.. 2. Rule 5 is the one that actually bites
+.. 3. The three that are easy to get wrong
+.. 4. What is deliberately not restricted
+.. 5. API versioning
 7. Implementation Notes
 .. 1. The signature-format trap
 .. 2. Host routing
@@ -104,6 +105,9 @@ _________________
     credential file, DPoP proof construction, and `MachineClient'.
   - `verifyDpop' on the service, deriving the expected thumbprint from
     `credentials.public_key' so nothing is stored per session.
+  - Kind filters on `revokeUserSessions' and `revokeUserAuthentication',
+    so signing a person out of their devices does not stop their nightly
+    export.
   - Optional server-issued DPoP nonces, keyed by time slot in the
     database so every server in a deployment converges on one value
     without a shared secret.  The nonce is per /deployment/, not per
@@ -122,7 +126,6 @@ _________________
     `docs/API-AUTH/PROVISIONING.md' would.
   - Keystore backends beyond a base64 PKCS#8 key.  The `keystore:' URI
     is parsed and refused with a pointer to /Key Custody/.
-  - Kind filters on `revokeUserAuthentication' and `revokeUserSessions'.
 
   Companion documents in `docs/API-AUTH/': three independent design
   treatments, a consensus analysis with the standards survey, and the
@@ -607,7 +610,7 @@ _________________
     2  authenticate at a browser endpoint              *package*    challenge-scoped `credentialKinds'; non-interactive kinds excluded by default             
     3  revoke a credential other than its own          host         gate on `session.credentialKind'                                                          
     4  revoke sessions other than its own              host         same                                                                                      
-    5  issue or exchange an enrollment grant           host         `issueEnrollment' is privileged                                                           
+    5  issue or exchange an enrollment grant           host         see below --- the escalation this one prevents                                            
     6  satisfy a step-up gate for a human operation    host         step-up checks *kind and freshness*, not freshness alone                                  
     7  receive a session cookie                        host         machine routes never `Set-Cookie'                                                         
     8  enumerate the user's other credentials          host         `listCredentials' is privileged                                                           
@@ -618,7 +621,45 @@ _________________
    13  authenticate without being distinguishable      *package*    `credentialKind' on `credential.authenticated' and `session.created'                      
 
 
-6.2 The three that are easy to get wrong
+6.2 Rule 5 is the one that actually bites
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+  `canRegister: false' gates the *session* registration path.  The
+  *grant* path is a second route to registration, and the package cannot
+  gate it at all: its authorization is possession of a single-use
+  enrollment token, with no session involved, so there is no
+  `credentialKind' to consult.  Nothing in `registrationOptions({
+  enrollmentSessionToken })' can know whether a person or a program
+  exchanged that token.
+
+  Which makes this chain the real hazard, and it is entirely host-side:
+
+  ,----
+  | machine session token
+  |   -> presented as a Cookie (a script writes Cookie and Origin freely)
+  |   -> POST /api/clients/:id/enrollment
+  |   -> enrollment token
+  |   -> exchangeEnrollment -> registrationOptions({ enrollmentSessionToken })
+  |   -> a brand new credential, canRegister:false fully bypassed
+  `----
+
+  The demo had exactly this hole and it returned `200' with a live
+  enrollment token.  The fix has to be at the host's session middleware,
+  because only the host knows who is calling `issueEnrollment':
+  `requireAuthentication' now refuses a session whose kind is declared
+  `interactive: false'.  Reusing that declaration rather than adding
+  another switch keeps it to one rule --- a kind that may not /open/ a
+  session at the browser login route may not /use/ one at a browser
+  route either --- and makes it fail-closed for every route that
+  middleware guards, including ones added later.
+
+  Restrictions 3, 4, 8 and 9 are the same shape: all of them are host
+  gates on a session, and all of them are satisfied by that one check.
+  Rule 5 is singled out only because it is the one whose failure
+  escalates rather than merely leaks.
+
+
+6.3 The three that are easy to get wrong
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
   *Rule 1 is the self-replication hole.* `registrationOptions({
@@ -684,7 +725,7 @@ _________________
   `----
 
 
-6.3 What is deliberately not restricted
+6.4 What is deliberately not restricted
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
   - *Authenticating as often as it likes.* Concurrency is the point; see
@@ -701,7 +742,7 @@ _________________
     design leaves intact.
 
 
-6.4 API versioning
+6.5 API versioning
 ~~~~~~~~~~~~~~~~~~
 
   Four independent version numbers, which is three more than anyone
