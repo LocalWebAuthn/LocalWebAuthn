@@ -287,27 +287,123 @@ is simply asserted, and the first assertion is what proves the private half exis
 
 ** Step 5: one-time display, then transfer
 
-#+BEGIN_SRC conf
-  # public -- needed to build an assertion, secret to nobody
-  LWA_BASE_URL=https://app.example.com
-  LWA_RP_ID=app.example.com
-  LWA_ORIGIN=https://app.example.com
-  LWA_CREDENTIAL_ID=k7Rz...            # base64url, 32 bytes
-  LWA_USER_HANDLE=9fQ2...              # base64url, 32 bytes
-  LWA_ALG=-7                           # COSE ES256
+Two data lines.  The first carries every public value as compact JSON; the second is
+the key, or a reference to where the key really lives.  A leading comment carries the
+label, which the client does not need.
 
-  # the one secret
-  LWA_PRIVATE_KEY=MIGHAgEAMBMGByqGSM49...   # base64 PKCS#8
+#+BEGIN_SRC conf
+  # Perry's Blah maintenance script -- created 2026-08-08
+  LWA_CREDENTIAL='{"v":1,"baseUrl":"https://app.example.com","rpId":"app.example.com","origin":"https://app.example.com","credentialId":"k7Rz...","userHandle":"9fQ2...","alg":-7}'
+  LWA_CREDENTIAL_KEY=MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg...
 #+END_SRC
 
-The familiar "copy it now, you will not see it again" contract -- with the
-improvement that, unlike a conventional API key, the server never had it to begin
-with.  Mode =0600=, gitignored.
+*** =LWA_CREDENTIAL= -- the public half
 
-If the script host /is/ the same Mac, =LWA_PRIVATE_KEY= can be replaced by
-=LWA_KEY_REF=keychain:...= with the key imported into the login keychain, or into the
-Secure Enclave -- P-256 only, non-exportable -- at which point =.env= holds no secret
-at all.
+| Field          | Meaning                                                     |
+|----------------+-------------------------------------------------------------|
+| =v=            | payload format version; =1= is this schema                  |
+| =baseUrl=      | origin the client talks to                                   |
+| =rpId=         | hashed into =authenticatorData[0..32)=                       |
+| =origin=       | written verbatim into =clientDataJSON.origin=                |
+| =credentialId= | base64url, 32 bytes; the server's primary key for the row    |
+| =userHandle=   | base64url, 32 bytes; required in =response.userHandle=       |
+| =alg=          | COSE algorithm: =-7= ES256, =-8= EdDSA                       |
+
+*Quoting rules matter here, and constrain the schema.*  The value is wrapped in single
+quotes so that a plain =source .env= does not let the shell strip the JSON's double
+quotes.  Single-quoting in turn means no field value may contain an apostrophe -- which
+is exactly why the human-authored =label= is /not/ in the payload but in a comment.
+Every field above is a base64url string, a URL, a hostname, or a number, so the
+constraint holds by construction.  Emit compact JSON with no spaces, and the line is
+safe for dotenv, =docker compose --env-file=, and shell sourcing alike.
+
+Adding a field is a =v= bump.  A client seeing a =v= it does not know must refuse
+rather than guess, because a future field could be load-bearing (an =audience=, say).
+
+*** =LWA_CREDENTIAL_KEY= -- the private half, or a pointer to it
+
+One variable, two shapes, dispatched on the =keystore:= prefix:
+
+#+BEGIN_SRC conf
+  # the key itself: base64 PKCS#8
+  LWA_CREDENTIAL_KEY=MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg...
+
+  # or a reference -- .env then holds no secret at all
+  LWA_CREDENTIAL_KEY=keystore:keychain/localwebauthn/nightly-export
+#+END_SRC
+
+Base64 uses =+=, =/= and ===, none of which need quoting, and a =keystore:= URI is
+likewise bare-safe.  See /Key Custody/ below for the backends.
+
+The familiar "copy it now, you will not see it again" contract -- with the improvement
+that, unlike a conventional API key, the server never had it to begin with.  Mode
+=0600=, and in =.gitignore=.
+
+** Can the page write the file for you?
+
+Worth asking, because "copy these two lines" is where a careful process usually goes
+wrong.  Three mechanisms, and one of them does not exist.
+
+*** Writing to a path the human picks
+
+The File System Access API (=window.showSaveFilePicker()=) writes directly to a
+chosen location, so nothing transient is left behind.  It is *Chromium only* --
+Chrome and Edge.  Safari and Firefox do not implement it, and a person whose Passkey
+lives in Apple Passwords is quite likely to be in Safari.  So it is an enhancement,
+never the only path.
+
+*** Downloading a blob
+
+=URL.createObjectURL= plus an =<a download>= works everywhere.  Two caveats, one
+cosmetic and one not:
+
+- A leading-dot filename is awkward: Finder hides it and Safari may append =.txt=.
+  Offer =nightly-export.env= and let the human rename.
+- The file lands in =~/Downloads=, which is readable by every process the human runs,
+  Spotlight-indexed, and swept into Time Machine.  A private key there is durable in
+  a place people forget to look.  =~/Downloads= is not iCloud-synced by default,
+  which is the one mercy.
+
+So a download is acceptable /with/ a visible instruction to move the file and =chmod
+0600= it -- and it is strictly worse than pasting into an editor already open on the
+destination host, which creates no second copy at all.
+
+*** Writing to the OS keystore -- not possible from a page
+
+There is no web API for the system keychain, and the near misses are all dead ends:
+
+- =navigator.credentials= with =PasswordCredential= is Chromium-only, writes to the
+  /browser's/ password manager rather than the login keychain, is origin-scoped, and
+  cannot be read by a separate process.  Useless to a script.
+- WebAuthn =create()= does put a key in the platform authenticator, but never returns
+  the private half and will only ever produce assertions -- which is the entire reason
+  this design generates a software key instead.
+- A custom URL scheme or native messaging host could bridge to the keychain, but that
+  is an installed application, not a web page.
+
+The division is therefore firm: *the page can deliver the material; only a process on
+the script host can place it in a keystore.*  Hence a two-step, where the page's job
+ends at the file:
+
+#+BEGIN_SRC sh
+  localwebauthn-client import ./nightly-export.env \
+      --keystore keychain/localwebauthn/nightly-export
+  # reads line 2, stores the key in the keychain, rewrites line 2 as
+  # keystore:keychain/localwebauthn/nightly-export, then shreds the original
+#+END_SRC
+
+*** The constraint that decides which flow to use
+
+*Secure Enclave and TPM keys cannot be imported.*  They are generated in place, by
+=SecKeyCreateRandomKey= with =kSecAttrTokenIDSecureEnclave= or by the TPM itself, and
+no API accepts external key material into them.  So the browser-generates flow in this
+document can reach =file=, =keychain=, =dpapi=, =keyring= and (for supported key specs)
+cloud KMS -- but it can *never* reach the two strongest backends.
+
+Those require the key to be born on the script host, which is the bootstrap-token flow
+in =docs/API-AUTH/PROVISIONING.md=.  The two flows are complementary, not redundant:
+this one is simpler and works when the human is provisioning a script they cannot shell
+into; that one is the only route to a non-exportable key.
 
 ** Where the key material ends up
 
@@ -333,13 +429,17 @@ at all.
   |               cYEL |                  |                cGRE |
   +---------+----------+                  +---------------------+
             |
-            | PRIVATE half, once, via the clipboard
+            | PRIVATE half, once, by paste or download
             v
-  +--------------------+
-  | .env, mode 0600    |
-  | LWA_PRIVATE_KEY    |
-  |               cRED |
-  +--------------------+
+  +--------------------+                  +---------------------+
+  | .env, mode 0600    |  optional import | OS keystore         |
+  | LWA_CREDENTIAL_KEY +----------------->+ keychain, DPAPI,    |
+  | base64 PKCS8       |  then shred      | keyring, cloud KMS  |
+  |               cRED |                  |                cPNK |
+  +--------------------+                  +---------------------+
+                                           line 2 becomes
+                                           keystore:...
+                                           and .env holds no secret
 
   Two copies of each PUBLIC half.  Exactly one copy of each PRIVATE half.
   No secret is shared between the human and the script.
@@ -347,6 +447,68 @@ at all.
 
 #+RESULTS:
 [[file:./images/api-auth-custody.png]]
+
+#+LATEX: \clearpage
+* Key Custody
+
+=LWA_CREDENTIAL_KEY= holds either base64 PKCS#8 or a =keystore:= URI.  The URI form
+keeps every secret out of =.env=, and for the hardware backends keeps it out of
+addressable memory entirely.
+
+** The URI scheme
+
+: keystore:<backend>/<locator>[?<params>]
+
+| URI                                             | Exportable | Signs   | Notes                                        |
+|-------------------------------------------------+------------+---------+----------------------------------------------|
+| =keystore:file//etc/lwa/nightly.key=            | yes        | ES256, Ed25519 | Same trust as =.env=, but a separate file with its own mode and owner. |
+| =keystore:env/LWA_KEY_B64=                      | yes        | ES256, Ed25519 | Read from another variable, for container secret injection. |
+| =keystore:keychain/<service>/<account>=         | yes        | ES256, Ed25519 | macOS login keychain generic-password item; ACL-gated per application. |
+| =keystore:dpapi//path/to/blob=                  | no[fn:1]   | ES256, Ed25519 | Windows DPAPI, machine or user scope.        |
+| =keystore:keyring/<collection>/<item>=          | yes        | ES256, Ed25519 | Linux Secret Service or kernel keyring.      |
+| =keystore:secure-enclave/<tag>=                 | *never*    | ES256 only | P-256 only.  Key must be *generated in place*. |
+| =keystore:tpm/0x81000001=                       | *never*    | ES256 only | TPM 2.0 persistent handle.  Generated in place. |
+| =keystore:pkcs11/<module>?token=<label>&id=<hex>= | *never*  | ES256 only | YubiHSM, SoftHSM, smartcards.                |
+| =keystore:awskms/<key-arn>=                     | *never*    | ES256 only | =ECDSA_SHA_256=.  Every signature is a separate IAM-authorized, audited call. |
+| =keystore:gcpkms/<resource>=                    | *never*    | ES256 only | =EC_SIGN_P256_SHA256=.                       |
+
+[fn:1] DPAPI protects the blob at rest with a machine or user secret; the plaintext
+key still passes through process memory when unwrapped, so it is "not exportable by an
+attacker without code execution", not "not exportable".
+
+Three things fall out of that table and are worth stating plainly.
+
+*Every non-exportable backend is ES256-only.*  Secure Enclave, TPM, PKCS#11 tokens and
+both cloud KMSs do P-256 and not Ed25519.  So choosing strong custody means choosing
+=alg: -7=, which means living with the DER-versus-raw conversion in /The
+signature-format trap/.  Ed25519's nicer ergonomics are available only to software
+keys.
+
+*Non-exportable backends cannot be reached by this document's flow.*  See /The
+constraint that decides which flow to use/ -- they need the bootstrap-token flow.
+
+*A KMS backend changes the per-request calculus.*  Signing a DPoP proof per request
+against a network KMS adds latency, cost and quota to every API call.  That is the one
+case where the single-key design should be revisited in favour of a separate,
+in-memory session key -- see =docs/API-AUTH/CONSENSUS.md= section A.  A Secure Enclave
+or TPM signature is local and fast enough that single-key remains correct.
+
+** The client interface
+
+Everything above is one small interface, so the client never assumes the key is in
+memory:
+
+#+BEGIN_SRC ts
+  type MachineKeyStore = {
+    algorithm: -7 | -8;
+    publicKeyCose(): Promise<Uint8Array>;         // registration only
+    sign(data: Uint8Array): Promise<Uint8Array>;  // DER for -7, raw for -8
+  };
+#+END_SRC
+
+For the DPoP path the client needs one more thing from the same key -- the RFC 7638
+thumbprint of its public JWK -- which is derivable from =publicKeyCose()= and needs no
+extra backend capability.
 
 #+LATEX: \clearpage
 * Part 2: The Script Opens an API Session
@@ -364,16 +526,16 @@ sequenceDiagram
   participant SV as Server
   participant DB as Database
 
-  EV->>CL: read key + credentialId + userHandle + rpId + origin
-  CL->>CL: importKey(pkcs8, extractable: false)
+  EV->>CL: LWA_CREDENTIAL (JSON) + LWA_CREDENTIAL_KEY
+  CL->>CL: parse JSON, check v == 1<br/>open the key: importKey(pkcs8) or bind the keystore URI
 
   Note over CL,DB: Ceremony -- once per session
 
-  CL->>SV: POST /api/machine/login/options
+  CL->>SV: POST /api/machine/v1/login/options
   SV->>DB: INSERT challenges: kind=authentication,<br/>allowed_credential_kinds=["service"]
   SV-->>CL: options + challengeToken -- both in the JSON body, no cookies
   CL->>CL: authData 37 B (flags 0x05) + clientDataJSON<br/>sign, then rawToDer
-  CL->>SV: POST /api/machine/login/verify
+  CL->>SV: POST /api/machine/v1/login/verify
   SV->>DB: consumeChallenge, check credential.kind is permitted,<br/>verify signature, counter 0 -> 0
   SV->>DB: INSERT sessions, UPDATE credentials.last_used_at
   SV-->>CL: sessionToken (JSON body) + DPoP-Nonce header
@@ -398,11 +560,16 @@ sequenceDiagram
 #+BEGIN_SRC mermaid :file ./images/api-auth-assertion.png
 flowchart LR
   subgraph env[".env -- durable"]
-    pk["LWA_PRIVATE_KEY<br/><b>SECRET</b>"]
-    cid["LWA_CREDENTIAL_ID"]
-    uh["LWA_USER_HANDLE"]
-    rp["LWA_RP_ID"]
-    og["LWA_ORIGIN"]
+    pk["LWA_CREDENTIAL_KEY<br/>PKCS#8 or keystore URI<br/><b>SECRET</b>"]
+    js["LWA_CREDENTIAL<br/>JSON"]
+    cid["credentialId"]
+    uh["userHandle"]
+    rp["rpId"]
+    og["origin"]
+    js --> cid
+    js --> uh
+    js --> rp
+    js --> og
   end
 
   ch["challenge<br/>from the server"]
@@ -485,16 +652,17 @@ standard Passkey server-side confirmation is required: it is not.
   +--------------------------+                +---------------------------+
   | .env    DURABLE          |                | credentials    DURABLE    |
   |                          |                |                           |
-  | LWA_PRIVATE_KEY   cRED   |                | id                        |
-  | LWA_CREDENTIAL_ID        |                | user_id                   |
-  | LWA_USER_HANDLE          |                | public_key    COSE   cGRE |
-  | LWA_RP_ID                |                | counter = 0               |
-  | LWA_ORIGIN               |                | kind    = service         |
-  | LWA_ALG                  |                | label                     |
-  | LWA_BASE_URL             |                | last_used_at              |
+  | LWA_CREDENTIAL           |                | id                        |
+  |   v, baseUrl, rpId,      |                | user_id                   |
+  |   origin, credentialId,  |                | public_key    COSE   cGRE |
+  |   userHandle, alg        |                | counter = 0               |
+  |                          |                | kind    = service         |
+  | LWA_CREDENTIAL_KEY       |                | label                     |
+  |   PKCS8, or a keystore   |                | last_used_at              |
+  |   URI. THE ONE SECRET.   |                |                           |
   |                     cYEL |                |                      cGRE |
   +--------------------------+                +---------------------------+
-   7 values, 1 of them secret                  no secret that authenticates
+   2 data lines, 1 of them secret              no secret that authenticates
 
   +--------------------------+                +---------------------------+
   | memory   PER SESSION     |                | sessions       PER SESSION|
@@ -581,6 +749,136 @@ What connection-scoping reaches for is a small blast radius for leaked session
 material.  A per-request DPoP proof delivers that more completely: a captured token is
 useless without the key on *every* request, whatever the connection does.  Pair it
 with a short =sessionAbsoluteMs= for the =service= kind and re-ceremony on =401=.
+
+#+LATEX: \clearpage
+* Restrictions on API Credentials
+
+An API credential is a durable key in a file, held by a program, acting as a person.
+Everything it must /not/ be able to do follows from one question: /could this
+capability be used to make the compromise of that file permanent, or to widen it
+beyond the script's job?/
+
+The design principle constrains where each rule can live.  A restriction is only real
+if the *server* enforces it -- a client-side check is a suggestion.  Of the rules
+below, the package must own the two that concern paths the package itself controls
+(registration, and which credentials a ceremony admits); the rest are host
+authorization decisions, which the package enables by reporting =credentialKind= on
+=SessionIdentity= and on every event.
+
+** The rules
+
+| # | An API session must not...                        | Enforced by | Mechanism                                                       |
+|---+---------------------------------------------------+-------------+-----------------------------------------------------------------|
+| 1 | register any credential                           | *package*   | =registrationOptions= / =verifyRegistration= refuse a non-interactive authorizing session |
+| 2 | authenticate at a browser endpoint                | *package*   | challenge-scoped =credentialKinds=; non-interactive kinds excluded by default |
+| 3 | revoke a credential other than its own            | host        | gate on =session.credentialKind=                                |
+| 4 | revoke sessions other than its own                | host        | same                                                            |
+| 5 | issue or exchange an enrollment grant             | host        | =issueEnrollment= is privileged                                 |
+| 6 | satisfy a step-up gate for a human operation      | host        | step-up checks *kind and freshness*, not freshness alone        |
+| 7 | receive a session cookie                          | host        | machine routes never =Set-Cookie=                               |
+| 8 | enumerate the user's other credentials            | host        | =listCredentials= is privileged                                 |
+| 9 | change account settings, channels, or recovery    | host        | account-takeover surface                                        |
+| 10 | count as the user's last credential              | *package*   | kind-scoped last-credential guard                               |
+| 11 | present a bare Bearer token                      | *package*   | per-kind =requireDpop=                                          |
+| 12 | hold a long session                              | *package*   | per-kind =sessionAbsoluteMs=                                    |
+| 13 | authenticate without being distinguishable        | *package*   | =credentialKind= on =credential.authenticated= and =session.created= |
+
+** The three that are easy to get wrong
+
+*Rule 1 is the self-replication hole.*  =registrationOptions({ sessionToken })=
+authorizes registration from /any/ live session, which is the intended "add another
+passkey" feature for a human.  The script's session is a live session.  So without
+rule 1, a leaked =.env= key registers a spare credential and survives revocation of
+the first -- revocation stops being a remedy at all.  This is the one restriction that
+must be in the package, because =registrationOptions= is a package call and no host
+gate sits in front of it.
+
+Rotation is the casualty.  The tidy story of "authenticate with key A, register key B,
+revoke A" depends on exactly the path rule 1 closes.  Rotation therefore goes back
+through a human-authorized grant, which is a real cost and the right trade.
+
+*Rule 6 is the subtle one.*  The step-up gate in Part 1 checks
+=now - session.authenticatedAt < 2 min=.  An API credential can produce a fresh
+assertion at will, forever -- so freshness alone is trivially satisfied and the API
+credential silently clears every step-up check in the application, including the one
+guarding creation of more API credentials.  Step-up must assert /both/:
+
+#+BEGIN_SRC js
+  function requireFreshHuman(resolved) {
+    if (resolved.session.credentialKind !== null) return false;   // rule 6
+    return Date.now() - resolved.session.authenticatedAt < 2 * 60_000;
+  }
+#+END_SRC
+
+*Rule 2 needs a fail-closed default, and the obvious one breaks hosts.*  Defaulting
+=authenticationOptions()= to "kind IS NULL only" is safe for today's deployments but
+locks out any host that backfills =kind='person'= onto human credentials.  Defaulting
+to "any kind" fails open, which is the whole thing we are trying to prevent.
+
+The resolution is to declare it in configuration rather than at each call site, so the
+policy is visible in one place and a route cannot forget it:
+
+#+BEGIN_SRC ts
+  new LocalWebAuthn({
+    // ...
+    credentialKinds: {
+      service: {
+        interactive: false,        // excluded from authenticationOptions() by default
+        canRegister: false,        // rule 1
+        requireDpop: true,         // rule 11
+        sessionAbsoluteMs: 15 * 60_000,   // rule 12
+      },
+    },
+  });
+#+END_SRC
+
+Undeclared kinds -- including =null= -- behave exactly as today, so the change is
+monotone: an existing deployment that declares nothing sees no difference, and a host
+adopting service credentials declares them as part of adopting the feature.  The
+machine route then opts in explicitly:
+
+#+BEGIN_SRC ts
+  auth.authenticationOptions({ credentialKinds: ['service'] });
+#+END_SRC
+
+** What is deliberately not restricted
+
+- *Authenticating as often as it likes.*  Concurrency is the point; see /Concurrency
+  and session lifetime/.
+- *Revoking itself.*  A script that detects its own compromise should be able to
+  kill its credential and its sessions.  Rules 3 and 4 scope to /other/ credentials.
+- *Reading its own credential's metadata* -- label, =createdAt=, =lastUsedAt=.  Useful
+  for a health check, and discloses nothing the holder does not have.
+- *Business authorization.*  What the script may do with the API is the host's, keyed
+  on =credentialKind= and =credentialId=.  The package takes no position, which is the
+  =docs/RATIONALE.md= non-goal this design leaves intact.
+
+** API versioning
+
+Four independent version numbers, which is three more than anyone wants but they move
+on different clocks:
+
+| Version                            | Owns                          | On a bump                                      |
+|------------------------------------+-------------------------------+------------------------------------------------|
+| =LWA_CREDENTIAL= =v=               | the =.env= payload schema     | client refuses an unknown =v= rather than guessing |
+| =/api/machine/v1/=                 | the endpoint contract         | old path served until its clients are retired  |
+| =LOCALWEBAUTHN_SCHEMA_VERSION=     | the database schema           | versioned migration, per /Open Items/          |
+| client build version               | diagnostics and EOL policy    | reported in a header, optionally refused       |
+
+Path-versioning the machine endpoints matters more than for browser endpoints: a
+browser reloads and gets the new client, whereas a script keeps its =.env= and its
+pinned dependency until somebody redeploys it, possibly for years.  A credential minted
+against =v1= must keep working at =v2= or the versioning is decorative.
+
+Have the client send its own version so operators can see what is actually deployed
+before they retire anything:
+
+: LWA-Client: @localwebauthn/client/1.4.2
+
+That is diagnostics, not authentication -- it is a self-asserted string like every
+other client claim, and per the design principle it must never gate a security
+decision.  Refusing an EOL client on it is fine, because a client that lies about its
+version to keep working has only postponed its own breakage.
 
 #+LATEX: \clearpage
 * Implementation Notes
