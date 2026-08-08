@@ -1,14 +1,19 @@
 /**
  * Current schema version.
  *
- * - `1` — the original tables.
- * - `2` — credential `kind`, per-ceremony kind scoping on challenges, and the
- *   DPoP proof-replay cache.
- * - `3` — the DPoP nonce slot table.
- * - `4` — `credential_kind` on enrollment grants, and the pending-grant
- *   uniqueness scoped by it. See {@link LOCALWEBAUTHN_MIGRATIONS}.
+ * - `1` — the original tables. The only version ever released.
+ * - `2` — everything machine credentials need, as one step: `kind` on
+ *   credentials, per-ceremony kind scoping on challenges, `credential_kind` on
+ *   enrollment grants with the pending-grant uniqueness re-scoped by it, and the
+ *   DPoP proof-replay and nonce-slot tables. See {@link LOCALWEBAUTHN_MIGRATIONS}.
+ *
+ * Kept to two versions on purpose. The work arrived in several passes, each of
+ * which briefly had its own version, but since `1` is the only version that was
+ * ever published there is no database anywhere at an intermediate one — so
+ * collapsing them leaves one upgrade path to write, test and read instead of
+ * four.
  */
-declare const LOCALWEBAUTHN_SCHEMA_VERSION = 4;
+declare const LOCALWEBAUTHN_SCHEMA_VERSION = 2;
 /**
  * The schema, as one script split on `;` by {@link localWebAuthnSchemaStatements}.
  *

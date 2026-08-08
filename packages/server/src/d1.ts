@@ -125,6 +125,18 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
     return revoked.results.map((row) => row.id);
   }
 
+  async revokePendingEnrollmentGrants(
+    userId: string,
+    now: number,
+    credentialKind: string | null,
+  ): Promise<string[]> {
+    const result = await this.#database
+      .prepare(SQL.revokePendingGrants)
+      .bind(now, userId, credentialKind)
+      .all<{ id: string }>();
+    return result.results.map((row) => row.id);
+  }
+
   async exchangeEnrollment(
     tokenHash: Uint8Array,
     sessionHash: Uint8Array,

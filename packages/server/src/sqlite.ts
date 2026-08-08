@@ -124,6 +124,17 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
       .immediate();
   }
 
+  async revokePendingEnrollmentGrants(
+    userId: string,
+    now: number,
+    credentialKind: string | null,
+  ): Promise<string[]> {
+    const rows = this.#database
+      .prepare(SQL.revokePendingGrants)
+      .all(now, userId, credentialKind) as { id: string }[];
+    return rows.map((row) => row.id);
+  }
+
   async exchangeEnrollment(
     tokenHash: Uint8Array,
     sessionHash: Uint8Array,

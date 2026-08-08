@@ -1,5 +1,5 @@
-import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsInput, m as RegistrationOptionsResult, n as RegistrationVerificationInput, o as RegistrationVerificationResult, A as AuthenticationOptionsInput, p as AuthenticationOptionsResult, q as AuthenticationVerificationInput, r as AuthenticationVerificationResult, s as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-BTWfld8_.js';
-export { t as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, u as LocalWebAuthnDurations, v as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, w as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-BTWfld8_.js';
+import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsInput, m as RegistrationOptionsResult, n as RegistrationVerificationInput, o as RegistrationVerificationResult, A as AuthenticationOptionsInput, p as AuthenticationOptionsResult, q as AuthenticationVerificationInput, r as AuthenticationVerificationResult, s as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-DdbmOKqa.js';
+export { t as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, u as LocalWebAuthnDurations, v as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, w as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-DdbmOKqa.js';
 export { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 declare function defaultRandomBytes(length: number): Uint8Array;
@@ -432,11 +432,13 @@ declare class LocalWebAuthn {
      *
      * Pass `kinds` to scope the revoke to credentials of those
      * {@link Credential.kind} values — "revoke this person's machine access,
-     * leave their passkeys" — with two differences from the unscoped form:
+     * leave their passkeys". Two differences from the unscoped form:
      *
-     * - Pending enrollment grants and unconsumed challenges are **left alone**. A
-     *   grant carries no kind, so cancelling a person's in-flight enrollment while
-     *   revoking their service credentials would be silently wrong.
+     * - Pending enrollment grants **of those kinds** are revoked too, but grants of
+     *   other kinds and all unconsumed challenges are left alone. Revoking the
+     *   grants matters: a live grant of kind X is standing authorization to create
+     *   another credential of kind X, so leaving one would let the holder
+     *   immediately re-enroll and undo the revoke.
      * - It is not a lockout. A surviving credential of another kind still
      *   authenticates as this user, so `{ kinds: ['person'] }` does *not* stop the
      *   account being used — it stops the person's own devices being used. Suspend

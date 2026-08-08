@@ -2,38 +2,50 @@
 
 ## 2.2.0 → unreleased (credential kinds and machine credentials)
 
-### Schema versions 2, 3 and 4
+### Schema version 2
 
-The schema moves to version 4. `migrateSqlite`, `migratePostgres` and `migrateD1` now read
-the stored version and apply only what is missing, so calling them on a 1.x or 2.2.0
-database upgrades it in place. Adding a column is why that machinery had to exist —
+The schema moves from 1 to 2, in one step. `migrateSqlite`, `migratePostgres` and
+`migrateD1` now read the stored version and apply only what is missing, so calling them on
+a 1.x database upgrades it in place. Adding a column is why that machinery had to exist —
 `CREATE TABLE IF NOT EXISTS` cannot do it.
 
-What version 2 adds:
+Version 2 adds:
 
 - `localwebauthn_credentials.kind` — nullable, host-defined credential class.
 - `localwebauthn_challenges.credential_kind` — the kind a registration ceremony creates.
 - `localwebauthn_challenges.allowed_credential_kinds` — JSON array of kinds an
   authentication ceremony accepts; `NULL` is unconstrained.
+- `localwebauthn_enrollment_grants.credential_kind` — the kind a bootstrap token may
+  create.
 - `localwebauthn_dpop_proofs` — the DPoP `jti` replay cache.
+- `localwebauthn_dpop_nonces` — server-issued DPoP nonces, keyed by time slot.
 - `localwebauthn_credential_kind_idx` on `(user_id, kind, revoked_at)`.
+- `localwebauthn_active_grant_user_idx` re-scoped from `(user_id)` to
+  `(user_id, COALESCE(credential_kind, ''))`. `COALESCE` is required: NULLs are distinct
+  in a unique index on both engines, so indexing the bare column would silently drop the
+  one-pending-grant invariant for the default kind — which is every grant a host that
+  ignores kinds ever issues. This is the one statement that has to drop and recreate
+  rather than being additive.
 
-Version 3 adds `localwebauthn_dpop_nonces`, keyed by time slot.
-
-Version 4 adds `localwebauthn_enrollment_grants.credential_kind` and re-scopes
-`localwebauthn_active_grant_user_idx` from `(user_id)` to
-`(user_id, COALESCE(credential_kind, ''))`. `COALESCE` is required: NULLs are distinct
-in a unique index on both engines, so indexing the bare column would silently drop the
-one-pending-grant invariant for the default kind — which is every grant a host that
-ignores kinds ever issues.
-
-Note that `LOCALWEBAUTHN_SCHEMA_SQL` must contain **no `--` comments**. The statement
-splitter collapses whitespace, which joins a comment to the statement after it and
-comments the whole thing out; D1 reports "SQL code did not contain a statement".
+This landed as four versions during development, collapsed to one before release. Version
+1 is the only version ever published, so no database anywhere sits at an intermediate
+version, and collapsing leaves a single upgrade path to write, test and read.
 
 No `CHECK` constraints were added. SQLite cannot add one to an existing table, and a fresh
 install must not end up with constraints an upgraded install lacks — the two would diverge
 and only one of them would be tested. The equivalent invariants live in the service layer.
+
+`tests/server/migrations.test.ts` upgrades a database built from the literal released v1
+DDL and asserts it ends up with the same tables, columns and indexes as a fresh install,
+that existing rows survive with the new columns `NULL`, and that re-running the migration
+is a no-op.
+
+Two traps if you extend this. `LOCALWEBAUTHN_SCHEMA_SQL` must contain **no `--`
+comments**: the statement splitter collapses whitespace, which joins a comment to the
+statement after it and comments the whole thing out — D1 reports "SQL code did not contain
+a statement". And a new _table_ needs no entry in `LOCALWEBAUTHN_MIGRATIONS`, because
+`localWebAuthnUpgradeStatements` lifts its `CREATE TABLE IF NOT EXISTS` out of the full
+schema in the right dialect; only columns and index changes need explicit statements.
 
 **Every existing credential keeps `kind: NULL`**, and an undeclared kind behaves exactly as
 before, so a deployment that ignores all of this sees no behaviour change.
@@ -105,14 +117,17 @@ revokeUserSessions(userId, { kinds: ['person'] }); // sign the person out, keep 
 revokeUserAuthentication(userId, { kinds: ['service'] }); // revoke machine access only
 ```
 
-Two things to know about the scoped form of `revokeUserAuthentication`. It leaves
-pending grants and unconsumed challenges alone, because a grant carries no kind and
-cancelling a person's in-flight enrollment while revoking their service credentials
-would be silently wrong. And it is **not a lockout**: a surviving credential of
-another kind still authenticates as that user, so suspend through `getUser` returning
-`active: false` if that is the intent. Custom stores add
-`revokeLiveCredentialSessions`, which the filtered path loops over rather than binding
-a variable-length `IN (...)` the shared static SQL cannot express.
+Two things to know about the scoped form of `revokeUserAuthentication`. It revokes
+pending enrollment grants **of the named kinds** — a live grant of kind X is standing
+authorization to create another credential of kind X, so leaving one would let the
+holder re-enroll straight back in — while grants of other kinds and all unconsumed
+challenges are untouched. And it is **not a lockout**: a surviving credential of another
+kind still authenticates as that user, so suspend through `getUser` returning
+`active: false` if that is the intent.
+
+Custom stores add two methods for these paths: `revokeLiveCredentialSessions`, which the
+filtered session revoke loops over rather than binding a variable-length `IN (...)` the
+shared static SQL cannot express, and `revokePendingEnrollmentGrants(userId, now, kind)`.
 
 An enrollment grant now carries the kind it is authorized to create, and that binding
 is what confines the token:

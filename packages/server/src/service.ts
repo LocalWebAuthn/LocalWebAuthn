@@ -853,11 +853,13 @@ export class LocalWebAuthn {
    *
    * Pass `kinds` to scope the revoke to credentials of those
    * {@link Credential.kind} values — "revoke this person's machine access,
-   * leave their passkeys" — with two differences from the unscoped form:
+   * leave their passkeys". Two differences from the unscoped form:
    *
-   * - Pending enrollment grants and unconsumed challenges are **left alone**. A
-   *   grant carries no kind, so cancelling a person's in-flight enrollment while
-   *   revoking their service credentials would be silently wrong.
+   * - Pending enrollment grants **of those kinds** are revoked too, but grants of
+   *   other kinds and all unconsumed challenges are left alone. Revoking the
+   *   grants matters: a live grant of kind X is standing authorization to create
+   *   another credential of kind X, so leaving one would let the holder
+   *   immediately re-enroll and undo the revoke.
    * - It is not a lockout. A surviving credential of another kind still
    *   authenticates as this user, so `{ kinds: ['person'] }` does *not* stop the
    *   account being used — it stops the person's own devices being used. Suspend
@@ -881,6 +883,14 @@ export class LocalWebAuthn {
         await this.#store.revokeCredential(userId, credential.id, now, {
           allowLastCredential: true,
         });
+      }
+      // A live grant of a revoked kind is standing authorization to create
+      // another credential of that kind, so leaving one would let the holder
+      // re-enroll straight back in.
+      for (const kind of kinds) {
+        for (const grantId of await this.#store.revokePendingEnrollmentGrants(userId, now, kind)) {
+          await this.#emit({ type: 'enrollment.revoked', at: now, userId, grantId });
+        }
       }
     } else {
       await this.#store.revokeUserAuthentication(userId, now);

@@ -9,7 +9,7 @@ import {
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnSchemaStatements
-} from "./chunk-RKQOJQ7E.js";
+} from "./chunk-V2WY6NG6.js";
 
 // src/d1.ts
 async function migrateD1(database, now = Date.now()) {
@@ -48,6 +48,10 @@ var D1LocalWebAuthnStore = class {
       record.createdAt
     ).run();
     return revoked.results.map((row) => row.id);
+  }
+  async revokePendingEnrollmentGrants(userId, now, credentialKind) {
+    const result = await this.#database.prepare(SQL.revokePendingGrants).bind(now, userId, credentialKind).all();
+    return result.results.map((row) => row.id);
   }
   async exchangeEnrollment(tokenHash, sessionHash, sessionExpiresAt, now) {
     const row = await returningRow(

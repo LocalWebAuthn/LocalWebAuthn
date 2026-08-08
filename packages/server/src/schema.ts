@@ -1,14 +1,19 @@
 /**
  * Current schema version.
  *
- * - `1` — the original tables.
- * - `2` — credential `kind`, per-ceremony kind scoping on challenges, and the
- *   DPoP proof-replay cache.
- * - `3` — the DPoP nonce slot table.
- * - `4` — `credential_kind` on enrollment grants, and the pending-grant
- *   uniqueness scoped by it. See {@link LOCALWEBAUTHN_MIGRATIONS}.
+ * - `1` — the original tables. The only version ever released.
+ * - `2` — everything machine credentials need, as one step: `kind` on
+ *   credentials, per-ceremony kind scoping on challenges, `credential_kind` on
+ *   enrollment grants with the pending-grant uniqueness re-scoped by it, and the
+ *   DPoP proof-replay and nonce-slot tables. See {@link LOCALWEBAUTHN_MIGRATIONS}.
+ *
+ * Kept to two versions on purpose. The work arrived in several passes, each of
+ * which briefly had its own version, but since `1` is the only version that was
+ * ever published there is no database anywhere at an intermediate one — so
+ * collapsing them leaves one upgrade path to write, test and read instead of
+ * four.
  */
-export const LOCALWEBAUTHN_SCHEMA_VERSION = 4;
+export const LOCALWEBAUTHN_SCHEMA_VERSION = 2;
 
 /**
  * The schema, as one script split on `;` by {@link localWebAuthnSchemaStatements}.
@@ -297,35 +302,30 @@ export const LOCALWEBAUTHN_MIGRATIONS: { version: number; statements: string[] }
   {
     version: 2,
     statements: [
+      // Columns first: the grant index below is defined over `credential_kind`.
       'ALTER TABLE localwebauthn_credentials ADD COLUMN kind TEXT',
       'ALTER TABLE localwebauthn_challenges ADD COLUMN credential_kind TEXT',
       'ALTER TABLE localwebauthn_challenges ADD COLUMN allowed_credential_kinds TEXT',
+      'ALTER TABLE localwebauthn_enrollment_grants ADD COLUMN credential_kind TEXT',
       `CREATE INDEX IF NOT EXISTS localwebauthn_credential_kind_idx
          ON localwebauthn_credentials(user_id, kind, revoked_at)`,
-    ],
-  },
-  {
-    version: 3,
-    // Table-only, so the `CREATE TABLE IF NOT EXISTS` copied out of the full
-    // schema below covers it; nothing incremental is needed here.
-    statements: [],
-  },
-  {
-    version: 4,
-    statements: [
-      'ALTER TABLE localwebauthn_enrollment_grants ADD COLUMN credential_kind TEXT',
-      // Re-scope the pending-grant uniqueness. Dropping first is required: an
-      // index cannot be redefined in place, and the old one would keep enforcing
-      // one pending grant per user regardless of kind.
+      // Re-scope the pending-grant uniqueness from (user_id) to
+      // (user_id, kind). Dropping first is required: an index cannot be
+      // redefined in place, and the old one would keep enforcing one pending
+      // grant per user regardless of kind.
       'DROP INDEX IF EXISTS localwebauthn_active_grant_user_idx',
       `CREATE UNIQUE INDEX IF NOT EXISTS localwebauthn_active_grant_user_idx
          ON localwebauthn_enrollment_grants(user_id, COALESCE(credential_kind, ''))
          WHERE completed_at IS NULL AND revoked_at IS NULL`,
+      // `localwebauthn_dpop_proofs` and `localwebauthn_dpop_nonces` need no entry
+      // here: they are new tables, so the idempotent `CREATE TABLE IF NOT EXISTS`
+      // lifted out of the full schema by `localWebAuthnUpgradeStatements` creates
+      // them, in whichever dialect that schema is written for.
     ],
   },
 ];
 
-/** Statements from {@link LOCALWEBAUTHN_MIGRATIONS} for engines whose `dpop_proofs` DDL differs. */
+/** Incremental statements for every entry above `fromVersion`, whitespace collapsed. */
 function migrationStatements(fromVersion: number): string[] {
   return LOCALWEBAUTHN_MIGRATIONS.filter((entry) => entry.version > fromVersion).flatMap((entry) =>
     entry.statements.map((statement) => statement.replace(/\s+/gu, ' ').trim()),
@@ -370,11 +370,11 @@ export function localWebAuthnUpgradeStatements(
   if (fromVersion >= LOCALWEBAUTHN_SCHEMA_VERSION) {
     return [];
   }
-  // Tables added after v1 are created by their `CREATE TABLE IF NOT EXISTS`
-  // from the full schema; columns need the explicit ALTERs.
   // Tables introduced after v1 come from the full schema's idempotent
   // `CREATE ... IF NOT EXISTS`, which the incremental list cannot express
-  // portably across both dialects.
+  // portably: the two dialects spell the same table differently (BLOB/BYTEA,
+  // INTEGER/BIGINT, STRICT). Columns still need explicit ALTERs, which are
+  // dialect-neutral.
   const newTables = schema.filter((statement) =>
     /^CREATE (TABLE|INDEX|UNIQUE INDEX) IF NOT EXISTS localwebauthn_dpop/u.test(statement),
   );

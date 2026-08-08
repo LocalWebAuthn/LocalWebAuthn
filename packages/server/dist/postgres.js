@@ -10,7 +10,7 @@ import {
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnUpgradeStatements
-} from "./chunk-RKQOJQ7E.js";
+} from "./chunk-V2WY6NG6.js";
 
 // src/postgres.ts
 var PG = Object.fromEntries(
@@ -63,6 +63,14 @@ var PostgresLocalWebAuthnStore = class {
       ]);
       return revoked.rows.map((row) => row.id);
     });
+  }
+  async revokePendingEnrollmentGrants(userId, now, credentialKind) {
+    const result = await this.#pool.query(PG.revokePendingGrants, [
+      now,
+      userId,
+      credentialKind
+    ]);
+    return result.rows.map((row) => row.id);
   }
   async exchangeEnrollment(tokenHash, sessionHash, sessionExpiresAt, now) {
     const result = await this.#pool.query(PG.exchangeEnrollment, [

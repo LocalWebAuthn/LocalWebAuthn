@@ -49,10 +49,11 @@ not built.
 
 What exists:
 
-- Schema versions 2 and 3: =credentials.kind=, per-ceremony kind scoping on
-  challenges, the DPoP =jti= replay cache and the nonce slot table, plus the
-  versioned migration runner all three adapters needed before any of it could be
-  added.
+- Schema version 2 --- one step from the only released version --- carrying
+  =credentials.kind=, per-ceremony kind scoping on challenges,
+  =credential_kind= on enrollment grants with the pending-grant index re-scoped
+  by it, and the DPoP replay-cache and nonce-slot tables.  Plus the versioned
+  migration runner all three adapters needed before any of it could be added.
 - =credentialKinds= configuration: =interactive=, =canRegister= and per-kind session
   lifetimes.  Undeclared kinds — including =null= — behave exactly as before.
 - =kind= reported on =SessionIdentity=, on both verification results, and on every

@@ -1,4 +1,4 @@
-import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, g as RevokeCredentialResult, h as CleanupResult } from './types-BTWfld8_.js';
+import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, g as RevokeCredentialResult, h as CleanupResult } from './types-DdbmOKqa.js';
 import '@simplewebauthn/server';
 
 type D1ResultLike<Row = Record<string, unknown>> = {
@@ -39,6 +39,7 @@ declare class D1LocalWebAuthnStore implements LocalWebAuthnStore {
     #private;
     constructor(database: D1DatabaseLike);
     replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]>;
+    revokePendingEnrollmentGrants(userId: string, now: number, credentialKind: string | null): Promise<string[]>;
     exchangeEnrollment(tokenHash: Uint8Array, sessionHash: Uint8Array, sessionExpiresAt: number, now: number): Promise<EnrollmentSession | null>;
     resolveEnrollmentSession(sessionHash: Uint8Array, now: number): Promise<EnrollmentSession | null>;
     createChallenge(record: ChallengeRecord): Promise<boolean>;

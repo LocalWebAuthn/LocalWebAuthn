@@ -140,6 +140,19 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
     });
   }
 
+  async revokePendingEnrollmentGrants(
+    userId: string,
+    now: number,
+    credentialKind: string | null,
+  ): Promise<string[]> {
+    const result = await this.#pool.query<{ id: string }>(PG.revokePendingGrants, [
+      now,
+      userId,
+      credentialKind,
+    ]);
+    return result.rows.map((row) => row.id);
+  }
+
   async exchangeEnrollment(
     tokenHash: Uint8Array,
     sessionHash: Uint8Array,

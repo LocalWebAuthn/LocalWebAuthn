@@ -8,7 +8,7 @@ import {
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnUpgradeStatements
-} from "./chunk-RKQOJQ7E.js";
+} from "./chunk-V2WY6NG6.js";
 
 // src/sqlite.ts
 var Rollback = class extends Error {
@@ -45,6 +45,10 @@ var SqliteLocalWebAuthnStore = class {
       );
       return revoked.map((row) => row.id);
     }).immediate();
+  }
+  async revokePendingEnrollmentGrants(userId, now, credentialKind) {
+    const rows = this.#database.prepare(SQL.revokePendingGrants).all(now, userId, credentialKind);
+    return rows.map((row) => row.id);
   }
   async exchangeEnrollment(tokenHash, sessionHash, sessionExpiresAt, now) {
     const row = this.#database.prepare(SQL.exchangeEnrollment).get(now, sessionHash, sessionExpiresAt, tokenHash, now);

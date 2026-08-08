@@ -437,18 +437,29 @@ describe('kind-filtered revocation', () => {
     expect(await auth.resolveSession(person.verified.sessionToken)).not.toBeNull();
   });
 
-  it('leaves pending grants alone when scoped, unlike the unscoped form', async () => {
+  it('revokes pending grants of the revoked kinds, and only those', async () => {
     const { auth } = await bothKinds();
-    // A grant carries no kind, so a scoped revoke must not cancel it.
-    const issue = await auth.issueEnrollment('user-1');
+    const personGrant = await auth.issueEnrollment('user-1', { credentialKind: 'person' });
+    const serviceGrant = await auth.issueEnrollment('user-1', { credentialKind: 'service' });
+
     await auth.revokeUserAuthentication('user-1', { kinds: ['service'] });
-    await expect(auth.exchangeEnrollment(issue.enrollmentToken)).resolves.toHaveProperty(
+
+    // A live service grant would be standing authorization to re-enroll straight
+    // back in, undoing the revoke.
+    await expect(auth.exchangeEnrollment(serviceGrant.enrollmentToken)).rejects.toMatchObject({
+      code: 'invalid_enrollment',
+    });
+    // The person's in-flight link is untouched.
+    await expect(auth.exchangeEnrollment(personGrant.enrollmentToken)).resolves.toHaveProperty(
       'enrollmentSessionToken',
     );
+  });
 
-    const second = await auth.issueEnrollment('user-1');
+  it('revokes every grant when unscoped', async () => {
+    const { auth } = await bothKinds();
+    const issue = await auth.issueEnrollment('user-1', { credentialKind: 'person' });
     await auth.revokeUserAuthentication('user-1');
-    await expect(auth.exchangeEnrollment(second.enrollmentToken)).rejects.toMatchObject({
+    await expect(auth.exchangeEnrollment(issue.enrollmentToken)).rejects.toMatchObject({
       code: 'invalid_enrollment',
     });
   });

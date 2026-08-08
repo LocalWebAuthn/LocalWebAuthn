@@ -272,6 +272,18 @@ export type LocalWebAuthnStore = {
   replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]>;
 
   /**
+   * Revoke every pending grant for a user, optionally only those of one kind.
+   *
+   * Pending means uncompleted and unrevoked. Returns the revoked IDs for audit.
+   * Touches neither credentials nor sessions.
+   */
+  revokePendingEnrollmentGrants(
+    userId: string,
+    now: number,
+    credentialKind: string | null,
+  ): Promise<string[]>;
+
+  /**
    * Atomically consume an enrollment token, creating an enrollment session.
    *
    * Must be single-use: the first call with a given `tokenHash` succeeds;

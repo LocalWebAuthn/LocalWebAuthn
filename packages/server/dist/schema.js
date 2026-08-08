@@ -7,7 +7,7 @@ import {
   localWebAuthnPostgresSchemaStatements,
   localWebAuthnSchemaStatements,
   localWebAuthnUpgradeStatements
-} from "./chunk-RKQOJQ7E.js";
+} from "./chunk-V2WY6NG6.js";
 export {
   LOCALWEBAUTHN_MIGRATIONS,
   LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL,
