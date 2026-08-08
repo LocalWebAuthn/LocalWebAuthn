@@ -252,6 +252,76 @@ describe('issuing an API credential', () => {
   });
 });
 
+describe('the origin-check exemption', () => {
+  /** Machine routes are declared cookie-free, so no `Origin` is required. */
+  it('lets a machine route through with no Origin header', async () => {
+    const fixture = setup();
+    const response = await fixture.app.fetch(
+      new Request(`${ORIGIN}/api/machine/v1/login/options`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+  });
+
+  it('still rejects a cookie route with no Origin', async () => {
+    const fixture = setup();
+    const response = await fixture.app.fetch(
+      new Request(`${ORIGIN}/api/auth/login/options`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      }),
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: 'invalid_origin' });
+  });
+
+  it('still rejects a cookie route with a foreign Origin', async () => {
+    const fixture = setup();
+    const response = await fixture.app.fetch(
+      new Request(`${ORIGIN}/api/auth/login/options`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' },
+        body: '{}',
+      }),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it('does not let a traversal path claim the exemption', async () => {
+    const fixture = setup();
+    // The exemption is decided on the normalized path, so `/api/machine/..` cannot
+    // be used to reach a cookie route without an Origin header.
+    const response = await fixture.app.fetch(
+      new Request(`${ORIGIN}/api/machine/../auth/login/options`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      }),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it('registration order no longer matters for the exemption', async () => {
+    // Machine routes are now mounted *after* the middleware, which previously
+    // would have subjected them to the origin check.
+    const fixture = setup();
+    const person = await signedInPerson(fixture);
+    const { payload, privateKey } = await mintApiKey(fixture, person.cookie, 'nightly export');
+    const client = new MachineClient({
+      payload,
+      keyStore: await importKeyStore(privateKey, ES256),
+      // A plain fetch that sets no Origin, exactly as a script would.
+      fetch: appFetch(fixture.app),
+    });
+    expect((await client.fetch('/api/machine/v1/whoami')).status).toBe(200);
+  });
+});
+
 describe('restrictions enforced over HTTP', () => {
   it('refuses a person passkey at the machine login route', async () => {
     const fixture = setup();

@@ -191,7 +191,9 @@ export function requireMachineSession(
   authentication: DemoAuthentication,
 ): MiddlewareHandler<DemoEnvironment> {
   return async (context, next) => {
-    context.header('Cache-Control', 'no-store');
+    // `Cache-Control: no-store` comes from the shared `/api/*` middleware, which
+    // now runs here too — this route group is exempt from its origin check, not
+    // from the middleware itself.
     const header = context.req.header('Authorization') ?? '';
     const match = /^(DPoP|Bearer) (?<token>[A-Za-z0-9_-]+)$/u.exec(header);
     const token = match?.groups?.token;

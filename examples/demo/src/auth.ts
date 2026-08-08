@@ -145,10 +145,47 @@ function authenticationError(context: Context<DemoEnvironment>, error: unknown):
   );
 }
 
-export function requireExpectedOrigin(config: DemoAuthConfig): MiddlewareHandler<DemoEnvironment> {
+export type OriginCheckOptions = {
+  /**
+   * Path prefixes whose routes read **no cookie**, and are therefore exempt from
+   * the origin check.
+   *
+   * The precondition is the name: an entry here is only sound if every route
+   * beneath it authenticates from the `Authorization` header alone and never
+   * falls back to a cookie. CSRF depends on *ambient* credentials — a cookie the
+   * browser attaches by itself — so a route that reads none cannot be attacked
+   * this way, and there is nothing for the check to defend.
+   *
+   * The exemption is declared rather than implied by registration order, because
+   * order is invisible at the point where it matters. Note also that requiring
+   * the header from a non-browser caller would prove nothing: `Origin` is a
+   * forbidden request-header, so page JavaScript cannot forge it and a browser's
+   * value is trustworthy — but any other client writes whatever string it likes.
+   * A check every caller satisfies trivially is worse than a documented absence,
+   * because its result can no longer be interpreted.
+   */
+  cookieFreePrefixes?: string[];
+};
+
+/**
+ * `Cache-Control: no-store` on every API response, plus an exact-origin check on
+ * state-changing requests to cookie-authenticated routes.
+ */
+export function requireExpectedOrigin(
+  config: DemoAuthConfig,
+  options: OriginCheckOptions = {},
+): MiddlewareHandler<DemoEnvironment> {
+  const cookieFreePrefixes = options.cookieFreePrefixes ?? [];
   return async (context, next) => {
     context.header('Cache-Control', 'no-store');
+    // Normalize before matching. A raw request line may carry `..` segments, and
+    // an exemption decided on the unnormalized path could be claimed by a request
+    // that then routes somewhere else entirely. `URL` removes dot segments, so
+    // this test sees the same path the router resolves.
+    const path = new URL(context.req.url).pathname;
+    const cookieFree = cookieFreePrefixes.some((prefix) => path.startsWith(prefix));
     if (
+      !cookieFree &&
       context.req.method !== 'GET' &&
       !isExactOrigin(context.req.header('Origin'), config.publicOrigin)
     ) {

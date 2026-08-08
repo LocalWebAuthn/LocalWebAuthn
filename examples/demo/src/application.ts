@@ -439,16 +439,14 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
   const app = new Hono<DemoEnvironment>();
   const authentication = createDemoAuthentication(database, options.auth);
 
-  // Machine routes mount first, deliberately: Hono applies `use` middleware only
-  // to handlers registered after it, and a script sends no `Origin` header, so
-  // the origin check below would reject every API call. CSRF is a browser-only
-  // threat — it needs ambient credentials a browser attaches automatically, and a
-  // script has none — so nothing is given up here.
-  mountMachineRoutes(app, database, authentication);
-
-  app.use('/api/*', requireExpectedOrigin(options.auth));
+  // `/api/machine/*` routes authenticate from the `Authorization` header and read
+  // no cookie, so CSRF cannot reach them and the origin check has nothing to
+  // defend — see `cookieFreePrefixes`. Declaring the exemption here means route
+  // registration order below carries no security weight.
+  app.use('/api/*', requireExpectedOrigin(options.auth, { cookieFreePrefixes: ['/api/machine/'] }));
   mountAuthenticationRoutes(app, authentication, options.auth);
   mountApiKeyRoutes(app, authentication, options.auth);
+  mountMachineRoutes(app, database, authentication);
   mountSignupRoutes(app, database, authentication, options.auth, {
     recoveryDelayMs: options.recoveryDelayMs ?? 10_000,
     recoveryClaimWindowMs: options.recoveryClaimWindowMs ?? 15 * 60_000,
