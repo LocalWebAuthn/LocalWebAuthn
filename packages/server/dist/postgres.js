@@ -6,11 +6,11 @@ import {
   enrollmentSessionFromRow,
   sessionFromRow,
   toPositionalPlaceholders
-} from "./chunk-LMFILUYY.js";
+} from "./chunk-4Z5SB2SA.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnUpgradeStatements
-} from "./chunk-2BSKCSEH.js";
+} from "./chunk-RKQOJQ7E.js";
 
 // src/postgres.ts
 var PG = Object.fromEntries(
@@ -49,7 +49,8 @@ var PostgresLocalWebAuthnStore = class {
     return this.#transaction(async (tx) => {
       const revoked = await tx.query(PG.revokePendingGrants, [
         record.createdAt,
-        record.userId
+        record.userId,
+        record.credentialKind
       ]);
       await tx.query(PG.insertEnrollmentGrant, [
         record.id,
@@ -57,6 +58,7 @@ var PostgresLocalWebAuthnStore = class {
         record.tokenHash,
         record.expiresAt,
         record.approvedByUserId,
+        record.credentialKind,
         record.createdAt
       ]);
       return revoked.rows.map((row) => row.id);

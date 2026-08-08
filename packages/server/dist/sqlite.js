@@ -4,11 +4,11 @@ import {
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-LMFILUYY.js";
+} from "./chunk-4Z5SB2SA.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnUpgradeStatements
-} from "./chunk-2BSKCSEH.js";
+} from "./chunk-RKQOJQ7E.js";
 
 // src/sqlite.ts
 var Rollback = class extends Error {
@@ -33,13 +33,14 @@ var SqliteLocalWebAuthnStore = class {
   }
   async replaceEnrollmentGrant(record) {
     return this.#database.transaction(() => {
-      const revoked = this.#database.prepare(SQL.revokePendingGrants).all(record.createdAt, record.userId);
+      const revoked = this.#database.prepare(SQL.revokePendingGrants).all(record.createdAt, record.userId, record.credentialKind);
       this.#database.prepare(SQL.insertEnrollmentGrant).run(
         record.id,
         record.userId,
         record.tokenHash,
         record.expiresAt,
         record.approvedByUserId,
+        record.credentialKind,
         record.createdAt
       );
       return revoked.map((row) => row.id);

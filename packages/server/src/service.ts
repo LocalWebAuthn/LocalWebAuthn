@@ -57,12 +57,16 @@ type RegistrationAuthorization =
       grantId: string;
       enrollmentSessionHash: Uint8Array;
       authenticatedSessionHash: null;
+      /** The grant's declared kind, which overrides anything the route requests. */
+      grantCredentialKind: string | null;
     }
   | {
       user: AuthUser;
       grantId: null;
       enrollmentSessionHash: null;
       authenticatedSessionHash: Uint8Array;
+      /** Always null: a session path has no grant to take a kind from. */
+      grantCredentialKind: null;
     };
 
 /** Normalize a host-supplied kind: trimmed, or `null` for unclassified. */
@@ -140,7 +144,15 @@ export class LocalWebAuthn {
    * @returns The enrollment URL (with `#token=` fragment), raw token, expiry,
    *   and the IDs of any grants this issue superseded.
    */
-  async issueEnrollment(userId: string, approvedByUserId?: string): Promise<EnrollmentIssue> {
+  async issueEnrollment(
+    userId: string,
+    approvedByUserIdOrOptions?: string | { approvedByUserId?: string; credentialKind?: string },
+  ): Promise<EnrollmentIssue> {
+    const options =
+      typeof approvedByUserIdOrOptions === 'string'
+        ? { approvedByUserId: approvedByUserIdOrOptions }
+        : (approvedByUserIdOrOptions ?? {});
+    const credentialKind = normalizeKind(options.credentialKind);
     const user = await this.#activeUser(userId);
     if (!user) {
       throw new LocalWebAuthnError(
@@ -159,7 +171,8 @@ export class LocalWebAuthn {
       userId,
       tokenHash: await sha256(enrollmentToken),
       expiresAt,
-      approvedByUserId: approvedByUserId ?? null,
+      approvedByUserId: options.approvedByUserId ?? null,
+      credentialKind,
       createdAt: now,
     });
 
@@ -251,7 +264,22 @@ export class LocalWebAuthn {
    */
   async registrationOptions(input: RegistrationOptionsInput): Promise<RegistrationOptionsResult> {
     const authorization = await this.#registrationAuthorization(input);
-    const credentialKind = normalizeKind(input.credentialKind);
+    const requested = normalizeKind(input.credentialKind);
+    // On the grant path the kind belongs to the grant, written by whoever issued
+    // it. It is binding: a token authorized for one class cannot be redeemed at a
+    // route that asks for another, which is the confinement the column exists for.
+    // A grant with no kind falls back to the route's, preserving the behaviour of
+    // every host that does not set one.
+    const granted = authorization.grantCredentialKind;
+    if (granted !== null && requested !== null && granted !== requested) {
+      throw new LocalWebAuthnError(
+        'invalid_configuration',
+        `This enrollment grant authorizes credential kind ${JSON.stringify(granted)}, ` +
+          `but the route asked for ${JSON.stringify(requested)}.`,
+        500,
+      );
+    }
+    const credentialKind = granted ?? requested;
     const credentials = await this.#store.listCredentials(authorization.user.id);
     const options = await this.#ceremonies.generateRegistrationOptions({
       rpName: this.config.rpName,
@@ -889,6 +917,7 @@ export class LocalWebAuthn {
           grantId: enrollment.grantId,
           enrollmentSessionHash,
           authenticatedSessionHash: null,
+          grantCredentialKind: enrollment.credentialKind,
         };
       }
     } else if (input.sessionToken) {
@@ -912,6 +941,7 @@ export class LocalWebAuthn {
           grantId: null,
           enrollmentSessionHash: null,
           authenticatedSessionHash,
+          grantCredentialKind: null,
         };
       }
     }

@@ -120,9 +120,12 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
 
   async replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]> {
     return this.#transaction(async (tx) => {
+      // Kind-scoped: replacing a person's pending link must not cancel a pending
+      // deployment-key grant, or vice versa.
       const revoked = await tx.query<{ id: string }>(PG.revokePendingGrants, [
         record.createdAt,
         record.userId,
+        record.credentialKind,
       ]);
       await tx.query(PG.insertEnrollmentGrant, [
         record.id,
@@ -130,6 +133,7 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
         record.tokenHash,
         record.expiresAt,
         record.approvedByUserId,
+        record.credentialKind,
         record.createdAt,
       ]);
       return revoked.rows.map((row) => row.id);

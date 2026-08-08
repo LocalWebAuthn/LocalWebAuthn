@@ -105,6 +105,10 @@ _________________
     credential file, DPoP proof construction, and `MachineClient'.
   - `verifyDpop' on the service, deriving the expected thumbprint from
     `credentials.public_key' so nothing is stored per session.
+  - `credential_kind' on enrollment grants, binding a bootstrap token to
+    the class it may create, plus the pending-grant index scoped by it
+    so provisioning a deployment key does not cancel a person's
+    in-flight enrollment link.
   - Kind filters on `revokeUserSessions' and `revokeUserAuthentication',
     so signing a person out of their devices does not stop their nightly
     export.
@@ -120,10 +124,6 @@ _________________
 
   Not built, and still design only:
 
-  - `credential_kind' on enrollment grants, and the kind-scoped
-    pending-grant index.  The demo mints credentials through the
-    *session* path, which needs neither; the bootstrap-token variant in
-    `docs/API-AUTH/PROVISIONING.md' would.
   - Keystore backends beyond a base64 PKCS#8 key.  The `keystore:' URI
     is parsed and refused with a pointer to /Key Custody/.
 

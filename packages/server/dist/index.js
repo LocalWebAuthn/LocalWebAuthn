@@ -594,7 +594,9 @@ var LocalWebAuthn = class {
    * @returns The enrollment URL (with `#token=` fragment), raw token, expiry,
    *   and the IDs of any grants this issue superseded.
    */
-  async issueEnrollment(userId, approvedByUserId) {
+  async issueEnrollment(userId, approvedByUserIdOrOptions) {
+    const options = typeof approvedByUserIdOrOptions === "string" ? { approvedByUserId: approvedByUserIdOrOptions } : approvedByUserIdOrOptions ?? {};
+    const credentialKind = normalizeKind(options.credentialKind);
     const user = await this.#activeUser(userId);
     if (!user) {
       throw new LocalWebAuthnError(
@@ -612,7 +614,8 @@ var LocalWebAuthn = class {
       userId,
       tokenHash: await sha256(enrollmentToken),
       expiresAt,
-      approvedByUserId: approvedByUserId ?? null,
+      approvedByUserId: options.approvedByUserId ?? null,
+      credentialKind,
       createdAt: now
     });
     for (const revokedGrantId of revokedGrantIds) {
@@ -698,7 +701,16 @@ var LocalWebAuthn = class {
    */
   async registrationOptions(input) {
     const authorization = await this.#registrationAuthorization(input);
-    const credentialKind = normalizeKind(input.credentialKind);
+    const requested = normalizeKind(input.credentialKind);
+    const granted = authorization.grantCredentialKind;
+    if (granted !== null && requested !== null && granted !== requested) {
+      throw new LocalWebAuthnError(
+        "invalid_configuration",
+        `This enrollment grant authorizes credential kind ${JSON.stringify(granted)}, but the route asked for ${JSON.stringify(requested)}.`,
+        500
+      );
+    }
+    const credentialKind = granted ?? requested;
     const credentials = await this.#store.listCredentials(authorization.user.id);
     const options = await this.#ceremonies.generateRegistrationOptions({
       rpName: this.config.rpName,
@@ -1251,7 +1263,8 @@ var LocalWebAuthn = class {
           user,
           grantId: enrollment.grantId,
           enrollmentSessionHash,
-          authenticatedSessionHash: null
+          authenticatedSessionHash: null,
+          grantCredentialKind: enrollment.credentialKind
         };
       }
     } else if (input.sessionToken) {
@@ -1269,7 +1282,8 @@ var LocalWebAuthn = class {
           user: resolved.user,
           grantId: null,
           enrollmentSessionHash: null,
-          authenticatedSessionHash
+          authenticatedSessionHash,
+          grantCredentialKind: null
         };
       }
     }

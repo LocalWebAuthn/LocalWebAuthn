@@ -1,16 +1,27 @@
 // src/queries.ts
 var SQL = {
   // -- Enrollment grants ----------------------------------------------------
-  /** Revoke every pending grant for a user, returning the revoked IDs. */
+  /**
+   * Revoke every pending grant for a user *of one kind*, returning the revoked IDs.
+   *
+   * Kind-scoped so issuing a deployment-key grant does not silently cancel a
+   * person's in-flight enrollment link. `COALESCE` because `NULL <> NULL`: every
+   * grant from a host that ignores kinds is `NULL` and must still form one group.
+   *
+   * Binds: now, userId, credentialKind.
+   */
   revokePendingGrants: `
     UPDATE localwebauthn_enrollment_grants
     SET revoked_at = ?
-    WHERE user_id = ? AND completed_at IS NULL AND revoked_at IS NULL
+    WHERE user_id = ?
+      AND COALESCE(credential_kind, '') = COALESCE(?, '')
+      AND completed_at IS NULL
+      AND revoked_at IS NULL
     RETURNING id`,
   insertEnrollmentGrant: `
     INSERT INTO localwebauthn_enrollment_grants(
-      id, user_id, token_hash, expires_at, approved_by_user_id, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?)`,
+      id, user_id, token_hash, expires_at, approved_by_user_id, credential_kind, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
   /**
    * Consume an enrollment token and open an enrollment session in one atomic
    * statement. Returns no rows when the token is unknown, already consumed,
@@ -24,9 +35,9 @@ var SQL = {
       AND completed_at IS NULL
       AND revoked_at IS NULL
       AND expires_at > ?
-    RETURNING id, user_id, session_hash, session_expires_at`,
+    RETURNING id, user_id, session_hash, session_expires_at, credential_kind`,
   selectEnrollmentSession: `
-    SELECT id, user_id, session_hash, session_expires_at
+    SELECT id, user_id, session_hash, session_expires_at, credential_kind
     FROM localwebauthn_enrollment_grants
     WHERE session_hash = ?
       AND session_expires_at > ?
@@ -488,7 +499,8 @@ function enrollmentSessionFromRow(row) {
     grantId: row.id,
     userId: row.user_id,
     sessionHash: toBytes(row.session_hash),
-    sessionExpiresAt: toNumber(row.session_expires_at)
+    sessionExpiresAt: toNumber(row.session_expires_at),
+    credentialKind: row.credential_kind
   };
 }
 function sessionFromRow(row) {

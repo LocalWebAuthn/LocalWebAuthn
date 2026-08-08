@@ -4,10 +4,30 @@
  * - `1` — the original tables.
  * - `2` — credential `kind`, per-ceremony kind scoping on challenges, and the
  *   DPoP proof-replay cache.
- * - `3` — the DPoP nonce slot table. See {@link LOCALWEBAUTHN_MIGRATIONS}.
+ * - `3` — the DPoP nonce slot table.
+ * - `4` — `credential_kind` on enrollment grants, and the pending-grant
+ *   uniqueness scoped by it. See {@link LOCALWEBAUTHN_MIGRATIONS}.
  */
-export const LOCALWEBAUTHN_SCHEMA_VERSION = 3;
+export const LOCALWEBAUTHN_SCHEMA_VERSION = 4;
 
+/**
+ * The schema, as one script split on `;` by {@link localWebAuthnSchemaStatements}.
+ *
+ * **No `--` comments.** The splitter collapses whitespace, which joins a comment
+ * to the statement after it and comments the whole thing out — D1 then reports
+ * "SQL code did not contain a statement". Explain things here instead.
+ *
+ * Two index choices worth knowing:
+ *
+ * - `localwebauthn_active_grant_user_idx` is unique per `(user_id, kind)`, not per
+ *   user, so provisioning a deployment key does not silently revoke a person's
+ *   in-flight enrollment link. `COALESCE(credential_kind, '')` is required
+ *   because NULLs are distinct in a unique index on both engines — indexing the
+ *   bare column would quietly drop the one-pending-grant invariant for the
+ *   default kind, which is every grant a host that ignores kinds ever issues.
+ * - `localwebauthn_credential_kind_idx` supports the kind-scoped last-credential
+ *   guard and the kind-filtered revoke paths.
+ */
 export const LOCALWEBAUTHN_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS localwebauthn_migrations (
   version INTEGER PRIMARY KEY,
@@ -25,6 +45,7 @@ CREATE TABLE IF NOT EXISTS localwebauthn_enrollment_grants (
   completed_at INTEGER,
   revoked_at INTEGER,
   approved_by_user_id TEXT,
+  credential_kind TEXT,
   created_at INTEGER NOT NULL,
   CHECK (length(token_hash) = 32),
   CHECK (expires_at > created_at),
@@ -35,7 +56,7 @@ CREATE TABLE IF NOT EXISTS localwebauthn_enrollment_grants (
 ) STRICT;
 
 CREATE UNIQUE INDEX IF NOT EXISTS localwebauthn_active_grant_user_idx
-  ON localwebauthn_enrollment_grants(user_id)
+  ON localwebauthn_enrollment_grants(user_id, COALESCE(credential_kind, ''))
   WHERE completed_at IS NULL AND revoked_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS localwebauthn_grant_expiry_idx
@@ -155,6 +176,7 @@ CREATE TABLE IF NOT EXISTS localwebauthn_enrollment_grants (
   completed_at BIGINT,
   revoked_at BIGINT,
   approved_by_user_id TEXT,
+  credential_kind TEXT,
   created_at BIGINT NOT NULL,
   CHECK (octet_length(token_hash) = 32),
   CHECK (expires_at > created_at),
@@ -165,7 +187,7 @@ CREATE TABLE IF NOT EXISTS localwebauthn_enrollment_grants (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS localwebauthn_active_grant_user_idx
-  ON localwebauthn_enrollment_grants(user_id)
+  ON localwebauthn_enrollment_grants(user_id, COALESCE(credential_kind, ''))
   WHERE completed_at IS NULL AND revoked_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS localwebauthn_grant_expiry_idx
@@ -287,6 +309,19 @@ export const LOCALWEBAUTHN_MIGRATIONS: { version: number; statements: string[] }
     // Table-only, so the `CREATE TABLE IF NOT EXISTS` copied out of the full
     // schema below covers it; nothing incremental is needed here.
     statements: [],
+  },
+  {
+    version: 4,
+    statements: [
+      'ALTER TABLE localwebauthn_enrollment_grants ADD COLUMN credential_kind TEXT',
+      // Re-scope the pending-grant uniqueness. Dropping first is required: an
+      // index cannot be redefined in place, and the old one would keep enforcing
+      // one pending grant per user regardless of kind.
+      'DROP INDEX IF EXISTS localwebauthn_active_grant_user_idx',
+      `CREATE UNIQUE INDEX IF NOT EXISTS localwebauthn_active_grant_user_idx
+         ON localwebauthn_enrollment_grants(user_id, COALESCE(credential_kind, ''))
+         WHERE completed_at IS NULL AND revoked_at IS NULL`,
+    ],
   },
 ];
 

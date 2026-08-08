@@ -134,6 +134,16 @@ export type EnrollmentGrantRecord = {
   tokenHash: Uint8Array;
   expiresAt: number;
   approvedByUserId: string | null;
+  /**
+   * {@link Credential.kind} this grant is authorized to create.
+   *
+   * Written by whoever issued the grant, and binding: the registration it
+   * authorizes produces exactly this kind, whatever route the token holder
+   * presents it at. Without it the class is chosen by the route, so a token
+   * intended for a script could be redeemed at the human registration route for
+   * an unrestricted credential — which is the whole point of the column.
+   */
+  credentialKind: string | null;
   createdAt: number;
 };
 
@@ -142,6 +152,8 @@ export type EnrollmentSession = {
   userId: string;
   sessionHash: Uint8Array;
   sessionExpiresAt: number;
+  /** From the grant; see {@link EnrollmentGrantRecord.credentialKind}. */
+  credentialKind: string | null;
 };
 
 export type ChallengeKind = 'registration' | 'authentication';

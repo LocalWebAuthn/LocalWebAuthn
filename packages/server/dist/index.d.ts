@@ -1,5 +1,5 @@
-import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsInput, m as RegistrationOptionsResult, n as RegistrationVerificationInput, o as RegistrationVerificationResult, A as AuthenticationOptionsInput, p as AuthenticationOptionsResult, q as AuthenticationVerificationInput, r as AuthenticationVerificationResult, s as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-Ixk0qQ-9.js';
-export { t as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, u as LocalWebAuthnDurations, v as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, w as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-Ixk0qQ-9.js';
+import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsInput, m as RegistrationOptionsResult, n as RegistrationVerificationInput, o as RegistrationVerificationResult, A as AuthenticationOptionsInput, p as AuthenticationOptionsResult, q as AuthenticationVerificationInput, r as AuthenticationVerificationResult, s as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-BTWfld8_.js';
+export { t as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, u as LocalWebAuthnDurations, v as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, w as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-BTWfld8_.js';
 export { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 declare function defaultRandomBytes(length: number): Uint8Array;
@@ -264,7 +264,10 @@ declare class LocalWebAuthn {
      * @returns The enrollment URL (with `#token=` fragment), raw token, expiry,
      *   and the IDs of any grants this issue superseded.
      */
-    issueEnrollment(userId: string, approvedByUserId?: string): Promise<EnrollmentIssue>;
+    issueEnrollment(userId: string, approvedByUserIdOrOptions?: string | {
+        approvedByUserId?: string;
+        credentialKind?: string;
+    }): Promise<EnrollmentIssue>;
     /**
      * Exchange a one-time enrollment token for an enrollment session.
      *

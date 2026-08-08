@@ -43,6 +43,7 @@ export type EnrollmentSessionRow = {
   user_id: string;
   session_hash: unknown;
   session_expires_at: NumericColumn;
+  credential_kind: string | null;
 };
 
 export type SessionRow = {
@@ -153,6 +154,7 @@ export function enrollmentSessionFromRow(row: EnrollmentSessionRow): EnrollmentS
     userId: row.user_id,
     sessionHash: toBytes(row.session_hash),
     sessionExpiresAt: toNumber(row.session_expires_at),
+    credentialKind: row.credential_kind,
   };
 }
 

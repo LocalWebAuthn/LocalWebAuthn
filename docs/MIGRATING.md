@@ -2,9 +2,9 @@
 
 ## 2.2.0 → unreleased (credential kinds and machine credentials)
 
-### Schema versions 2 and 3
+### Schema versions 2, 3 and 4
 
-The schema moves to version 3. `migrateSqlite`, `migratePostgres` and `migrateD1` now read
+The schema moves to version 4. `migrateSqlite`, `migratePostgres` and `migrateD1` now read
 the stored version and apply only what is missing, so calling them on a 1.x or 2.2.0
 database upgrades it in place. Adding a column is why that machinery had to exist —
 `CREATE TABLE IF NOT EXISTS` cannot do it.
@@ -19,6 +19,17 @@ What version 2 adds:
 - `localwebauthn_credential_kind_idx` on `(user_id, kind, revoked_at)`.
 
 Version 3 adds `localwebauthn_dpop_nonces`, keyed by time slot.
+
+Version 4 adds `localwebauthn_enrollment_grants.credential_kind` and re-scopes
+`localwebauthn_active_grant_user_idx` from `(user_id)` to
+`(user_id, COALESCE(credential_kind, ''))`. `COALESCE` is required: NULLs are distinct
+in a unique index on both engines, so indexing the bare column would silently drop the
+one-pending-grant invariant for the default kind — which is every grant a host that
+ignores kinds ever issues.
+
+Note that `LOCALWEBAUTHN_SCHEMA_SQL` must contain **no `--` comments**. The statement
+splitter collapses whitespace, which joins a comment to the statement after it and
+comments the whole thing out; D1 reports "SQL code did not contain a statement".
 
 No `CHECK` constraints were added. SQLite cannot add one to an existing table, and a fresh
 install must not end up with constraints an upgraded install lacks — the two would diverge
@@ -102,6 +113,30 @@ another kind still authenticates as that user, so suspend through `getUser` retu
 `active: false` if that is the intent. Custom stores add
 `revokeLiveCredentialSessions`, which the filtered path loops over rather than binding
 a variable-length `IN (...)` the shared static SQL cannot express.
+
+An enrollment grant now carries the kind it is authorized to create, and that binding
+is what confines the token:
+
+```ts
+issueEnrollment(userId, { credentialKind: 'service' }); // options form
+issueEnrollment(userId, 'admin-1'); // legacy positional approvedByUserId still works
+```
+
+This closes a fail-open default rather than an attack. Previously the class was chosen
+by whichever route the token was redeemed at, and the ordinary human registration route
+passes none — so a grant issued for a script produced `kind: null`, an unrestricted
+credential, bypassing `interactive: false`, `canRegister: false`, machine-only routes
+and kind-scoped revocation all at once. Since an enrollment token is a bearer secret in
+transit to a machine, anyone who obtained it could pick the class. The grant's kind now
+wins, and a route asking for a different one raises `invalid_configuration` rather than
+losing silently. A grant that declares nothing still defers to the route.
+
+It is **not** the self-replication fix. That remains `canRegister` on the session path,
+plus the host refusing non-interactive kinds at its session middleware.
+
+Custom stores: `EnrollmentGrantRecord` and `EnrollmentSession` gain `credentialKind`,
+and `SQL.revokePendingGrants` takes a third bind for it so replacing a person's pending
+link cannot cancel a pending deployment-key grant.
 
 `verifyRegistration` deliberately takes **no** kind input — a client must not be able to
 classify itself. `RegistrationVerificationResult` and `AuthenticationVerificationResult`

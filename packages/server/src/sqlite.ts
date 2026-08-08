@@ -103,9 +103,11 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
   async replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]> {
     return this.#database
       .transaction(() => {
+        // Kind-scoped: replacing a person's pending link must not cancel a
+        // pending deployment-key grant, or vice versa.
         const revoked = this.#database
           .prepare(SQL.revokePendingGrants)
-          .all(record.createdAt, record.userId) as { id: string }[];
+          .all(record.createdAt, record.userId, record.credentialKind) as { id: string }[];
         this.#database
           .prepare(SQL.insertEnrollmentGrant)
           .run(
@@ -114,6 +116,7 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
             record.tokenHash,
             record.expiresAt,
             record.approvedByUserId,
+            record.credentialKind,
             record.createdAt,
           );
         return revoked.map((row) => row.id);

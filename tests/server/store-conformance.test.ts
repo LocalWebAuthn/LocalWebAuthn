@@ -75,6 +75,7 @@ async function exchangedGrant(
     tokenHash: bytes(tokenByte),
     expiresAt: now + 10_000,
     approvedByUserId: 'admin-1',
+    credentialKind: null,
     createdAt: now,
   });
   return store.exchangeEnrollment(bytes(tokenByte), bytes(sessionByte), now + 5_000, now);
@@ -339,6 +340,7 @@ function storeConformance(
           tokenHash: bytes(7),
           expiresAt: now + 20_000,
           approvedByUserId: 'admin-1',
+          credentialKind: null,
           createdAt: now + 1,
         });
 

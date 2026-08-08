@@ -281,6 +281,98 @@ describe('restrictions on API credentials', () => {
   });
 });
 
+describe('the kind on an enrollment grant', () => {
+  /** Register through the grant path at a route that passes no kind of its own. */
+  async function redeem(auth: LocalWebAuthn, token: string, routeKind?: string) {
+    const exchange = await auth.exchangeEnrollment(token);
+    const { keyStore } = await generateKeyStore(ES256);
+    const options = await auth.registrationOptions({
+      enrollmentSessionToken: exchange.enrollmentSessionToken,
+      credentialKind: routeKind,
+    });
+    const { response } = await createRegistrationResponse({
+      keyStore,
+      challenge: options.options.challenge,
+      rpId: RP_ID,
+      origin: ORIGIN,
+    });
+    return auth.verifyRegistration({
+      response: response as unknown as RegistrationResponseJSON,
+      challengeToken: options.challengeToken,
+      enrollmentSessionToken: exchange.enrollmentSessionToken,
+    });
+  }
+
+  it('confines the token to the class the issuer authorized', async () => {
+    const { auth } = harness({ service: { interactive: false, canRegister: false } });
+    const issue = await auth.issueEnrollment('user-1', { credentialKind: 'service' });
+
+    // The token holder redeems it at the ordinary human route, which asks for no
+    // kind. Before the grant carried one this produced kind:null — an
+    // unrestricted credential, and a silent bypass of every restriction.
+    const verified = await redeem(auth, issue.enrollmentToken);
+    expect(verified.credentialKind).toBe('service');
+    expect(auth.interactiveKind(verified.credentialKind)).toBe(false);
+  });
+
+  it('refuses a route that asks for a different class than the grant', async () => {
+    const { auth } = harness({ service: { interactive: false } });
+    const issue = await auth.issueEnrollment('user-1', { credentialKind: 'service' });
+    // A host wiring two disagreeing sources is told, rather than having one win
+    // silently.
+    await expect(redeem(auth, issue.enrollmentToken, 'person')).rejects.toMatchObject({
+      code: 'invalid_configuration',
+    });
+  });
+
+  it('lets the route decide when the grant declares nothing', async () => {
+    const { auth } = harness();
+    const issue = await auth.issueEnrollment('user-1');
+    const verified = await redeem(auth, issue.enrollmentToken, 'person');
+    expect(verified.credentialKind).toBe('person');
+  });
+
+  it('keeps a pending grant of each kind alive side by side', async () => {
+    const { auth } = harness({ service: { interactive: false } });
+    const personGrant = await auth.issueEnrollment('user-1', { credentialKind: 'person' });
+    const serviceGrant = await auth.issueEnrollment('user-1', { credentialKind: 'service' });
+
+    // Provisioning a deployment key must not cancel the person's in-flight link.
+    expect(serviceGrant.supersededGrantIds).toEqual([]);
+    await expect(auth.exchangeEnrollment(personGrant.enrollmentToken)).resolves.toHaveProperty(
+      'enrollmentSessionToken',
+    );
+  });
+
+  it('still supersedes a pending grant of the same kind', async () => {
+    const { auth } = harness();
+    const first = await auth.issueEnrollment('user-1', { credentialKind: 'person' });
+    const second = await auth.issueEnrollment('user-1', { credentialKind: 'person' });
+    expect(second.supersededGrantIds).toEqual([first.grantId]);
+    await expect(auth.exchangeEnrollment(first.enrollmentToken)).rejects.toMatchObject({
+      code: 'invalid_enrollment',
+    });
+  });
+
+  it('supersedes an unkinded grant with another unkinded one', async () => {
+    // Unchanged behaviour for every host that never sets a kind: COALESCE makes
+    // all-NULL grants one group, where a bare unique index would have made them
+    // all distinct and silently dropped the invariant.
+    const { auth } = harness();
+    const first = await auth.issueEnrollment('user-1');
+    const second = await auth.issueEnrollment('user-1');
+    expect(second.supersededGrantIds).toEqual([first.grantId]);
+  });
+
+  it('accepts the legacy positional approvedByUserId', async () => {
+    const { auth } = harness();
+    const issue = await auth.issueEnrollment('user-1', 'admin-1');
+    await expect(auth.exchangeEnrollment(issue.enrollmentToken)).resolves.toHaveProperty(
+      'enrollmentSessionToken',
+    );
+  });
+});
+
 describe('kind-filtered revocation', () => {
   /** A person with one passkey and one API credential, each with a live session. */
   async function bothKinds() {

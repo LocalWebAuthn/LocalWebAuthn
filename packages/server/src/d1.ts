@@ -103,9 +103,11 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
   }
 
   async replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]> {
+    // Kind-scoped: replacing a person's pending link must not cancel a pending
+    // deployment-key grant, or vice versa.
     const revoked = await this.#database
       .prepare(SQL.revokePendingGrants)
-      .bind(record.createdAt, record.userId)
+      .bind(record.createdAt, record.userId, record.credentialKind)
       .run<{ id: string }>();
 
     await this.#database
@@ -116,6 +118,7 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
         record.tokenHash,
         record.expiresAt,
         record.approvedByUserId,
+        record.credentialKind,
         record.createdAt,
       )
       .run();

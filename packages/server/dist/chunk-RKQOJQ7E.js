@@ -1,5 +1,5 @@
 // src/schema.ts
-var LOCALWEBAUTHN_SCHEMA_VERSION = 3;
+var LOCALWEBAUTHN_SCHEMA_VERSION = 4;
 var LOCALWEBAUTHN_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS localwebauthn_migrations (
   version INTEGER PRIMARY KEY,
@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS localwebauthn_enrollment_grants (
   completed_at INTEGER,
   revoked_at INTEGER,
   approved_by_user_id TEXT,
+  credential_kind TEXT,
   created_at INTEGER NOT NULL,
   CHECK (length(token_hash) = 32),
   CHECK (expires_at > created_at),
@@ -27,7 +28,7 @@ CREATE TABLE IF NOT EXISTS localwebauthn_enrollment_grants (
 ) STRICT;
 
 CREATE UNIQUE INDEX IF NOT EXISTS localwebauthn_active_grant_user_idx
-  ON localwebauthn_enrollment_grants(user_id)
+  ON localwebauthn_enrollment_grants(user_id, COALESCE(credential_kind, ''))
   WHERE completed_at IS NULL AND revoked_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS localwebauthn_grant_expiry_idx
@@ -134,6 +135,7 @@ CREATE TABLE IF NOT EXISTS localwebauthn_enrollment_grants (
   completed_at BIGINT,
   revoked_at BIGINT,
   approved_by_user_id TEXT,
+  credential_kind TEXT,
   created_at BIGINT NOT NULL,
   CHECK (octet_length(token_hash) = 32),
   CHECK (expires_at > created_at),
@@ -144,7 +146,7 @@ CREATE TABLE IF NOT EXISTS localwebauthn_enrollment_grants (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS localwebauthn_active_grant_user_idx
-  ON localwebauthn_enrollment_grants(user_id)
+  ON localwebauthn_enrollment_grants(user_id, COALESCE(credential_kind, ''))
   WHERE completed_at IS NULL AND revoked_at IS NULL;
 
 CREATE INDEX IF NOT EXISTS localwebauthn_grant_expiry_idx
@@ -246,6 +248,19 @@ var LOCALWEBAUTHN_MIGRATIONS = [
     // Table-only, so the `CREATE TABLE IF NOT EXISTS` copied out of the full
     // schema below covers it; nothing incremental is needed here.
     statements: []
+  },
+  {
+    version: 4,
+    statements: [
+      "ALTER TABLE localwebauthn_enrollment_grants ADD COLUMN credential_kind TEXT",
+      // Re-scope the pending-grant uniqueness. Dropping first is required: an
+      // index cannot be redefined in place, and the old one would keep enforcing
+      // one pending grant per user regardless of kind.
+      "DROP INDEX IF EXISTS localwebauthn_active_grant_user_idx",
+      `CREATE UNIQUE INDEX IF NOT EXISTS localwebauthn_active_grant_user_idx
+         ON localwebauthn_enrollment_grants(user_id, COALESCE(credential_kind, ''))
+         WHERE completed_at IS NULL AND revoked_at IS NULL`
+    ]
   }
 ];
 function migrationStatements(fromVersion) {

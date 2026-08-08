@@ -5,11 +5,11 @@ import {
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-LMFILUYY.js";
+} from "./chunk-4Z5SB2SA.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnSchemaStatements
-} from "./chunk-2BSKCSEH.js";
+} from "./chunk-RKQOJQ7E.js";
 
 // src/d1.ts
 async function migrateD1(database, now = Date.now()) {
@@ -37,13 +37,14 @@ var D1LocalWebAuthnStore = class {
     this.#database = database;
   }
   async replaceEnrollmentGrant(record) {
-    const revoked = await this.#database.prepare(SQL.revokePendingGrants).bind(record.createdAt, record.userId).run();
+    const revoked = await this.#database.prepare(SQL.revokePendingGrants).bind(record.createdAt, record.userId, record.credentialKind).run();
     await this.#database.prepare(SQL.insertEnrollmentGrant).bind(
       record.id,
       record.userId,
       record.tokenHash,
       record.expiresAt,
       record.approvedByUserId,
+      record.credentialKind,
       record.createdAt
     ).run();
     return revoked.results.map((row) => row.id);
