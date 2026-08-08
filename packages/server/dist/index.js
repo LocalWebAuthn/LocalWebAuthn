@@ -143,28 +143,15 @@ function normalizeConfig(options) {
       configurationError("A credential kind cannot be an empty string.");
     }
     const sessionAbsoluteMs = policy.sessionAbsoluteMs ?? durations.sessionAbsoluteMs;
-    for (const [name, duration] of Object.entries({
-      sessionAbsoluteMs,
-      sessionIdleMs: policy.sessionIdleMs ?? durations.sessionIdleMs
-    })) {
-      if (!Number.isSafeInteger(duration) || duration <= 0) {
-        configurationError(
-          `credentialKinds.${kind}.${name} must be a positive integer number of milliseconds.`
-        );
-      }
+    if (!Number.isSafeInteger(sessionAbsoluteMs) || sessionAbsoluteMs <= 0) {
+      configurationError(
+        `credentialKinds.${kind}.sessionAbsoluteMs must be a positive integer number of milliseconds.`
+      );
     }
-    if (policy.sessionIdleMs !== void 0 && policy.sessionIdleMs > sessionAbsoluteMs) {
-      configurationError(`credentialKinds.${kind}.sessionIdleMs cannot exceed sessionAbsoluteMs.`);
-    }
-    const sessionIdleMs = Math.min(
-      policy.sessionIdleMs ?? durations.sessionIdleMs,
-      sessionAbsoluteMs
-    );
     credentialKinds[kind] = {
       interactive: policy.interactive ?? true,
       canRegister: policy.canRegister ?? true,
-      sessionAbsoluteMs,
-      sessionIdleMs
+      sessionAbsoluteMs
     };
   }
   let dpopNonce = null;
@@ -190,8 +177,7 @@ function defaultKindPolicy(config) {
   return {
     interactive: true,
     canRegister: true,
-    sessionAbsoluteMs: config.durations.sessionAbsoluteMs,
-    sessionIdleMs: config.durations.sessionIdleMs
+    sessionAbsoluteMs: config.durations.sessionAbsoluteMs
   };
 }
 function kindPolicy(config, kind) {
@@ -576,14 +562,8 @@ var LocalWebAuthn = class {
   #ceremonies;
   #onEvent;
   #logger;
-  /** Widest idle window across the global setting and every declared kind. */
-  #widestIdleMs;
   constructor(options) {
     this.config = normalizeConfig(options);
-    this.#widestIdleMs = Math.max(
-      this.config.durations.sessionIdleMs,
-      ...Object.values(this.config.credentialKinds).map((policy) => policy.sessionIdleMs)
-    );
     this.#store = options.store;
     this.#users = options.users;
     this.#now = options.now ?? Date.now;
@@ -1071,12 +1051,13 @@ var LocalWebAuthn = class {
   async resolveSession(sessionToken, touch = true) {
     const idHash = await sha256(sessionToken);
     const now = this.#now();
-    const session = await this.#store.resolveSession(idHash, now, now - this.#widestIdleMs);
+    const session = await this.#store.resolveSession(
+      idHash,
+      now,
+      now - this.config.durations.sessionIdleMs
+    );
     const user = session ? await this.#activeUser(session.userId) : null;
     if (!session || !user) {
-      return null;
-    }
-    if (session.lastSeenAt <= now - kindPolicy(this.config, session.credentialKind).sessionIdleMs) {
       return null;
     }
     if (touch && !await this.#store.touchSession(idHash, now)) {
@@ -1133,6 +1114,7 @@ var LocalWebAuthn = class {
   async revokeUserSessions(userId, options = {}) {
     const now = this.#now();
     const exceptHash = options.exceptSessionToken ? await sha256(options.exceptSessionToken) : void 0;
+    const idleBefore = now - this.config.durations.sessionIdleMs;
     let count;
     if (options.kinds) {
       const kinds = new Set(options.kinds);
@@ -1145,17 +1127,12 @@ var LocalWebAuthn = class {
         count += await this.#store.revokeLiveCredentialSessions(
           credential.id,
           now,
-          now - kindPolicy(this.config, credential.kind).sessionIdleMs,
+          idleBefore,
           exceptHash
         );
       }
     } else {
-      count = await this.#store.revokeUserSessions(
-        userId,
-        now,
-        now - this.#widestIdleMs,
-        exceptHash
-      );
+      count = await this.#store.revokeUserSessions(userId, now, idleBefore, exceptHash);
     }
     if (count > 0) {
       await this.#emit({

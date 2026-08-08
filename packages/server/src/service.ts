@@ -114,15 +114,9 @@ export class LocalWebAuthn {
   readonly #ceremonies;
   readonly #onEvent;
   readonly #logger;
-  /** Widest idle window across the global setting and every declared kind. */
-  readonly #widestIdleMs;
 
   constructor(options: LocalWebAuthnOptions) {
     this.config = normalizeConfig(options);
-    this.#widestIdleMs = Math.max(
-      this.config.durations.sessionIdleMs,
-      ...Object.values(this.config.credentialKinds).map((policy) => policy.sessionIdleMs),
-    );
     this.#store = options.store;
     this.#users = options.users;
     this.#now = options.now ?? Date.now;
@@ -672,16 +666,13 @@ export class LocalWebAuthn {
   } | null> {
     const idHash = await sha256(sessionToken);
     const now = this.#now();
-    // The store filters on the widest idle window any kind allows, because the
-    // session's kind is only known once the row comes back; the exact per-kind
-    // window is applied below. With no per-kind override this is the global
-    // window and the second check is a no-op.
-    const session = await this.#store.resolveSession(idHash, now, now - this.#widestIdleMs);
+    const session = await this.#store.resolveSession(
+      idHash,
+      now,
+      now - this.config.durations.sessionIdleMs,
+    );
     const user = session ? await this.#activeUser(session.userId) : null;
     if (!session || !user) {
-      return null;
-    }
-    if (session.lastSeenAt <= now - kindPolicy(this.config, session.credentialKind).sessionIdleMs) {
       return null;
     }
     if (touch && !(await this.#store.touchSession(idHash, now))) {
@@ -746,11 +737,14 @@ export class LocalWebAuthn {
       ? await sha256(options.exceptSessionToken)
       : undefined;
 
+    // The same liveness cutoff `resolveSession` uses, on both paths: a session
+    // this leaves alone must be one `resolveSession` would also refuse.
+    const idleBefore = now - this.config.durations.sessionIdleMs;
+
     let count: number;
     if (options.kinds) {
       // Per credential, because a variable-length kind filter cannot be expressed
-      // in the shared static SQL. Each credential contributes its own kind's idle
-      // window, so the liveness predicate is exact rather than approximated.
+      // in the shared static SQL.
       const kinds = new Set(options.kinds);
       const credentials = await this.#store.listCredentials(userId, true);
       count = 0;
@@ -761,21 +755,12 @@ export class LocalWebAuthn {
         count += await this.#store.revokeLiveCredentialSessions(
           credential.id,
           now,
-          now - kindPolicy(this.config, credential.kind).sessionIdleMs,
+          idleBefore,
           exceptHash,
         );
       }
     } else {
-      // The widest idle window any kind allows, so this never leaves live a
-      // session that `resolveSession` would still accept. The cost is that the
-      // count can include a session already idle-dead under its own kind's
-      // shorter window, which is cosmetic; missing a live one would not be.
-      count = await this.#store.revokeUserSessions(
-        userId,
-        now,
-        now - this.#widestIdleMs,
-        exceptHash,
-      );
+      count = await this.#store.revokeUserSessions(userId, now, idleBefore, exceptHash);
     }
 
     if (count > 0) {

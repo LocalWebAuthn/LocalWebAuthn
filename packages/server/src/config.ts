@@ -6,7 +6,6 @@ export type NormalizedCredentialKind = {
   interactive: boolean;
   canRegister: boolean;
   sessionAbsoluteMs: number;
-  sessionIdleMs: number;
 };
 
 export type NormalizedConfig = {
@@ -109,34 +108,20 @@ export function normalizeConfig(options: LocalWebAuthnOptions): NormalizedConfig
     if (!kind.trim()) {
       configurationError('A credential kind cannot be an empty string.');
     }
+    // Only the absolute lifetime is per-kind. The global idle window applies to
+    // every kind and may legitimately exceed a kind's shortened absolute
+    // lifetime: absolute expiry is stamped on the session row at creation and
+    // wins, so the excess is simply unreachable rather than a misconfiguration.
     const sessionAbsoluteMs = policy.sessionAbsoluteMs ?? durations.sessionAbsoluteMs;
-    for (const [name, duration] of Object.entries({
-      sessionAbsoluteMs,
-      sessionIdleMs: policy.sessionIdleMs ?? durations.sessionIdleMs,
-    })) {
-      if (!Number.isSafeInteger(duration) || duration <= 0) {
-        configurationError(
-          `credentialKinds.${kind}.${name} must be a positive integer number of milliseconds.`,
-        );
-      }
+    if (!Number.isSafeInteger(sessionAbsoluteMs) || sessionAbsoluteMs <= 0) {
+      configurationError(
+        `credentialKinds.${kind}.sessionAbsoluteMs must be a positive integer number of milliseconds.`,
+      );
     }
-    // An explicit pair that disagrees is a mistake worth reporting. An *inherited*
-    // idle window longer than this kind's shortened absolute lifetime is not: the
-    // absolute lifetime wins regardless, so the excess is unreachable. Clamping
-    // it means shortening a machine session does not also force the host to
-    // restate an idle window it never cared about.
-    if (policy.sessionIdleMs !== undefined && policy.sessionIdleMs > sessionAbsoluteMs) {
-      configurationError(`credentialKinds.${kind}.sessionIdleMs cannot exceed sessionAbsoluteMs.`);
-    }
-    const sessionIdleMs = Math.min(
-      policy.sessionIdleMs ?? durations.sessionIdleMs,
-      sessionAbsoluteMs,
-    );
     credentialKinds[kind] = {
       interactive: policy.interactive ?? true,
       canRegister: policy.canRegister ?? true,
       sessionAbsoluteMs,
-      sessionIdleMs,
     };
   }
 
@@ -173,7 +158,6 @@ export function defaultKindPolicy(config: NormalizedConfig): NormalizedCredentia
     interactive: true,
     canRegister: true,
     sessionAbsoluteMs: config.durations.sessionAbsoluteMs,
-    sessionIdleMs: config.durations.sessionIdleMs,
   };
 }
 

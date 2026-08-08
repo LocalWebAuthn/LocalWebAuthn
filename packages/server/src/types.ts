@@ -627,10 +627,14 @@ export type CredentialKindPolicy = {
    * enrollment instead of chaining off the old key.
    */
   canRegister?: boolean;
-  /** Absolute session lifetime for this kind, overriding `durations.sessionAbsoluteMs`. */
+  /**
+   * Absolute session lifetime for this kind, overriding `durations.sessionAbsoluteMs`.
+   *
+   * The idle window stays global (`durations.sessionIdleMs`) and applies to every
+   * kind. A shorter absolute lifetime here wins regardless, so this one field is
+   * all a host needs to give machine sessions a shorter life.
+   */
   sessionAbsoluteMs?: number;
-  /** Idle session lifetime for this kind, overriding `durations.sessionIdleMs`. */
-  sessionIdleMs?: number;
 };
 
 export type CeremonyProvider = {

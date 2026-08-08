@@ -63,11 +63,26 @@ describe('configuration validation', () => {
     );
   });
 
+  it('lets a kind shorten its absolute lifetime below the global idle window', () => {
+    // The idle window is global. A kind whose absolute lifetime is shorter is not
+    // a misconfiguration: absolute expiry is stamped on the session row at
+    // creation and wins, so the excess idle window is simply unreachable.
+    const auth = new LocalWebAuthn(
+      options({ credentialKinds: { service: { sessionAbsoluteMs: 60_000 } } }),
+    );
+    expect(auth.config.credentialKinds.service.sessionAbsoluteMs).toBeLessThan(
+      auth.config.durations.sessionIdleMs,
+    );
+  });
+
   it.each([
     { expectedOrigins: 'http://example.com' },
     { expectedOrigins: 'https://other.example', rpId: 'example.com' },
     { expectedOrigins: 'https://pulse.example.com/path', rpId: 'example.com' },
     { durations: { sessionIdleMs: 2, sessionAbsoluteMs: 1 } },
+    { credentialKinds: { '  ': {} } },
+    { credentialKinds: { service: { sessionAbsoluteMs: 0 } } },
+    { credentialKinds: { service: { sessionAbsoluteMs: 1.5 } } },
   ])('rejects unsafe configuration %#', (override) => {
     expect(() => new LocalWebAuthn(options(override))).toThrow(LocalWebAuthnError);
   });

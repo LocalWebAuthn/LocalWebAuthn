@@ -1,5 +1,5 @@
-import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsInput, m as RegistrationOptionsResult, n as RegistrationVerificationInput, o as RegistrationVerificationResult, A as AuthenticationOptionsInput, p as AuthenticationOptionsResult, q as AuthenticationVerificationInput, r as AuthenticationVerificationResult, s as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-ByWv-_Re.js';
-export { t as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, u as CredentialKindPolicy, v as CredentialProvenance, E as EnrollmentGrantRecord, a as EnrollmentSession, w as LocalWebAuthnDurations, x as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, y as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-ByWv-_Re.js';
+import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsInput, m as RegistrationOptionsResult, n as RegistrationVerificationInput, o as RegistrationVerificationResult, A as AuthenticationOptionsInput, p as AuthenticationOptionsResult, q as AuthenticationVerificationInput, r as AuthenticationVerificationResult, s as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-BP-1nfog.js';
+export { t as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, u as CredentialKindPolicy, v as CredentialProvenance, E as EnrollmentGrantRecord, a as EnrollmentSession, w as LocalWebAuthnDurations, x as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, y as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-BP-1nfog.js';
 export { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 declare function defaultRandomBytes(length: number): Uint8Array;
@@ -16,7 +16,6 @@ type NormalizedCredentialKind = {
     interactive: boolean;
     canRegister: boolean;
     sessionAbsoluteMs: number;
-    sessionIdleMs: number;
 };
 type NormalizedConfig = {
     rpName: string;
