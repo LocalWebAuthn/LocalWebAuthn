@@ -67,7 +67,7 @@ The host application must:
 - Suspend users by returning `active: false` from `getUser` — every ceremony and
   session resolution refuses an inactive user — and use `revokeUserSessions` (sessions
   only) or `revokeUserAuthentication` (credentials too) to revoke their stored state.
-- Require a fresh passkey assertion for recovery and sensitive credential changes.
+- Require a /fresh/ passkey assertion for recovery and sensitive credential changes.
 - Persist and monitor structured authentication audit events.
 
 ## Storage Adapter Guarantees

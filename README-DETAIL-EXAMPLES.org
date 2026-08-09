@@ -4,7 +4,7 @@
 
 #+STARTUP: org-startup-with-inline-images inlineimages
 #+OPTIONS: ^:nil # Disable sub/superscripting with bare _; _{...} still works
-#+OPTIONS: toc:2
+#+OPTIONS: toc:nil
 
 Companion to [[./README.org][README.org]].  Five examples, each a complete and tested
 artifact rather than a snippet: the demo and the starter are exercised by the same Playwright
@@ -21,13 +21,13 @@ equivalents:
   route, because anything that could reach such a route could spend your SMS balance and send
   DKIM-signed mail from your domain.
 
-| You are…                                        | Start with                                                | It gives you                                                                    |
-|-------------------------------------------------+-----------------------------------------------------------+---------------------------------------------------------------------------------|
-| taking a first look at the whole lifecycle      | [[./examples/demo][=examples/demo=]]                      | Full UI: bootstrap, invite, multi-passkey, sign-out, re-enroll, signup, API keys |
-| wiring the six routes into your own server      | [[./examples/starter-hono][=examples/starter-hono=]]      | Headless Hono/Node: routes, session guard, origin check, invite endpoint         |
-| sending email and SMS from a normal server      | [[./examples/channels-node][=examples/channels-node=]]    | SMTP with an app password + Twilio, invoked in-process                          |
-| building with no server at all                  | [[./examples/channels-cf][=examples/channels-cf=]]        | Workers + D1 issuing real grants; Resend + Twilio; bearer-guarded invite         |
-| looking for the parts both delivery shapes share | [[./examples/channels][=examples/channels=]]              | Templates, destination validation, senders, =inviteAndDeliver=, signup proofing  |
+| You are…                                         | Start with               | It gives you                                                                     |
+|--------------------------------------------------+--------------------------+----------------------------------------------------------------------------------|
+| taking a first look at the whole lifecycle       | [[./examples/demo][=examples/demo=]]          | Full UI: bootstrap, invite, multi-passkey, sign-out, re-enroll, signup, API keys |
+| wiring the six routes into your own server       | [[./examples/starter-hono][=examples/starter-hono=]]  | Headless Hono/Node: routes, session guard, origin check, invite endpoint         |
+| sending email and SMS from a normal server       | [[./examples/channels-node][=examples/channels-node=]] | SMTP with an app password + Twilio, invoked in-process                           |
+| building with no server at all                   | [[./examples/channels-cf][=examples/channels-cf=]]   | Workers + D1 issuing real grants; Resend + Twilio; bearer-guarded invite         |
+| looking for the parts both delivery shapes share | [[./examples/channels][=examples/channels=]]      | Templates, destination validation, senders, =inviteAndDeliver=, signup proofing  |
 
 * examples/demo --- the whole lifecycle, with a UI
 
@@ -63,15 +63,15 @@ What it demonstrates, in the order you meet it:
 
 Code map:
 
-| File                        | Responsibility                                                    |
-|-----------------------------+-------------------------------------------------------------------|
-| =src/database.ts=           | app-owned =demo_clients= plus the package's SQLite migration        |
-| =src/auth.ts=               | the complete Hono adapter: origin check, cookies, six auth routes  |
-| =src/application.ts=        | bootstrap, invite, re-enroll, revoke, session sign-out             |
-| =src/machine.ts=            | =/api/api-keys/*= (browser-facing) and =/api/machine/v1/*= (script) |
-| =src/client.ts=             | the UI, through =LocalWebAuthnBrowser= --- no raw WebAuthn calls    |
-| =scripts/api-client.ts=     | the headless client; =--dry-run= prints every byte it constructs    |
-| =e2e/*.spec.ts=             | Playwright with Chromium virtual passkeys                          |
+| File                    | Responsibility                                                      |
+|-------------------------+---------------------------------------------------------------------|
+| =src/database.ts=       | app-owned =demo_clients= plus the package's SQLite migration        |
+| =src/auth.ts=           | the complete Hono adapter: origin check, cookies, six auth routes   |
+| =src/application.ts=    | bootstrap, invite, re-enroll, revoke, session sign-out              |
+| =src/machine.ts=        | =/api/api-keys/*= (browser-facing) and =/api/machine/v1/*= (script) |
+| =src/client.ts=         | the UI, through =LocalWebAuthnBrowser= --- no raw WebAuthn calls    |
+| =scripts/api-client.ts= | the headless client; =--dry-run= prints every byte it constructs    |
+| =e2e/*.spec.ts=         | Playwright with Chromium virtual passkeys                           |
 
 The two files worth reading even if you never run it are =src/auth.ts=, which is the whole
 cookie and origin story in one place, and =src/machine.ts=, which shows why a script route and
@@ -97,14 +97,14 @@ your own =/api/*= routes, because its origin check only protects what is registe
 
 No HTTP surface at all, and neither runtime example adds one.
 
-| Piece            | What it fixes                                                              |
-|------------------+----------------------------------------------------------------------------|
-| =templates.ts=   | the only source of message content; callers pass a URL or code, never copy  |
-| =validate.ts=    | E.164 plus an =SMS_ALLOWED_PREFIXES= country allowlist (SMS-pumping defence) |
-| =twilio.ts=      | fetch-based Twilio sender, identical under Node and Workers                 |
-| =resend.ts=      | fetch-based Resend sender, the Workers email transport                      |
-| =deliver.ts=     | =inviteAndDeliver=: issue the grant, deliver it, return *no link*            |
-| =signup.ts=      | the self-serve proofing state machine                                       |
+| Piece          | What it fixes                                                                |
+|----------------+------------------------------------------------------------------------------|
+| =templates.ts= | the only source of message content; callers pass a URL or code, never copy   |
+| =validate.ts=  | E.164 plus an =SMS_ALLOWED_PREFIXES= country allowlist (SMS-pumping defence) |
+| =twilio.ts=    | fetch-based Twilio sender, identical under Node and Workers                  |
+| =resend.ts=    | fetch-based Resend sender, the Workers email transport                       |
+| =deliver.ts=   | =inviteAndDeliver=: issue the grant, deliver it, return *no link*            |
+| =signup.ts=    | the self-serve proofing state machine                                        |
 
 Because content is template-only, the blast radius of a leaked provider credential or a buggy
 caller is "our own enrollment copy, at our rate" --- a cost problem, never an

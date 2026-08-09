@@ -4,7 +4,7 @@
 
 #+STARTUP: org-startup-with-inline-images inlineimages
 #+OPTIONS: ^:nil # Disable sub/superscripting with bare _; _{...} still works
-#+OPTIONS: toc:3
+#+OPTIONS: toc:nil
 
 Companion to [[./README.org][README.org]], which builds one application up from nothing.
 This document is the reference: every option, in the order a deployment meets it.  Nothing
@@ -108,14 +108,14 @@ credentials here; that is the bug that forced 2.0.0.)
 
 =@localwebauthn/browser= speaks a small JSON protocol over six paths that you implement:
 
-| Route (default)                        | Service call                    | Cookie                                      |
-|----------------------------------------+---------------------------------+---------------------------------------------|
-| =POST /api/auth/enrollment/exchange=   | =exchangeEnrollment(token)=     | sets enrollment                             |
-| =POST /api/auth/register/options=      | =registrationOptions({...})=    | sets challenge                              |
-| =POST /api/auth/register/verify=       | =verifyRegistration({...})=     | clears challenge + enrollment, sets session |
-| =POST /api/auth/login/options=         | =authenticationOptions()=       | sets challenge                              |
-| =POST /api/auth/login/verify=          | =verifyAuthentication({...})=   | clears challenge, sets session              |
-| =POST /api/auth/logout=                | =revokeSession(token)=          | clears session                              |
+| Route (default)                      | Service call                  | Cookie                                      |
+|--------------------------------------+-------------------------------+---------------------------------------------|
+| =POST /api/auth/enrollment/exchange= | =exchangeEnrollment(token)=   | sets enrollment                             |
+| =POST /api/auth/register/options=    | =registrationOptions({...})=  | sets challenge                              |
+| =POST /api/auth/register/verify=     | =verifyRegistration({...})=   | clears challenge + enrollment, sets session |
+| =POST /api/auth/login/options=       | =authenticationOptions()=     | sets challenge                              |
+| =POST /api/auth/login/verify=        | =verifyAuthentication({...})= | clears challenge, sets session              |
+| =POST /api/auth/logout=              | =revokeSession(token)=        | clears session                              |
 
 Change the prefix with =new LocalWebAuthnBrowser({ basePath: '/auth' })=, or any single path
 with the =endpoints= option.  Three cookies are involved, all opaque, all hashed before
@@ -178,11 +178,11 @@ anything.  Flip it back and their passkeys work again.
 
 When suspending, decide how far to go:
 
-| Also call                            | Effect                                                     |
-|--------------------------------------+------------------------------------------------------------|
-| nothing                              | sessions exist but resolve to nothing; fully reversible     |
-| =revokeUserSessions(userId)=         | session records ended; passkeys intact                      |
-| =revokeUserAuthentication(userId)=   | passkeys and pending grants gone; the person must re-enroll |
+| Also call                          | Effect                                                      |
+|------------------------------------+-------------------------------------------------------------|
+| nothing                            | sessions exist but resolve to nothing; fully reversible     |
+| =revokeUserSessions(userId)=       | session records ended; passkeys intact                      |
+| =revokeUserAuthentication(userId)= | passkeys and pending grants gone; the person must re-enroll |
 
 =webAuthnUserHandle= must be a stable, random 32 bytes --- =createUserHandle()= produces one.
 It is what the authenticator stores to name the account, so it must not be an email or an
@@ -192,13 +192,13 @@ incrementing id, and it must never change for a user who has credentials.
 
 Defaults, all overridable through =durations=:
 
-| Option                | Default    | Meaning                                        |
-|-----------------------+------------+------------------------------------------------|
-| =enrollmentGrantMs=   | 30 minutes | how long an enrollment link may be redeemed    |
-| =enrollmentSessionMs= | 10 minutes | from exchange to the passkey existing          |
-| =challengeMs=         | 5 minutes  | between an =options= call and its =verify=      |
-| =sessionIdleMs=       | 30 minutes | inactivity before a session dies               |
-| =sessionAbsoluteMs=   | 8 hours    | total session lifetime regardless of activity  |
+| Option                | Default    | Meaning                                       |
+|-----------------------+------------+-----------------------------------------------|
+| =enrollmentGrantMs=   | 30 minutes | how long an enrollment link may be redeemed   |
+| =enrollmentSessionMs= | 10 minutes | from exchange to the passkey existing         |
+| =challengeMs=         | 5 minutes  | between an =options= call and its =verify=    |
+| =sessionIdleMs=       | 30 minutes | inactivity before a session dies              |
+| =sessionAbsoluteMs=   | 8 hours    | total session lifetime regardless of activity |
 
 =resolveSession(token)= applies both windows and touches =lastSeenAt=; pass =false= as the
 second argument to inspect a session without extending it.  It returns =null= --- never
@@ -213,14 +213,14 @@ can get by choosing a smaller absolute lifetime.
 
 * Revocation
 
-| Call                                                          | Ends                                                  |
-|---------------------------------------------------------------+-------------------------------------------------------|
-| =revokeSession(token)=                                        | one session                                            |
-| =revokeUserSessions(userId, { exceptSessionToken })=          | every session, optionally sparing the caller's         |
-| =revokeUserSessions(userId, { kinds })=                       | only sessions opened by credentials of those kinds     |
+| Call                                                              | Ends                                               |
+|-------------------------------------------------------------------+----------------------------------------------------|
+| =revokeSession(token)=                                            | one session                                        |
+| =revokeUserSessions(userId, { exceptSessionToken })=              | every session, optionally sparing the caller's     |
+| =revokeUserSessions(userId, { kinds })=                           | only sessions opened by credentials of those kinds |
 | =revokeCredential(userId, credentialId, { allowLastCredential })= | one credential and its sessions                    |
-| =revokeCredentialTree(userId, credentialId, { kinds })=       | a credential and everything it enrolled                |
-| =revokeUserAuthentication(userId, { kinds })=                 | credentials, sessions, and pending grants              |
+| =revokeCredentialTree(userId, credentialId, { kinds })=           | a credential and everything it enrolled            |
+| =revokeUserAuthentication(userId, { kinds })=                     | credentials, sessions, and pending grants          |
 
 Two behaviours to know:
 
@@ -450,12 +450,12 @@ implements both.
 Every credential this package creates was authorized either by an enrollment grant or by an
 existing credential's session.  Four columns record which:
 
-| Column                  | Meaning                                                    |
-|-------------------------+------------------------------------------------------------|
-| =createdVia=            | ='enrollment'=, ='session'=, or =null= for pre-2.x rows     |
-| =parentCredentialId=    | the credential whose session authorized this one           |
-| =grantId=               | the enrollment grant it was redeemed from                   |
-| =approvedByUserId=      | who approved that grant                                     |
+| Column               | Meaning                                                 |
+|----------------------+---------------------------------------------------------|
+| =createdVia=         | ='enrollment'=, ='session'=, or =null= for pre-2.x rows |
+| =parentCredentialId= | the credential whose session authorized this one        |
+| =grantId=            | the enrollment grant it was redeemed from               |
+| =approvedByUserId=   | who approved that grant                                 |
 
 #+begin_src ts
 await auth.credentialLineage(userId, credentialId);    // root first, back to the enrollment
@@ -475,19 +475,19 @@ than treating the callback as the record:
 onEvent: (event) => void auditLog.write(event),
 #+end_src
 
-| Event                          | Emitted when                                          |
-|--------------------------------+-------------------------------------------------------|
-| =enrollment.issued=            | a grant is created                                     |
-| =enrollment.exchanged=         | a token is redeemed for an enrollment session          |
-| =enrollment.completed=         | a passkey is registered against that grant             |
-| =enrollment.revoked=           | a pending grant is superseded or revoked               |
-| =credential.registered=        | a passkey is created                                   |
-| =credential.authenticated=     | an assertion verifies                                  |
-| =credential.revoked=           | a credential is revoked                                |
-| =session.created=              | a session begins                                       |
-| =session.revoked=              | a session ends                                         |
-| =user.sessions_revoked=        | bulk session revoke, with =count= and any =kinds=      |
-| =user.authentication_revoked=  | bulk credential revoke, with any =kinds=               |
+| Event                         | Emitted when                                      |
+|-------------------------------+---------------------------------------------------|
+| =enrollment.issued=           | a grant is created                                |
+| =enrollment.exchanged=        | a token is redeemed for an enrollment session     |
+| =enrollment.completed=        | a passkey is registered against that grant        |
+| =enrollment.revoked=          | a pending grant is superseded or revoked          |
+| =credential.registered=       | a passkey is created                              |
+| =credential.authenticated=    | an assertion verifies                             |
+| =credential.revoked=          | a credential is revoked                           |
+| =session.created=             | a session begins                                  |
+| =session.revoked=             | a session ends                                    |
+| =user.sessions_revoked=       | bulk session revoke, with =count= and any =kinds= |
+| =user.authentication_revoked= | bulk credential revoke, with any =kinds=          |
 
 Return values are the durable record where one exists: =issueEnrollment= returns
 =supersededGrantIds= precisely so a host can write the replacement down without depending on
@@ -497,19 +497,19 @@ the event.
 
 Every failure is a =LocalWebAuthnError= with a =code= and an HTTP =status=.  Map them once:
 
-| Code                          | Status | Means                                                    |
-|-------------------------------+--------+----------------------------------------------------------|
-| =invalid_configuration=       |    500 | the host asked for something inconsistent                 |
-| =invalid_enrollment=          | 400/403/404 | bad, expired, consumed or revoked link; unknown user  |
-| =enrollment_not_authorized=   |    403 | no valid grant or session authorizes this registration    |
-| =invalid_ceremony=            |    400 | challenge missing, expired or already used                |
-| =registration_failed=         |    400 | the attestation did not verify                            |
-| =authentication_failed=       |    401 | the assertion did not verify                              |
-| =registration_not_permitted=  |    403 | this kind is =canRegister: false=                         |
-| =credential_not_found=        |    404 | no such credential for this user                          |
-| =last_credential=             |    409 | would remove the person's only credential of that kind    |
-| =invalid_dpop_proof=          |    401 | absent, malformed, replayed, or wrong key                 |
-| =dpop_nonce_required=         |    401 | answer with =dpopChallenge()= and let the client retry     |
+| Code                         |      Status | Means                                                  |
+|------------------------------+-------------+--------------------------------------------------------|
+| =invalid_configuration=      |         500 | the host asked for something inconsistent              |
+| =invalid_enrollment=         | 400/403/404 | bad, expired, consumed or revoked link; unknown user   |
+| =enrollment_not_authorized=  |         403 | no valid grant or session authorizes this registration |
+| =invalid_ceremony=           |         400 | challenge missing, expired or already used             |
+| =registration_failed=        |         400 | the attestation did not verify                         |
+| =authentication_failed=      |         401 | the assertion did not verify                           |
+| =registration_not_permitted= |         403 | this kind is =canRegister: false=                      |
+| =credential_not_found=       |         404 | no such credential for this user                       |
+| =last_credential=            |         409 | would remove the person's only credential of that kind |
+| =invalid_dpop_proof=         |         401 | absent, malformed, replayed, or wrong key              |
+| =dpop_nonce_required=        |         401 | answer with =dpopChallenge()= and let the client retry |
 
 Do not surface the =reason= detail attached to DPoP messages: it distinguishes "wrong key"
 from "replayed".

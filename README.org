@@ -4,14 +4,14 @@
 
 #+STARTUP: org-startup-with-inline-images inlineimages
 #+OPTIONS: ^:nil # Disable sub/superscripting with bare _; _{...} still works
-#+OPTIONS: toc:2
+#+OPTIONS: toc:nil
 
 *Default to passkeys, not password plumbing.*
 
-[[https://www.npmjs.com/package/@localwebauthn/server][npm: @localwebauthn/server]] ·
-[[https://www.npmjs.com/package/@localwebauthn/browser][npm: @localwebauthn/browser]] ·
-[[https://github.com/LocalWebAuthn/LocalWebAuthn/actions/workflows/ci.yml][CI]] ·
-[[./LICENSE][MIT]] · =2.2.0=
+[[https://www.npmjs.com/package/@localwebauthn/server][https://img.shields.io/npm/v/@localwebauthn/server.svg?label=server]]
+[[https://www.npmjs.com/package/@localwebauthn/browser][https://img.shields.io/npm/v/@localwebauthn/browser.svg?label=browser]]
+[[https://github.com/LocalWebAuthn/LocalWebAuthn/actions/workflows/ci.yml][https://github.com/LocalWebAuthn/LocalWebAuthn/actions/workflows/ci.yml/badge.svg]]
+[[./LICENSE][https://img.shields.io/github/license/LocalWebAuthn/LocalWebAuthn.svg]]
 
 LocalWebAuthn is a self-hosted, invitation-first, passkey-only authentication lifecycle for
 TypeScript applications.  It supplies what is missing between a WebAuthn ceremony library
@@ -48,15 +48,15 @@ random challenge that the browser binds to the origin it is talking to, so a sig
 produced for =evil.example= is worthless at =app.example.com=.  These are properties of the
 [[https://www.w3.org/TR/webauthn-3/][WebAuthn standard]], not of this package.
 
-| Password application                        | LocalWebAuthn                                       |
-|---------------------------------------------+-----------------------------------------------------|
-| =users.password_hash=                       | a public key in =localwebauthn_credentials=         |
-| =bcrypt.hash()= at signup                   | the authenticator generates the key pair            |
-| =bcrypt.compare()= at login                 | =verifyAuthentication({ response, challengeToken })= |
-| a reusable secret the user can be phished for | a signature bound to one origin, valid once        |
-| reset tokens and a mail channel             | an explicit re-enrollment policy you define         |
-| bolt-on TOTP                                | =userVerification: 'required'=, done by the device  |
-| breach discloses verifiers                  | breach discloses public keys                        |
+| Password application                          | LocalWebAuthn                                        |
+|-----------------------------------------------+------------------------------------------------------|
+| =users.password_hash=                         | a public key in =localwebauthn_credentials=          |
+| =bcrypt.hash()= at signup                     | the authenticator generates the key pair             |
+| =bcrypt.compare()= at login                   | =verifyAuthentication({ response, challengeToken })= |
+| a reusable secret the user can be phished for | a signature bound to one origin, valid once          |
+| reset tokens and a mail channel               | an explicit re-enrollment policy you define          |
+| bolt-on TOTP                                  | =userVerification: 'required'=, done by the device   |
+| breach discloses verifiers                    | breach discloses public keys                         |
 
 Two consequences are worth stating plainly, because they are what actually changes in your
 code.
@@ -392,11 +392,11 @@ Losing the last passkey is what recovery is for, and =revokeCredential= refuses 
 person's only one unless you say =allowLastCredential: true= --- so the lockout has to be
 deliberate.  The three revocation verbs, in increasing severity:
 
-| Call                                       | Ends            | Leaves               |
-|--------------------------------------------+-----------------+----------------------|
-| =revokeSession(token)=                     | one session     | everything else      |
-| =revokeUserSessions(userId)=               | every session   | every passkey        |
-| =revokeUserAuthentication(userId)=         | sessions, passkeys, pending grants | a user who must re-enroll |
+| Call                               | Ends                               | Leaves                    |
+|------------------------------------+------------------------------------+---------------------------|
+| =revokeSession(token)=             | one session                        | everything else           |
+| =revokeUserSessions(userId)=       | every session                      | every passkey             |
+| =revokeUserAuthentication(userId)= | sessions, passkeys, pending grants | a user who must re-enroll |
 
 =revokeUserSessions= is the "my laptop was stolen" button: the person signs in again on
 their phone and nothing needs re-issuing.  Reach for =revokeUserAuthentication= only when
@@ -568,15 +568,15 @@ Nonces are opt-in because they cost the client something real --- it must retain
 
 ** What this buys, precisely
 
-| Threat                                    | What stops it                                                    |
-|-------------------------------------------+------------------------------------------------------------------|
-| the =.env= leaks                          | revoke that one credential; nothing else changes                 |
-| a stolen session token is replayed        | every request needs a DPoP proof from the credential's key       |
-| a captured proof is replayed              | the =jti= is single-use; =htm=, =htu= and =ath= bind it to one request |
-| a leaked key mints itself a spare         | =canRegister: false=                                             |
-| a script signs in at the browser route    | =interactive: false=                                             |
-| a script calls a cookie route with its token | your =interactiveKind= check                                   |
-| the server database is read               | it holds a public key; no secret to steal                        |
+| Threat                                       | What stops it                                                          |
+|----------------------------------------------+------------------------------------------------------------------------|
+| the =.env= leaks                             | revoke that one credential; nothing else changes                       |
+| a stolen session token is replayed           | every request needs a DPoP proof from the credential's key             |
+| a captured proof is replayed                 | the =jti= is single-use; =htm=, =htu= and =ath= bind it to one request |
+| a leaked key mints itself a spare            | =canRegister: false=                                                   |
+| a script signs in at the browser route       | =interactive: false=                                                   |
+| a script calls a cookie route with its token | your =interactiveKind= check                                           |
+| the server database is read                  | it holds a public key; no secret to steal                              |
 
 The full design --- every byte of both flows, key custody options from a file to a TPM, and
 the reasoning behind each restriction --- is
@@ -588,15 +588,15 @@ every byte it constructs under =--dry-run=.
 
 * Where to go from here
 
-| Document                                                                  | For                                                                                |
-|---------------------------------------------------------------------------+------------------------------------------------------------------------------------|
-| [[./README-DETAIL.org][README-DETAIL.org]]                                | Adapters, cookies, sessions, suspension, recovery design, signup, kinds, DPoP, audit |
-| [[./README-DETAIL-EXAMPLES.org][README-DETAIL-EXAMPLES.org]]              | The five examples and what each one teaches                                        |
-| [[./docs/API-AUTH.org][docs/API-AUTH.org]]                                | The machine-credential design in full                                              |
-| [[./SECURITY.md][SECURITY.md]]                                            | Security boundary, host duties, reporting, what to read before depending on this   |
-| [[./docs/MIGRATING.md][docs/MIGRATING.md]]                                | Upgrade notes, schema versions, store-contract changes                             |
-| [[./docs/COMPARISON.md][docs/COMPARISON.md]]                              | How this differs from ceremony libraries, auth frameworks and hosted IdPs          |
-| [[./docs/RATIONALE.md][docs/RATIONALE.md]]                                | Why the boundary sits where it does; non-goals                                     |
+| Document                   | For                                                                                  |
+|----------------------------+--------------------------------------------------------------------------------------|
+| [[./README-DETAIL.org][README-DETAIL.org]]          | Adapters, cookies, sessions, suspension, recovery design, signup, kinds, DPoP, audit |
+| [[./README-DETAIL-EXAMPLES.org][README-DETAIL-EXAMPLES.org]] | The five examples and what each one teaches                                          |
+| [[./docs/API-AUTH.org][docs/API-AUTH.org]]          | The machine-credential design in full                                                |
+| [[./SECURITY.md][SECURITY.md]]                | Security boundary, host duties, reporting, what to read before depending on this     |
+| [[./docs/MIGRATING.md][docs/MIGRATING.md]]          | Upgrade notes, schema versions, store-contract changes                               |
+| [[./docs/COMPARISON.md][docs/COMPARISON.md]]         | How this differs from ceremony libraries, auth frameworks and hosted IdPs            |
+| [[./docs/RATIONALE.md][docs/RATIONALE.md]]          | Why the boundary sits where it does; non-goals                                       |
 
 *Is this a good fit?*  Yes, if you want to replace a password system with passkeys only,
 keep authentication in your own TypeScript app and database, enroll each person through an
@@ -610,13 +610,13 @@ regulated identity assurance, high-volume abuse operations, permanent password o
 fallbacks, or recovery your team cannot safely operate.  Do not make passkey-only access
 mandatory for a population whose devices and accessibility needs you have not checked.
 
-*A stable API is not a production track record.*  The current release is =2.2.0=, and
-LocalWebAuthn follows SemVer for the service API, store contract and schema --- but it is
-young software with a small user base sitting on the authentication path.  It is also deliberately small enough to read
---- about 6,000 lines in the server package, 180 in the browser package, 1,000 in the
-optional client.  Read it, and read [[./SECURITY.md][SECURITY.md]], before depending on it.
+*A stable API is not a production track record.* The current release is =2.2.0=, and LocalWebAuthn
+follows SemVer for the service API, store contract and schema --- but it is young software with a
+small user base sitting on the authentication path.  It is also deliberately small enough to read
+--- about 6,000 lines in the server package, 180 in the browser package, 1,000 in the optional
+client.  Read it, and read [[./SECURITY.md][SECURITY.md]], before depending on it.
 
-*If you are on 1.0.0 or 1.1.0, upgrade.*  Those releases delete passkeys during routine
+*If you are on an old version, upgrade.*  Those releases delete passkeys during routine
 maintenance; see [[./docs/MIGRATING.md][the 2.0.0 notes]].
 
 * Packages and development
