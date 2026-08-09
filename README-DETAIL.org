@@ -91,7 +91,7 @@ D1 cannot open a transaction.  The adapter uses =batch()= and guards each statem
 preceding row count, which is not the same thing: a mid-batch failure after the credential
 =INSERT= can leave a credential without its initial session.  That row is a normal passkey
 --- the next sign-in creates a session --- and no cleanup reconciles it.  See
-[[./SECURITY.md][SECURITY.md]] §D1 Batch Non-Atomicity.
+[[./SECURITY.md][SECURITY.md]] D1 Batch Non-Atomicity.
 
 ** Maintenance
 
@@ -415,7 +415,7 @@ Two limits to internalise:
 * Machine credentials and DPoP
 
 The full design is [[./docs/API-AUTH.org][docs/API-AUTH.org]]; [[./README.org][README.org]]
-§"A Passkey for a script" is the working code.  What belongs here is the operational surface.
+"A Passkey for a script" is the working code.  What belongs here is the operational surface.
 
 =verifyDpop= verifies an [[https://www.rfc-editor.org/rfc/rfc9449.html][RFC 9449]] proof
 against the session's credential.  There is no per-session key material: the expected
@@ -533,8 +533,9 @@ schema in the right dialect.
 
 Every SQL statement the package executes is collected in
 [[./packages/server/src/queries.ts][packages/server/src/queries.ts]], so a reviewer can read
-the data layer in one file.  [[./SECURITY.md][SECURITY.md]] states the security boundary, the
-host's duties, what is stored and what is not, and how to report a vulnerability.
+the data layer in one file.  [[./SECURITY.md][SECURITY.md]] gives the per-table inventory of
+what is stored and what each value is worth to whoever reads it, what a disclosure does and
+does not cost, the security boundary, the host's duties, and how to report a vulnerability.
 
 If you are auditing and do not issue API credentials, =packages/server/src/dpop.ts= and the
 =credentialKinds= handling are the parts you can skip.
