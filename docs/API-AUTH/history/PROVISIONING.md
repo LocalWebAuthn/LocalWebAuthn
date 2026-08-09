@@ -1,5 +1,9 @@
 # Provisioning a script credential with a human's passkey
 
+> **Superseded design note.** Written before the implementation and not updated since;
+> where it disagrees with [`docs/API-AUTH.org`](../../API-AUTH.org), that document is
+> right. See [the history index](README.md) for what each of these was.
+
 How a person whose passkey lives in the macOS Passwords keystore authorizes a script to
 call the API, and what the script ends up holding.
 

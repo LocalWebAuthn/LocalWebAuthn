@@ -1,5 +1,9 @@
 # API via Passkeys
 
+> **Superseded design note.** Written before the implementation and not updated since;
+> where it disagrees with [`docs/API-AUTH.org`](../../API-AUTH.org), that document is
+> right. See [the history index](README.md) for what each of these was.
+
 Design an architecture to support API clients via Passkeys, which are simply signatures over a
 challenge + some other data, with some storage of on the client (counter? anything else?); Claims
 such as the following are demonstrably false, and any security assumptions surrounding Passkeys that

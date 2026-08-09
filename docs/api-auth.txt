@@ -430,10 +430,10 @@ _________________
   the two strongest backends.
 
   Those require the key to be born on the script host, which is the
-  bootstrap-token flow in `docs/API-AUTH/PROVISIONING.md'.  The two
-  flows are complementary, not redundant: this one is simpler and works
-  when the human is provisioning a script they cannot shell into; that
-  one is the only route to a non-exportable key.
+  bootstrap-token flow in `docs/API-AUTH/history/PROVISIONING.md'.  The
+  two flows are complementary, not redundant: this one is simpler and
+  works when the human is provisioning a script they cannot shell into;
+  that one is the only route to a non-exportable key.
 
 
 3.9 Where the key material ends up
@@ -867,14 +867,21 @@ _________________
 9 Cross-References
 ==================
 
-  - `docs/API-AUTH/DESIGN-MACHINE-CREDENTIALS.md' -- the `kind' column,
-    the byte formats, threat model against API keys, fleet topology.
-  - `docs/API-AUTH/CONSENSUS.md' -- reconciles three designs; surveys
-    RFC 9449 (DPoP), RFC 9421 (HTTP Message Signatures), RFC 9729
-    (Concealed), and `draft-ietf-oauth-first-party-apps'; argues for the
-    mechanism over the OAuth machinery.
-  - `docs/API-AUTH/PROVISIONING.md' -- the bootstrap-token variant,
-    where the script rather than the browser generates the key pair.
+  Everything under `docs/API-AUTH/history/' predates the implementation
+  and none of it was updated afterwards: where one contradicts this
+  document, this document is right.  They are kept for the reasoning,
+  not the conclusions.
+
+  - `docs/API-AUTH/history/DESIGN-MACHINE-CREDENTIALS.md' -- the `kind'
+    column, the byte formats, threat model against API keys, fleet
+    topology.
+  - `docs/API-AUTH/history/CONSENSUS.md' -- reconciles three designs;
+    surveys RFC 9449 (DPoP), RFC 9421 (HTTP Message Signatures), RFC
+    9729 (Concealed), and `draft-ietf-oauth-first-party-apps'; argues
+    for the mechanism over the OAuth machinery.
+  - `docs/API-AUTH/history/PROVISIONING.md' -- the bootstrap-token
+    variant, where the script rather than the browser generates the key
+    pair.
   - [Issue #11] -- the `kind' column this design depends on.
 
 
@@ -906,5 +913,6 @@ bootstrap-token flow.
 per request against a network KMS adds latency, cost and quota to
 every API call.  That is the one case where the single-key design
 should be revisited in favour of a separate, in-memory session key --
-see `docs/API-AUTH/CONSENSUS.md' section A.  A Secure Enclave or TPM
-signature is local and fast enough that single-key remains correct.
+see `docs/API-AUTH/history/CONSENSUS.md' section A.  A Secure Enclave
+or TPM signature is local and fast enough that single-key remains
+correct.

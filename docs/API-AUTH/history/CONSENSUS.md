@@ -1,5 +1,9 @@
 # Consensus across the three API-auth designs
 
+> **Superseded design note.** Written before the implementation and not updated since;
+> where it disagrees with [`docs/API-AUTH.org`](../../API-AUTH.org), that document is
+> right. See [the history index](README.md) for what each of these was.
+
 Reviews `DESIGN-MACHINE-CREDENTIALS.md` (1), `-2.md` (2), and `-3.md` (3), and answers the
 question of whether the "passkey at session start, cheap credential thereafter" pattern is
 already standardised.

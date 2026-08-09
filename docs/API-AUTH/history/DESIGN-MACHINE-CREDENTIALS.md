@@ -1,5 +1,9 @@
 # Design: machine credentials (API clients) — issue #11
 
+> **Superseded design note.** Written before the implementation and not updated since;
+> where it disagrees with [`docs/API-AUTH.org`](../../API-AUTH.org), that document is
+> right. See [the history index](README.md) for what each of these was.
+
 Status: proposal. Targets [#11](https://github.com/LocalWebAuthn/LocalWebAuthn/issues/11).
 
 ## 1. Summary
