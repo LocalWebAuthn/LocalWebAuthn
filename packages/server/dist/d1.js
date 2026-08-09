@@ -10,16 +10,16 @@ import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnMigrationsTableStatement,
   localWebAuthnUpgradeStatements
-} from "./chunk-R3NCTBHZ.js";
+} from "./chunk-U6SG3F4P.js";
 
 // src/d1.ts
 async function migrateD1(database, now = Date.now()) {
   await database.prepare(localWebAuthnMigrationsTableStatement()).run();
   const from = await installedD1Version(database);
-  if (from >= LOCALWEBAUTHN_SCHEMA_VERSION) {
+  const upgrade = localWebAuthnUpgradeStatements(from, "sqlite");
+  if (upgrade.length === 0) {
     return;
   }
-  const upgrade = localWebAuthnUpgradeStatements(from, "sqlite");
   try {
     await database.batch([
       ...upgrade.map((statement) => database.prepare(statement)),

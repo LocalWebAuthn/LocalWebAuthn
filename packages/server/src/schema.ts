@@ -469,7 +469,20 @@ export function localWebAuthnUpgradeStatements(
   if (fromVersion <= 0) {
     return schema;
   }
-  if (fromVersion >= LOCALWEBAUTHN_SCHEMA_VERSION) {
+  if (fromVersion > LOCALWEBAUTHN_SCHEMA_VERSION) {
+    // A database written by a *newer* build. Running this one against it would
+    // execute old code against semantics it does not know about — silently, since
+    // every table it knows would still be present. Refuse instead: the operator
+    // has a version skew (a rolled-back deploy, a stale worker, two services
+    // sharing one database), and finding out at startup is far cheaper than
+    // finding out from corrupted authentication state.
+    throw new Error(
+      `The database is at LocalWebAuthn schema version ${String(fromVersion)}, but this build ` +
+        `understands ${String(LOCALWEBAUTHN_SCHEMA_VERSION)}. Deploy a newer @localwebauthn/server, ` +
+        `or point this one at a database it can read.`,
+    );
+  }
+  if (fromVersion === LOCALWEBAUTHN_SCHEMA_VERSION) {
     return [];
   }
   // Tables introduced above `fromVersion` come from the full schema's idempotent

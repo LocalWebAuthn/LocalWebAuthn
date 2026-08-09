@@ -1,6 +1,6 @@
 # Migrating LocalWebAuthn
 
-## 2.2.0 → unreleased (credential kinds and machine credentials)
+## 2.2.0 → 3.0.0 (credential kinds and machine credentials)
 
 ### Schema version 2
 

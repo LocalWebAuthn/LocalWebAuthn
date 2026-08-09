@@ -79,11 +79,11 @@ export async function migrateD1(database: D1DatabaseLike, now = Date.now()): Pro
   await database.prepare(localWebAuthnMigrationsTableStatement()).run();
 
   const from = await installedD1Version(database);
-  if (from >= LOCALWEBAUTHN_SCHEMA_VERSION) {
+  // Throws when the database is at a *newer* version than this build understands.
+  const upgrade = localWebAuthnUpgradeStatements(from, 'sqlite');
+  if (upgrade.length === 0) {
     return;
   }
-
-  const upgrade = localWebAuthnUpgradeStatements(from, 'sqlite');
   try {
     await database.batch([
       ...upgrade.map((statement) => database.prepare(statement)),

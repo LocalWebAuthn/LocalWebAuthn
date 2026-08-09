@@ -332,7 +332,12 @@ function localWebAuthnUpgradeStatements(fromVersion, dialect = "sqlite") {
   if (fromVersion <= 0) {
     return schema;
   }
-  if (fromVersion >= LOCALWEBAUTHN_SCHEMA_VERSION) {
+  if (fromVersion > LOCALWEBAUTHN_SCHEMA_VERSION) {
+    throw new Error(
+      `The database is at LocalWebAuthn schema version ${String(fromVersion)}, but this build understands ${String(LOCALWEBAUTHN_SCHEMA_VERSION)}. Deploy a newer @localwebauthn/server, or point this one at a database it can read.`
+    );
+  }
+  if (fromVersion === LOCALWEBAUTHN_SCHEMA_VERSION) {
     return [];
   }
   const introduced = new Set(

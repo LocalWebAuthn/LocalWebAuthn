@@ -23,6 +23,19 @@ export default tseslint.config(
     },
   },
   {
+    // Release tooling: plain Node ESM, deliberately outside the TypeScript
+    // project, so the type-aware rules have no program to consult. Still linted
+    // for ordinary correctness.
+    files: ['scripts/**/*.mjs'],
+    ...tseslint.configs.disableTypeChecked,
+    languageOptions: {
+      // Opt out of the project service too, not just the type-aware rules: this
+      // file is not in any tsconfig, and the parser would otherwise refuse it.
+      parserOptions: { projectService: false, project: null, program: null },
+      globals: { console: 'readonly', process: 'readonly' },
+    },
+  },
+  {
     files: ['tests/**/*.ts'],
     rules: {
       '@typescript-eslint/no-unnecessary-type-assertion': 'off',

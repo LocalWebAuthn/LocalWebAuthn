@@ -26,7 +26,8 @@
     "test:demo:e2e": "playwright test --config examples/demo/playwright.config.ts",
     "check:packages": "npm run build && publint packages/server && publint packages/browser && publint packages/client && attw --pack --profile esm-only packages/server && attw --pack --profile esm-only packages/browser && attw --pack --profile esm-only packages/client",
     "check": "npm run typecheck && npm run lint && npm run format:check && npm run test:coverage && npm run check:packages",
-    "release:check": "npm run check && npm pack --dry-run --workspace @localwebauthn/server && npm pack --dry-run --workspace @localwebauthn/browser && npm pack --dry-run --workspace @localwebauthn/client"
+    "check:artifacts": "npm run build && node scripts/check-package-artifacts.mjs",
+    "release:check": "npm run check && npm run check:artifacts"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.2",
