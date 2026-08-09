@@ -1,4 +1,4 @@
-import { L as LocalWebAuthnStore, a as LocalWebAuthnDpopStore, E as EnrollmentGrantRecord, b as EnrollmentSession, C as ChallengeRecord, c as ChallengeKind, d as ConsumedChallenge, e as Credential, f as CompleteRegistrationInput, g as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, h as RevokeCredentialResult, i as CleanupResult } from './types-BkXhC9Te.js';
+import { L as LocalWebAuthnStore, a as LocalWebAuthnDpopStore, E as EnrollmentGrantRecord, b as EnrollmentSession, C as ChallengeRecord, c as ChallengeKind, d as ConsumedChallenge, e as Credential, f as CompleteRegistrationInput, g as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, h as RevokeCredentialResult, i as CleanupResult } from './types-DKx5wADO.js';
 import '@simplewebauthn/server';
 
 type SqliteRunResult = {
@@ -62,6 +62,8 @@ declare class SqliteLocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAu
     claimDpopNonce(slot: number, candidate: string, expiresAt: number): Promise<string>;
     dpopNonces(currentSlot: number, previousSlot: number): Promise<string[]>;
     cleanup(now: number): Promise<CleanupResult>;
+    registrationGeneration(userId: string, now: number): Promise<number>;
+    bumpRegistrationGeneration(userId: string, now: number): Promise<number>;
 }
 
 export { type SqliteDatabase, SqliteLocalWebAuthnStore, type SqliteRunResult, type SqliteStatement, type SqliteTransaction, migrateSqlite };

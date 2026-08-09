@@ -1,4 +1,4 @@
-import { L as LocalWebAuthnStore, a as LocalWebAuthnDpopStore, E as EnrollmentGrantRecord, b as EnrollmentSession, C as ChallengeRecord, c as ChallengeKind, d as ConsumedChallenge, e as Credential, f as CompleteRegistrationInput, g as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, h as RevokeCredentialResult, i as CleanupResult } from './types-BkXhC9Te.js';
+import { L as LocalWebAuthnStore, a as LocalWebAuthnDpopStore, E as EnrollmentGrantRecord, b as EnrollmentSession, C as ChallengeRecord, c as ChallengeKind, d as ConsumedChallenge, e as Credential, f as CompleteRegistrationInput, g as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, h as RevokeCredentialResult, i as CleanupResult } from './types-DKx5wADO.js';
 import '@simplewebauthn/server';
 
 type PostgresQueryResult<Row> = {
@@ -72,6 +72,8 @@ declare class PostgresLocalWebAuthnStore implements LocalWebAuthnStore, LocalWeb
     claimDpopProof(jtiHash: Uint8Array, expiresAt: number): Promise<boolean>;
     claimDpopNonce(slot: number, candidate: string, expiresAt: number): Promise<string>;
     dpopNonces(currentSlot: number, previousSlot: number): Promise<string[]>;
+    registrationGeneration(userId: string, now: number): Promise<number>;
+    bumpRegistrationGeneration(userId: string, now: number): Promise<number>;
 }
 
 export { PostgresLocalWebAuthnStore, type PostgresPool, type PostgresPoolClient, type PostgresQueryResult, type PostgresQueryable, migratePostgres };

@@ -6,12 +6,12 @@ import {
   enrollmentSessionFromRow,
   sessionFromRow,
   toPositionalPlaceholders
-} from "./chunk-CSU6OHVF.js";
+} from "./chunk-IBOQAKS5.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnMigrationsTableStatement,
   localWebAuthnUpgradeStatements
-} from "./chunk-ANCBC7RI.js";
+} from "./chunk-R3NCTBHZ.js";
 
 // src/postgres.ts
 var PG = Object.fromEntries(
@@ -102,6 +102,7 @@ var PostgresLocalWebAuthnStore = class {
       record.authorizationSessionHash,
       record.credentialKind,
       record.allowedCredentialKinds === null ? null : JSON.stringify(record.allowedCredentialKinds),
+      record.registrationGeneration,
       record.expiresAt,
       record.createdAt
     ]);
@@ -331,6 +332,9 @@ var PostgresLocalWebAuthnStore = class {
   }
   /** Re-check the authorizing grant or session at commit time. */
   async #registrationIsAuthorized(tx, input) {
+    if (!await this.#fenceHolds(tx, input)) {
+      return false;
+    }
     if (input.challenge.grantId && input.enrollmentSessionHash) {
       const result = await tx.query(PG.authorizeRegistrationByGrant, [
         input.challenge.grantId,
@@ -349,6 +353,35 @@ var PostgresLocalWebAuthnStore = class {
       return result.rows.length > 0;
     }
     return false;
+  }
+  /** Whether the challenge's recorded generation is still current, under a row lock. */
+  async #fenceHolds(tx, input) {
+    const expected = input.challenge.registrationGeneration;
+    if (expected === null) {
+      return true;
+    }
+    const locked = await tx.query(PG_ONLY.lockRegistrationFence, [
+      input.credential.userId
+    ]);
+    if (locked.rows.length === 0) {
+      return expected === 0;
+    }
+    return Number(locked.rows[0].generation) === expected;
+  }
+  async registrationGeneration(userId, now) {
+    await this.#pool.query(PG.ensureRegistrationFence, [userId, now]);
+    const result = await this.#pool.query(
+      PG.selectRegistrationFence,
+      [userId]
+    );
+    return Number(result.rows[0]?.generation ?? 0);
+  }
+  async bumpRegistrationGeneration(userId, now) {
+    const result = await this.#pool.query(
+      PG.bumpRegistrationFence,
+      [userId, now]
+    );
+    return Number(result.rows[0]?.generation ?? 0);
   }
   async #insertSession(tx, session) {
     await tx.query(PG.insertSession, [

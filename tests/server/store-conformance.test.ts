@@ -71,6 +71,7 @@ function enrollmentChallenge(grantId: string): ChallengeRecord {
     authorizationSessionHash: null,
     credentialKind: null,
     allowedCredentialKinds: null,
+    registrationGeneration: 0,
     expiresAt: now + 1_000,
     createdAt: now,
   };
@@ -104,6 +105,7 @@ function registrationInput(grantId: string): CompleteRegistrationInput {
       authorizationSessionHash: null,
       credentialKind: null,
       allowedCredentialKinds: null,
+      registrationGeneration: 0,
     },
     enrollmentSessionHash: bytes(2),
     authenticatedSessionHash: null,
@@ -185,7 +187,8 @@ async function postgresFixture(): Promise<StoreFixture> {
     localwebauthn_sessions,
     localwebauthn_credentials,
     localwebauthn_challenges,
-    localwebauthn_enrollment_grants
+    localwebauthn_enrollment_grants,
+    localwebauthn_registration_fences
     RESTART IDENTITY CASCADE`);
   return {
     store: new PostgresLocalWebAuthnStore(pool as unknown as PostgresPool),
@@ -206,6 +209,44 @@ function storeConformance(
 ) {
   const suite = options.skip ? describe.skip : describe;
   suite(`${name} store`, () => {
+    it('fences a registration whose generation the store has moved on from', async () => {
+      // The registration fence, which every adapter must enforce inside the same
+      // transaction that commits the credential. Registration spans two requests
+      // with a passkey ceremony in between, so the authorization checked when the
+      // challenge was issued cannot be re-checked in one transaction — the
+      // generation stamped on the challenge is the optimistic-concurrency version
+      // that stands in for it.
+      const fixture = await createFixture();
+      try {
+        // A fresh user starts at generation 0 and the read is idempotent.
+        expect(await fixture.store.registrationGeneration('user-1', now)).toBe(0);
+        expect(await fixture.store.registrationGeneration('user-1', now)).toBe(0);
+
+        // Bumping is strictly monotonic: two bumps never yield the same value.
+        const first = await fixture.store.bumpRegistrationGeneration('user-1', now);
+        const second = await fixture.store.bumpRegistrationGeneration('user-1', now);
+        expect(first).toBe(1);
+        expect(second).toBe(2);
+        expect(await fixture.store.registrationGeneration('user-1', now)).toBe(2);
+
+        // A registration carrying a stale generation must not commit, even though
+        // its grant and enrollment session are still perfectly valid.
+        await exchangedGrant(fixture.store);
+        const stale = registrationInput('grant-1');
+        stale.challenge = { ...stale.challenge, registrationGeneration: 1 };
+        expect(await fixture.store.completeRegistration(stale)).toBe(false);
+        await expect(fixture.store.listCredentials('user-1')).resolves.toEqual([]);
+
+        // The same registration at the current generation commits.
+        const current = registrationInput('grant-1');
+        current.challenge = { ...current.challenge, registrationGeneration: 2 };
+        expect(await fixture.store.completeRegistration(current)).toBe(true);
+        await expect(fixture.store.listCredentials('user-1')).resolves.toHaveLength(1);
+      } finally {
+        await fixture.close();
+      }
+    });
+
     it('walks credential heritage in both directions', async () => {
       const fixture = await createFixture();
       try {
@@ -223,6 +264,7 @@ function storeConformance(
               authorizationSessionHash: bytes(4),
               credentialKind: null,
               allowedCredentialKinds: null,
+              registrationGeneration: 0,
             },
             enrollmentSessionHash: null,
             authenticatedSessionHash: bytes(4),

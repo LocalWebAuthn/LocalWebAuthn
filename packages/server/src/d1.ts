@@ -222,6 +222,7 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAuthnDp
         record.allowedCredentialKinds === null
           ? null
           : JSON.stringify(record.allowedCredentialKinds),
+        record.registrationGeneration,
         record.expiresAt,
         record.createdAt,
       )
@@ -303,7 +304,19 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAuthnDp
       return false;
     }
 
-    const statements = [credentialInsert, this.#guard()];
+    // The registration fence goes first: if a revoke has advanced the user's
+    // generation since this challenge was issued, the guard inserts 0, the CHECK
+    // fails, and the whole batch — credential included — rolls back.
+    const statements =
+      challenge.registrationGeneration === null
+        ? [credentialInsert, this.#guard()]
+        : [
+            this.#database
+              .prepare(D1_SQL.guardRegistrationFence)
+              .bind(credential.userId, challenge.registrationGeneration),
+            credentialInsert,
+            this.#guard(),
+          ];
 
     // A grant-based registration also closes the grant. The guard above has
     // already established that the credential insert affected one row.
@@ -449,6 +462,23 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAuthnDp
       dpopProofs: changes(results[3]),
       dpopNonces: changes(results[4]),
     };
+  }
+
+  async registrationGeneration(userId: string, now: number): Promise<number> {
+    await this.#database.prepare(SQL.ensureRegistrationFence).bind(userId, now).run();
+    const row = await this.#database
+      .prepare(SQL.selectRegistrationFence)
+      .bind(userId)
+      .first<{ generation: number }>();
+    return row?.generation ?? 0;
+  }
+
+  async bumpRegistrationGeneration(userId: string, now: number): Promise<number> {
+    const row = await this.#database
+      .prepare(SQL.bumpRegistrationFence)
+      .bind(userId, now)
+      .first<{ generation: number }>();
+    return row?.generation ?? 0;
   }
 
   async claimDpopProof(jtiHash: Uint8Array, expiresAt: number): Promise<boolean> {

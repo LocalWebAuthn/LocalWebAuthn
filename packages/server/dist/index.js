@@ -746,6 +746,14 @@ var LocalWebAuthn = class {
       authorizationSessionHash: authorization.authenticatedSessionHash,
       credentialKind,
       allowedCredentialKinds: null,
+      // The registration fence. The credential insert re-checks this value, so a
+      // revocation between here and `verifyRegistration` — a whole round trip
+      // and a passkey ceremony away — cancels this registration instead of
+      // racing it.
+      registrationGeneration: await this.#store.registrationGeneration(
+        authorization.user.id,
+        now
+      ),
       expiresAt,
       createdAt: now
     })) {
@@ -919,6 +927,8 @@ var LocalWebAuthn = class {
       authorizationSessionHash: null,
       credentialKind: null,
       allowedCredentialKinds: this.#admissibleKinds(input.credentialKinds),
+      // Authentication creates no credential, so there is nothing to fence.
+      registrationGeneration: null,
       expiresAt,
       createdAt: now
     })) {
@@ -1286,6 +1296,7 @@ var LocalWebAuthn = class {
    * appearing" for "remediation finished".
    */
   async #revokeCredentialsToFixedPoint(userId, now, enumerate, select, onRevoked) {
+    await this.#store.bumpRegistrationGeneration(userId, now);
     const revoked = [];
     const seen = /* @__PURE__ */ new Set();
     const maxPasses = 64;
@@ -1334,6 +1345,7 @@ var LocalWebAuthn = class {
    */
   async revokeCredential(userId, credentialId, options = {}) {
     const now = this.#now();
+    await this.#store.bumpRegistrationGeneration(userId, now);
     const result = await this.#store.revokeCredential(userId, credentialId, now, options);
     if (result === "last_credential") {
       throw new LocalWebAuthnError(
@@ -1400,6 +1412,7 @@ var LocalWebAuthn = class {
         (credential) => kinds.has(credential.kind)
       );
     } else {
+      await this.#store.bumpRegistrationGeneration(userId, now);
       await this.#store.revokeUserAuthentication(userId, now);
     }
     await this.#emit({

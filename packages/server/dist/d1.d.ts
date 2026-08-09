@@ -1,4 +1,4 @@
-import { L as LocalWebAuthnStore, a as LocalWebAuthnDpopStore, E as EnrollmentGrantRecord, b as EnrollmentSession, C as ChallengeRecord, c as ChallengeKind, d as ConsumedChallenge, e as Credential, f as CompleteRegistrationInput, g as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, h as RevokeCredentialResult, i as CleanupResult } from './types-BkXhC9Te.js';
+import { L as LocalWebAuthnStore, a as LocalWebAuthnDpopStore, E as EnrollmentGrantRecord, b as EnrollmentSession, C as ChallengeRecord, c as ChallengeKind, d as ConsumedChallenge, e as Credential, f as CompleteRegistrationInput, g as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, h as RevokeCredentialResult, i as CleanupResult } from './types-DKx5wADO.js';
 import '@simplewebauthn/server';
 
 type D1ResultLike<Row = Record<string, unknown>> = {
@@ -74,6 +74,8 @@ declare class D1LocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAuthnD
     }): Promise<RevokeCredentialResult>;
     revokeUserAuthentication(userId: string, now: number): Promise<void>;
     cleanup(now: number): Promise<CleanupResult>;
+    registrationGeneration(userId: string, now: number): Promise<number>;
+    bumpRegistrationGeneration(userId: string, now: number): Promise<number>;
     claimDpopProof(jtiHash: Uint8Array, expiresAt: number): Promise<boolean>;
     revokeLiveCredentialSessions(credentialId: string, now: number, idleExpiresBefore: number, exceptSessionHash?: Uint8Array): Promise<number>;
     claimDpopNonce(slot: number, candidate: string, expiresAt: number): Promise<string>;

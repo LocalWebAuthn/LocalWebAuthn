@@ -176,6 +176,7 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAut
           record.allowedCredentialKinds === null
             ? null
             : JSON.stringify(record.allowedCredentialKinds),
+          record.registrationGeneration,
           record.expiresAt,
           record.createdAt,
         ).changes === 1
@@ -426,6 +427,16 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAut
 
   /** Re-check the authorizing grant or session at commit time. */
   #registrationIsAuthorized(input: CompleteRegistrationInput): boolean {
+    // The registration fence, checked inside the committing transaction. The
+    // challenge recorded the generation it was issued under; if a revocation has
+    // advanced it since, this registration was authorized by a world that no
+    // longer exists and must not commit. SQLite serializes writers, so reading it
+    // here (in an `immediate` transaction) is enough — PostgreSQL additionally
+    // locks the row, see its `#registrationIsAuthorized`.
+    if (!this.#fenceHolds(input)) {
+      return false;
+    }
+
     if (input.challenge.grantId && input.enrollmentSessionHash) {
       return Boolean(
         this.#database
@@ -447,6 +458,32 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAut
       );
     }
     return false;
+  }
+
+  /** Whether the challenge's recorded generation is still the current one. */
+  #fenceHolds(input: CompleteRegistrationInput): boolean {
+    const expected = input.challenge.registrationGeneration;
+    if (expected === null) {
+      // A challenge issued before this column existed. Nothing to compare.
+      return true;
+    }
+    const row = this.#database.prepare(SQL.selectRegistrationFence).get(input.credential.userId) as
+      { generation: number } | undefined;
+    return (row?.generation ?? 0) === expected;
+  }
+
+  async registrationGeneration(userId: string, now: number): Promise<number> {
+    this.#database.prepare(SQL.ensureRegistrationFence).run(userId, now);
+    const row = this.#database.prepare(SQL.selectRegistrationFence).get(userId) as
+      { generation: number } | undefined;
+    return row?.generation ?? 0;
+  }
+
+  async bumpRegistrationGeneration(userId: string, now: number): Promise<number> {
+    const row = this.#database.prepare(SQL.bumpRegistrationFence).get(userId, now) as {
+      generation: number;
+    };
+    return row.generation;
   }
 
   #insertSession(session: NewSession): void {

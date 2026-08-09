@@ -312,6 +312,14 @@ export class LocalWebAuthn {
         authorizationSessionHash: authorization.authenticatedSessionHash,
         credentialKind,
         allowedCredentialKinds: null,
+        // The registration fence. The credential insert re-checks this value, so a
+        // revocation between here and `verifyRegistration` — a whole round trip
+        // and a passkey ceremony away — cancels this registration instead of
+        // racing it.
+        registrationGeneration: await this.#store.registrationGeneration(
+          authorization.user.id,
+          now,
+        ),
         expiresAt,
         createdAt: now,
       }))
@@ -498,6 +506,8 @@ export class LocalWebAuthn {
         authorizationSessionHash: null,
         credentialKind: null,
         allowedCredentialKinds: this.#admissibleKinds(input.credentialKinds),
+        // Authentication creates no credential, so there is nothing to fence.
+        registrationGeneration: null,
         expiresAt,
         createdAt: now,
       }))
@@ -924,6 +934,12 @@ export class LocalWebAuthn {
     select: (credential: Credential) => boolean,
     onRevoked?: (credential: Credential) => Promise<void>,
   ): Promise<string[]> {
+    // Advance the fence before revoking anything. Every registration challenge
+    // already issued to this user is now stale, so a ceremony in flight cannot
+    // commit behind us — which is the half of the race that re-enumeration cannot
+    // see, because the credential does not exist yet to be enumerated.
+    await this.#store.bumpRegistrationGeneration(userId, now);
+
     const revoked: string[] = [];
     const seen = new Set<string>();
     const maxPasses = 64;
@@ -984,6 +1000,10 @@ export class LocalWebAuthn {
     // Last-credential protection is enforced atomically inside the store so two
     // concurrent revokes cannot both observe "more than one active" and empty
     // the account.
+    // Revoking one credential also invalidates registrations already authorized
+    // for this user: the credential being removed may be the very authorizer a
+    // pending ceremony is relying on.
+    await this.#store.bumpRegistrationGeneration(userId, now);
     const result = await this.#store.revokeCredential(userId, credentialId, now, options);
     if (result === 'last_credential') {
       throw new LocalWebAuthnError(
@@ -1063,6 +1083,7 @@ export class LocalWebAuthn {
         (credential) => kinds.has(credential.kind),
       );
     } else {
+      await this.#store.bumpRegistrationGeneration(userId, now);
       await this.#store.revokeUserAuthentication(userId, now);
     }
     await this.#emit({

@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS localwebauthn_challenges (
   authorization_session_hash BLOB,
   credential_kind TEXT,
   allowed_credential_kinds TEXT,
+  registration_generation INTEGER,
   expires_at INTEGER NOT NULL,
   consumed_at INTEGER,
   created_at INTEGER NOT NULL,
@@ -145,6 +146,12 @@ CREATE TABLE IF NOT EXISTS localwebauthn_sessions (
 
 CREATE INDEX IF NOT EXISTS localwebauthn_session_user_idx
   ON localwebauthn_sessions(user_id, revoked_at, expires_at);
+
+CREATE TABLE IF NOT EXISTS localwebauthn_registration_fences (
+  user_id TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+) STRICT;
 
 CREATE TABLE IF NOT EXISTS localwebauthn_dpop_proofs (
   jti_hash BLOB PRIMARY KEY,
@@ -224,6 +231,7 @@ CREATE TABLE IF NOT EXISTS localwebauthn_challenges (
   authorization_session_hash BYTEA,
   credential_kind TEXT,
   allowed_credential_kinds TEXT,
+  registration_generation BIGINT,
   expires_at BIGINT NOT NULL,
   consumed_at BIGINT,
   created_at BIGINT NOT NULL,
@@ -283,6 +291,12 @@ CREATE TABLE IF NOT EXISTS localwebauthn_sessions (
 
 CREATE INDEX IF NOT EXISTS localwebauthn_session_user_idx
   ON localwebauthn_sessions(user_id, revoked_at, expires_at);
+
+CREATE TABLE IF NOT EXISTS localwebauthn_registration_fences (
+  user_id TEXT PRIMARY KEY,
+  generation BIGINT NOT NULL DEFAULT 0,
+  updated_at BIGINT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS localwebauthn_dpop_proofs (
   jti_hash BYTEA PRIMARY KEY,
@@ -351,6 +365,9 @@ export const LOCALWEBAUTHN_MIGRATIONS: {
       'ALTER TABLE localwebauthn_credentials ADD COLUMN approved_by_user_id TEXT',
       'ALTER TABLE localwebauthn_challenges ADD COLUMN credential_kind TEXT',
       'ALTER TABLE localwebauthn_challenges ADD COLUMN allowed_credential_kinds TEXT',
+      // The registration fence: a challenge records the generation it was issued
+      // under, and the credential insert refuses to commit if it has moved.
+      'ALTER TABLE localwebauthn_challenges ADD COLUMN registration_generation INTEGER',
       'ALTER TABLE localwebauthn_enrollment_grants ADD COLUMN credential_kind TEXT',
       `CREATE INDEX IF NOT EXISTS localwebauthn_credential_kind_idx
          ON localwebauthn_credentials(user_id, kind, revoked_at)`,
@@ -365,7 +382,11 @@ export const LOCALWEBAUTHN_MIGRATIONS: {
          ON localwebauthn_enrollment_grants(user_id, COALESCE(credential_kind, ''))
          WHERE completed_at IS NULL AND revoked_at IS NULL`,
     ],
-    newTables: ['localwebauthn_dpop_proofs', 'localwebauthn_dpop_nonces'],
+    newTables: [
+      'localwebauthn_dpop_proofs',
+      'localwebauthn_dpop_nonces',
+      'localwebauthn_registration_fences',
+    ],
   },
 ];
 

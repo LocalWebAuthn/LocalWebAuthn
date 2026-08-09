@@ -5,12 +5,12 @@ import {
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-CSU6OHVF.js";
+} from "./chunk-IBOQAKS5.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnMigrationsTableStatement,
   localWebAuthnUpgradeStatements
-} from "./chunk-ANCBC7RI.js";
+} from "./chunk-R3NCTBHZ.js";
 
 // src/d1.ts
 async function migrateD1(database, now = Date.now()) {
@@ -91,6 +91,7 @@ var D1LocalWebAuthnStore = class {
       record.authorizationSessionHash,
       record.credentialKind,
       record.allowedCredentialKinds === null ? null : JSON.stringify(record.allowedCredentialKinds),
+      record.registrationGeneration,
       record.expiresAt,
       record.createdAt
     ).run();
@@ -140,7 +141,11 @@ var D1LocalWebAuthnStore = class {
     } else {
       return false;
     }
-    const statements = [credentialInsert, this.#guard()];
+    const statements = challenge.registrationGeneration === null ? [credentialInsert, this.#guard()] : [
+      this.#database.prepare(D1_SQL.guardRegistrationFence).bind(credential.userId, challenge.registrationGeneration),
+      credentialInsert,
+      this.#guard()
+    ];
     if (grantId) {
       statements.push(
         this.#database.prepare(SQL.completeEnrollmentGrant).bind(now, grantId, enrollmentSessionHash, now),
@@ -238,6 +243,15 @@ var D1LocalWebAuthnStore = class {
       dpopProofs: changes(results[3]),
       dpopNonces: changes(results[4])
     };
+  }
+  async registrationGeneration(userId, now) {
+    await this.#database.prepare(SQL.ensureRegistrationFence).bind(userId, now).run();
+    const row = await this.#database.prepare(SQL.selectRegistrationFence).bind(userId).first();
+    return row?.generation ?? 0;
+  }
+  async bumpRegistrationGeneration(userId, now) {
+    const row = await this.#database.prepare(SQL.bumpRegistrationFence).bind(userId, now).first();
+    return row?.generation ?? 0;
   }
   async claimDpopProof(jtiHash, expiresAt) {
     const result = await this.#database.prepare(SQL.claimDpopProof).bind(jtiHash, expiresAt).run();

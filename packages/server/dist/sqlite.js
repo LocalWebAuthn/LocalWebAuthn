@@ -4,12 +4,12 @@ import {
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-CSU6OHVF.js";
+} from "./chunk-IBOQAKS5.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnMigrationsTableStatement,
   localWebAuthnUpgradeStatements
-} from "./chunk-ANCBC7RI.js";
+} from "./chunk-R3NCTBHZ.js";
 
 // src/sqlite.ts
 var Rollback = class extends Error {
@@ -69,6 +69,7 @@ var SqliteLocalWebAuthnStore = class {
       record.authorizationSessionHash,
       record.credentialKind,
       record.allowedCredentialKinds === null ? null : JSON.stringify(record.allowedCredentialKinds),
+      record.registrationGeneration,
       record.expiresAt,
       record.createdAt
     ).changes === 1;
@@ -217,6 +218,9 @@ var SqliteLocalWebAuthnStore = class {
   }
   /** Re-check the authorizing grant or session at commit time. */
   #registrationIsAuthorized(input) {
+    if (!this.#fenceHolds(input)) {
+      return false;
+    }
     if (input.challenge.grantId && input.enrollmentSessionHash) {
       return Boolean(
         this.#database.prepare(SQL.authorizeRegistrationByGrant).get(
@@ -233,6 +237,24 @@ var SqliteLocalWebAuthnStore = class {
       );
     }
     return false;
+  }
+  /** Whether the challenge's recorded generation is still the current one. */
+  #fenceHolds(input) {
+    const expected = input.challenge.registrationGeneration;
+    if (expected === null) {
+      return true;
+    }
+    const row = this.#database.prepare(SQL.selectRegistrationFence).get(input.credential.userId);
+    return (row?.generation ?? 0) === expected;
+  }
+  async registrationGeneration(userId, now) {
+    this.#database.prepare(SQL.ensureRegistrationFence).run(userId, now);
+    const row = this.#database.prepare(SQL.selectRegistrationFence).get(userId);
+    return row?.generation ?? 0;
+  }
+  async bumpRegistrationGeneration(userId, now) {
+    const row = this.#database.prepare(SQL.bumpRegistrationFence).get(userId, now);
+    return row.generation;
   }
   #insertSession(session) {
     this.#database.prepare(SQL.insertSession).run(

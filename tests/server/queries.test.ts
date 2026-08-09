@@ -45,7 +45,9 @@ describe('statement hygiene', () => {
 
   it('only ever targets localwebauthn_-prefixed tables', () => {
     // The package must never read or write a host application's own tables.
-    const tableReferences = /(?:FROM|JOIN|INTO|UPDATE)\s+([a-z_][a-z0-9_]*)/giu;
+    // `DO UPDATE SET` in an upsert is not a table reference — the target was
+    // already named by the INSERT — so exclude it rather than loosening the guard.
+    const tableReferences = /(?:FROM|JOIN|INTO|(?<!DO\s)UPDATE)\s+([a-z_][a-z0-9_]*)/giu;
     for (const [name, sql] of Object.entries(allStatements)) {
       for (const match of sql.matchAll(tableReferences)) {
         expect(match[1], `${name} references non-LocalWebAuthn table ${match[1]}`).toMatch(

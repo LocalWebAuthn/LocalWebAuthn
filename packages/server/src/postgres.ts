@@ -197,6 +197,7 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore, LocalWebA
       record.authorizationSessionHash,
       record.credentialKind,
       record.allowedCredentialKinds === null ? null : JSON.stringify(record.allowedCredentialKinds),
+      record.registrationGeneration,
       record.expiresAt,
       record.createdAt,
     ]);
@@ -488,6 +489,16 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore, LocalWebA
     tx: PostgresQueryable,
     input: CompleteRegistrationInput,
   ): Promise<boolean> {
+    // The registration fence. Unlike SQLite, reading it is not enough here: under
+    // READ COMMITTED a concurrent revoke's `UPDATE ... WHERE revoked_at IS NULL`
+    // would scan past a credential this transaction has not committed yet — a
+    // phantom. Taking `FOR UPDATE` on the one fence row both paths touch is what
+    // makes them conflict: either the revoke waits and then sees this credential,
+    // or this transaction waits and then fails the generation check below.
+    if (!(await this.#fenceHolds(tx, input))) {
+      return false;
+    }
+
     if (input.challenge.grantId && input.enrollmentSessionHash) {
       const result = await tx.query(PG.authorizeRegistrationByGrant, [
         input.challenge.grantId,
@@ -507,6 +518,41 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore, LocalWebA
       return result.rows.length > 0;
     }
     return false;
+  }
+
+  /** Whether the challenge's recorded generation is still current, under a row lock. */
+  async #fenceHolds(tx: PostgresQueryable, input: CompleteRegistrationInput): Promise<boolean> {
+    const expected = input.challenge.registrationGeneration;
+    if (expected === null) {
+      // A challenge issued before this column existed. Nothing to compare.
+      return true;
+    }
+    const locked = await tx.query<{ generation: number | string }>(PG_ONLY.lockRegistrationFence, [
+      input.credential.userId,
+    ]);
+    // No row means the user has never had a fence, which reads as generation 0.
+    if (locked.rows.length === 0) {
+      return expected === 0;
+    }
+    // BIGINT arrives as a string from node-postgres.
+    return Number(locked.rows[0].generation) === expected;
+  }
+
+  async registrationGeneration(userId: string, now: number): Promise<number> {
+    await this.#pool.query(PG.ensureRegistrationFence, [userId, now]);
+    const result = await this.#pool.query<{ generation: number | string }>(
+      PG.selectRegistrationFence,
+      [userId],
+    );
+    return Number(result.rows[0]?.generation ?? 0);
+  }
+
+  async bumpRegistrationGeneration(userId: string, now: number): Promise<number> {
+    const result = await this.#pool.query<{ generation: number | string }>(
+      PG.bumpRegistrationFence,
+      [userId, now],
+    );
+    return Number(result.rows[0]?.generation ?? 0);
   }
 
   async #insertSession(tx: PostgresQueryable, session: NewSession): Promise<void> {

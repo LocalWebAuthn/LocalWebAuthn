@@ -238,12 +238,16 @@ legitimate one.  Revoking the subtree is the only remedy.  It revokes with
 =allowLastCredential= and may empty the account: stopping short would leave a half-revoked
 tree, which after a compromise is worse than re-enrolling.
 
-It re-enumerates to a fixed point rather than revoking a single snapshot, so a credential
-registered *while* the revoke runs --- by a live session racing it --- is caught on re-read.
-The bound is honest, and stated in [[./SECURITY.md][SECURITY.md]]: an attacker who wins the
-registration race in every pass is not fully fenced by re-enumeration alone, so during
-incident response also stop accepting registrations for the user.  The complete fix is a
-registration epoch, tracked in [[./docs/REVIEW-20260809.md][the review]].
+Two mechanisms make it robust against a registration racing it.  It re-enumerates to a fixed
+point rather than revoking one snapshot, so a credential that already exists is found on
+re-read; and every revoke advances the user's *registration generation*, which every
+registration challenge records and the credential insert re-checks --- so a ceremony already in
+flight cannot commit behind the revoke.  It fails with =registration_failed= instead.
+
+What the fence does not cover, by design: a credential a =kinds=-scoped revoke *spares* is still
+an authorized registrar, so it can obtain a fresh challenge afterwards and enroll again.  That is
+authority, not a race.  Treat scoped revocation as administrative, and use the unscoped form for
+a compromise --- see [[./SECURITY.md][SECURITY.md]].
 
 Unscoped, it crosses kinds, and that is usually a surprise worth knowing: every API
 credential a person provisions has *their passkey* as its parent, so revoking a suspected

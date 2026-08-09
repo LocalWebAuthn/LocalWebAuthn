@@ -218,6 +218,16 @@ type ChallengeRecord = {
      * unclassified credentials.
      */
     allowedCredentialKinds: (string | null)[] | null;
+    /**
+     * Registration challenges only: the user's registration generation when this
+     * challenge was issued. `null` on authentication challenges.
+     *
+     * The credential insert refuses to commit when the stored generation no longer
+     * matches, which is what lets a revocation cancel registrations that are already
+     * in flight — the authorization was checked one request ago, and a passkey
+     * ceremony sits in between, so it cannot be checked in the same transaction.
+     */
+    registrationGeneration: number | null;
     expiresAt: number;
     createdAt: number;
 };
@@ -426,6 +436,27 @@ type LocalWebAuthnStore = {
      * enrollment grants and unconsumed challenges.
      */
     revokeUserAuthentication(userId: string, now: number): Promise<void>;
+    /**
+     * The user's current registration generation, creating their fence row at `0`
+     * if they have none.
+     *
+     * Read when a registration challenge is issued, and recorded on it. See
+     * {@link ChallengeRecord.registrationGeneration}.
+     */
+    registrationGeneration(userId: string, now: number): Promise<number>;
+    /**
+     * Advance the user's registration generation and return the new value.
+     *
+     * Every revocation path calls this. Advancing it invalidates every registration
+     * challenge already issued to that user, so a credential whose ceremony is in
+     * flight cannot commit after the revoke — the gap between authorizing a
+     * registration and committing it is a whole HTTP round trip plus a human, which
+     * no transaction can span.
+     *
+     * Must be atomic: two concurrent bumps must produce two distinct generations,
+     * never the same one.
+     */
+    bumpRegistrationGeneration(userId: string, now: number): Promise<number>;
     /**
      * Remove expired enrollment grants, finished challenges, dead sessions, and
      * spent DPoP proof records.

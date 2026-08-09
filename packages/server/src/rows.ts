@@ -40,6 +40,7 @@ export type ChallengeRow = {
   authorization_session_hash: unknown;
   credential_kind: string | null;
   allowed_credential_kinds: string | null;
+  registration_generation: number | string | null;
 };
 
 export type EnrollmentSessionRow = {
@@ -155,6 +156,9 @@ export function challengeFromRow(row: ChallengeRow): ConsumedChallenge {
       row.authorization_session_hash === null ? null : toBytes(row.authorization_session_hash),
     credentialKind: row.credential_kind,
     allowedCredentialKinds: parseAllowedKinds(row.allowed_credential_kinds),
+    // PostgreSQL returns BIGINT as a string; normalize like every other counter.
+    registrationGeneration:
+      row.registration_generation === null ? null : toNumber(row.registration_generation),
   };
 }
 

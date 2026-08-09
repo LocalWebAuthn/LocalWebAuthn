@@ -85,8 +85,8 @@ export const SQL = {
     INSERT INTO localwebauthn_challenges(
       id_hash, kind, challenge, user_id, grant_id,
       authorization_session_hash, credential_kind, allowed_credential_kinds,
-      expires_at, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      registration_generation, expires_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT DO NOTHING`,
 
   /** Consume a challenge exactly once; returns no rows on replay or expiry. */
@@ -98,7 +98,7 @@ export const SQL = {
       AND consumed_at IS NULL
       AND expires_at > ?
     RETURNING kind, challenge, user_id, grant_id, authorization_session_hash,
-              credential_kind, allowed_credential_kinds`,
+              credential_kind, allowed_credential_kinds, registration_generation`,
 
   // -- Credentials ----------------------------------------------------------
 
@@ -487,6 +487,40 @@ export const SQL = {
   deleteExpiredDpopNonces: `
     DELETE FROM localwebauthn_dpop_nonces WHERE expires_at <= ?`,
 
+  // -- Registration fence ---------------------------------------------------
+
+  /**
+   * The user's current registration generation, or no row before their first
+   * registration (read as generation 0).
+   *
+   * Read inside the same transaction that commits a credential: it is the
+   * optimistic-concurrency version that says "no revocation has happened since
+   * this challenge was issued". PostgreSQL takes `FOR UPDATE` on it as well —
+   * see `POSTGRES_SQL.lockRegistrationFence` — because a predicate over
+   * credentials cannot stop a *phantom* insert, while a shared row can.
+   */
+  selectRegistrationFence: `
+    SELECT generation FROM localwebauthn_registration_fences WHERE user_id = ?`,
+
+  /** Create the user's fence row at generation 0 if they have none yet. */
+  ensureRegistrationFence: `
+    INSERT INTO localwebauthn_registration_fences(user_id, generation, updated_at)
+    VALUES (?, 0, ?)
+    ON CONFLICT DO NOTHING`,
+
+  /**
+   * Advance the generation, invalidating every challenge issued under the old
+   * one. Every revocation path calls this, which is what makes a revoke able to
+   * cancel registrations that are already in flight.
+   */
+  bumpRegistrationFence: `
+    INSERT INTO localwebauthn_registration_fences(user_id, generation, updated_at)
+    VALUES (?, 1, ?)
+    ON CONFLICT(user_id) DO UPDATE
+      SET generation = localwebauthn_registration_fences.generation + 1,
+          updated_at = excluded.updated_at
+    RETURNING generation`,
+
   // -- Migrations -----------------------------------------------------------
 
   /** Highest applied schema version, or no rows on a fresh database. */
@@ -556,6 +590,23 @@ export const D1_SQL = {
    */
   guardPreviousChange: `INSERT INTO localwebauthn_transaction_guard(value) VALUES (changes())`,
 
+  /**
+   * Fails the surrounding batch unless the user's registration generation still
+   * equals the one recorded on the challenge — the registration fence, expressed
+   * with the same CHECK trick: it inserts `1` when the fence holds and `0` (which
+   * violates the CHECK, rolling the batch back) when a revoke has moved it.
+   *
+   * Binds: user id, expected generation, user id.
+   */
+  guardRegistrationFence: `
+    INSERT INTO localwebauthn_transaction_guard(value)
+    SELECT CASE
+      WHEN COALESCE((
+        SELECT generation FROM localwebauthn_registration_fences WHERE user_id = ?
+      ), 0) = ? THEN 1
+      ELSE 0
+    END`,
+
   clearGuard: `DELETE FROM localwebauthn_transaction_guard`,
 } as const;
 
@@ -582,6 +633,25 @@ export const POSTGRES_SQL = {
     SELECT id FROM localwebauthn_credentials
     WHERE user_id = ? AND revoked_at IS NULL
     ORDER BY id
+    FOR UPDATE`,
+
+  /**
+   * Lock the user's registration fence while committing a credential, so a
+   * concurrent revoke serializes against it.
+   *
+   * This is the row that makes the fence work on PostgreSQL, and the reason the
+   * fence is a table rather than a predicate over `credentials`. Remediation
+   * revokes with `UPDATE … WHERE revoked_at IS NULL`; a registration committing
+   * concurrently inserts a row that update has already scanned past — a phantom
+   * READ COMMITTED cannot prevent, and no lock on existing credential rows can
+   * either, because the row does not exist yet. Both paths touching one shared
+   * fence row gives them something real to conflict on: the revoke blocks here
+   * until the registration commits (and then revokes it), or the registration
+   * blocks and then fails its generation check.
+   */
+  lockRegistrationFence: `
+    SELECT generation FROM localwebauthn_registration_fences
+    WHERE user_id = ?
     FOR UPDATE`,
 } as const;
 

@@ -1207,7 +1207,7 @@ describe('compromise revocation and the registration race', () => {
   // exact interleaving deterministically: a store proxy commits a fresh child the
   // first time revokeCredentialTree enumerates descendants, so the child is absent
   // from that snapshot. Re-enumeration to a fixed point is what catches it.
-  it('revokes a credential registered concurrently with the subtree revoke', async () => {
+  it('refuses a credential whose registration was authorized before the revoke', async () => {
     const database = new Database(':memory:');
     migrateSqlite(database);
     const realStore = new SqliteLocalWebAuthnStore(database);
@@ -1263,29 +1263,39 @@ describe('compromise revocation and the registration race', () => {
       origin: ORIGIN,
     });
     let childBId = '';
+    let attempted = false;
+    let refusal: unknown;
     pending = async () => {
-      const verified = await auth.verifyRegistration({
-        response: responseB.response as unknown as RegistrationResponseJSON,
-        challengeToken: optionsB.challengeToken,
-        sessionToken: root.verified.sessionToken,
-        label: 'B',
-      });
-      childBId = verified.credentialId;
+      attempted = true;
+      try {
+        const verified = await auth.verifyRegistration({
+          response: responseB.response as unknown as RegistrationResponseJSON,
+          challengeToken: optionsB.challengeToken,
+          sessionToken: root.verified.sessionToken,
+          label: 'B',
+        });
+        childBId = verified.credentialId;
+      } catch (error) {
+        refusal = error;
+      }
     };
 
     const revoked = await auth.revokeCredentialTree('user-1', root.verified.credentialId);
 
-    // B was committed after the snapshot, so it was never in the first pass; the
-    // fixed-point re-read must still have revoked it.
-    expect(childBId).not.toBe('');
-    expect(revoked).toContain(childBId);
+    // The registration fence turns this from "caught afterwards" into "never
+    // committed": the revoke advanced the user's generation before revoking
+    // anything, so B's challenge — stamped with the previous generation — can no
+    // longer be redeemed. The attempt was made and refused.
+    expect(attempted).toBe(true);
+    expect(refusal).toMatchObject({ code: 'registration_failed' });
+    expect(childBId).toBe('');
 
+    // Only the two pre-existing credentials exist, both revoked, and nothing is
+    // left active.
     const all = await auth.listCredentials('user-1', true);
-    const active = all.filter((credential) => credential.revokedAt === null);
-    expect(active).toEqual([]);
-    for (const id of [root.verified.credentialId, childA.verified.credentialId, childBId]) {
-      expect(all.find((credential) => credential.id === id)?.revokedAt).not.toBeNull();
-    }
+    expect(all).toHaveLength(2);
+    expect(all.filter((credential) => credential.revokedAt === null)).toEqual([]);
+    expect(revoked).toEqual([root.verified.credentialId, childA.verified.credentialId]);
 
     database.close();
   });

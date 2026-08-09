@@ -65,14 +65,15 @@ otherwise.
 
 Every table the package creates, and what it gives a reader:
 
-| Table                             | Holds                                                           | Worth to a reader                                             |
-| --------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------- |
-| `localwebauthn_credentials`       | COSE **public** key, counter, label, kind, heritage, timestamps | nothing — you cannot sign with a public key                   |
-| `localwebauthn_sessions`          | SHA-256 of the session token, user, credential, timestamps      | nothing — a digest is not a bearer token                      |
-| `localwebauthn_enrollment_grants` | SHA-256 of the link token and of the enrollment session         | nothing — the link cannot be reconstructed                    |
-| `localwebauthn_challenges`        | SHA-256 of the challenge cookie, and the challenge itself       | the challenge is public by design; it was sent to the browser |
-| `localwebauthn_dpop_proofs`       | SHA-256 of spent `jti` values                                   | nothing — a replay ledger                                     |
-| `localwebauthn_dpop_nonces`       | the current nonce, in the clear                                 | nothing — the server hands it to any caller that asks         |
+| Table                               | Holds                                                           | Worth to a reader                                             |
+| ----------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------- |
+| `localwebauthn_credentials`         | COSE **public** key, counter, label, kind, heritage, timestamps | nothing — you cannot sign with a public key                   |
+| `localwebauthn_sessions`            | SHA-256 of the session token, user, credential, timestamps      | nothing — a digest is not a bearer token                      |
+| `localwebauthn_enrollment_grants`   | SHA-256 of the link token and of the enrollment session         | nothing — the link cannot be reconstructed                    |
+| `localwebauthn_challenges`          | SHA-256 of the challenge cookie, and the challenge itself       | the challenge is public by design; it was sent to the browser |
+| `localwebauthn_dpop_proofs`         | SHA-256 of spent `jti` values                                   | nothing — a replay ledger                                     |
+| `localwebauthn_dpop_nonces`         | the current nonce, in the clear                                 | nothing — the server hands it to any caller that asks         |
+| `localwebauthn_registration_fences` | a per-user registration generation counter                      | nothing — a monotonic integer                                 |
 
 Enrollment tokens, enrollment session tokens, challenge tokens and application session tokens
 each contain 256 bits of random material, and official adapters store **only** SHA-256 digests
@@ -258,12 +259,28 @@ the revoke — by a live session racing it — is caught on re-read rather than 
 snapshot, and a batch of registrations pre-staged against a credential all fail once that
 credential is revoked (the conditional insert requires the authorizer's `revoked_at IS NULL`).
 
-The bound is honest: an attacker who wins the registration race in _every_ pass is not fully
-fenced by re-enumeration alone. A complete guarantee needs a registration epoch that a single
-revoke invalidates (tracked in [docs/REVIEW-20260809.md](docs/REVIEW-20260809.md) §3). Until
-that lands, a host performing incident response should also stop accepting registrations for
-the affected user — the surest fence is to remove the authority to register at all while
-remediating.
+**A registration fence closes the other half.** Re-enumeration can only find credentials that
+already exist; it cannot see a ceremony in flight, because registration spans two requests with
+a passkey prompt in between and no transaction can span that. So every user carries a
+_registration generation_: `registrationOptions` stamps the current value onto the challenge, and
+the statement that commits the credential refuses unless the value still matches. Every
+revocation advances it. A registration authorized before a revoke therefore cannot commit after
+it — it fails with `registration_failed` (409) and the holder must start over, by which time the
+authority they were relying on is gone.
+
+That is ordinary optimistic concurrency control — the `WHERE version = :observed` pattern — not
+exotic locking. The generation lives in its own table (`localwebauthn_registration_fences`) for a
+specific reason: on PostgreSQL a predicate over `credentials` cannot stop a _phantom_ insert
+under READ COMMITTED, and no lock on existing credential rows can either, because the row does
+not exist yet. One shared fence row gives the revoke and the commit something real to conflict
+on, and the PostgreSQL adapter takes `FOR UPDATE` on it. The store conformance suite proves the
+check on all three adapters.
+
+What remains outside the fence, by design: a credential a `kinds`-scoped revoke **spares** is
+still an authorized registrar, so it can obtain a _fresh_ challenge afterwards and enroll again.
+That is authority, not a race. Scoped revocation is administrative revocation, not remediation —
+for a compromise use the unscoped form, which leaves no authority behind, and suspend the user
+through `getUser` while you do it.
 
 ## Non-Goals
 
