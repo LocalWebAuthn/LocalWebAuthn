@@ -14,11 +14,11 @@ that a reviewer can read the whole authentication path rather than trust it:
 
 |                                                                    | Lines  | Who has to read it                       |
 | ------------------------------------------------------------------ | ------ | ---------------------------------------- |
-| `@localwebauthn/server` — service, all three adapters, schema, SQL | ~5,900 | every deployment                         |
+| `@localwebauthn/server` — service, all three adapters, schema, SQL | ~5,960 | every deployment                         |
 | `@localwebauthn/browser`                                           | ~180   | deployments with a browser front end     |
 | `@localwebauthn/client` — software authenticator, DPoP             | ~1,000 | only deployments issuing API credentials |
 
-Machine credentials took the server package from roughly 4,000 lines to 5,900. The default
+Machine credentials took the server package from roughly 3,970 lines to 5,960. The default
 path barely moved — a deployment that declares no `credentialKinds`, configures no
 `dpopNonce` and never sets a `credentialKind` behaves as it did — but the _audit_ surface
 grew with it, and that cost is real. If you are reviewing and do not issue API credentials,
