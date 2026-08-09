@@ -8,8 +8,17 @@ import { afterAll, describe, expect, it } from 'vitest';
 import type {
   ChallengeRecord,
   CompleteRegistrationInput,
+  LocalWebAuthnDpopStore,
   LocalWebAuthnStore,
 } from '../../packages/server/src/index.js';
+
+/**
+ * Every official adapter implements both contracts, so conformance tests the
+ * intersection. A custom store may implement only {@link LocalWebAuthnStore}; the
+ * service then refuses DPoP with `invalid_configuration` rather than failing to
+ * typecheck.
+ */
+type ConformingStore = LocalWebAuthnStore & LocalWebAuthnDpopStore;
 import {
   type D1DatabaseLike,
   D1LocalWebAuthnStore,
@@ -23,7 +32,7 @@ import {
 import { migrateSqlite, SqliteLocalWebAuthnStore } from '../../packages/server/src/sqlite.js';
 
 type StoreFixture = {
-  store: LocalWebAuthnStore;
+  store: ConformingStore;
   close(): Promise<void>;
 };
 

@@ -1,5 +1,5 @@
-import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsInput, m as RegistrationOptionsResult, n as RegistrationVerificationInput, o as RegistrationVerificationResult, A as AuthenticationOptionsInput, p as AuthenticationOptionsResult, q as AuthenticationVerificationInput, r as AuthenticationVerificationResult, s as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-BP-1nfog.js';
-export { t as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, u as CredentialKindPolicy, v as CredentialProvenance, E as EnrollmentGrantRecord, a as EnrollmentSession, w as LocalWebAuthnDurations, x as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, y as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-BP-1nfog.js';
+import { j as LocalWebAuthnOptions, k as EnrollmentIssue, l as EnrollmentExchange, m as RegistrationOptionsInput, n as RegistrationOptionsResult, o as RegistrationVerificationInput, p as RegistrationVerificationResult, A as AuthenticationOptionsInput, q as AuthenticationOptionsResult, r as AuthenticationVerificationInput, s as AuthenticationVerificationResult, t as AuthUser, S as SessionIdentity, e as Credential, i as CleanupResult } from './types-BkXhC9Te.js';
+export { u as CeremonyProvider, c as ChallengeKind, C as ChallengeRecord, g as CompleteAuthenticationInput, f as CompleteRegistrationInput, d as ConsumedChallenge, v as CredentialKindPolicy, w as CredentialProvenance, E as EnrollmentGrantRecord, b as EnrollmentSession, a as LocalWebAuthnDpopStore, x as LocalWebAuthnDurations, y as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, z as NewSession, h as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-BkXhC9Te.js';
 export { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 declare function defaultRandomBytes(length: number): Uint8Array;
@@ -559,9 +559,25 @@ declare class LocalWebAuthn {
      * re-enrollment after a compromise. The account may therefore be left with no
      * usable credential; that is the intent.
      *
+     * **Unscoped, this crosses kinds, and that is usually a surprise.** Every API
+     * credential a person provisions has *their passkey* as its parent, so revoking
+     * a suspected passkey's tree also stops their scripts. For a compromise that is
+     * correct — the passkey could have minted those credentials, and after the fact
+     * a legitimate one is indistinguishable from an attacker's. When it is not what
+     * you meant, pass `kinds`.
+     *
+     * `kinds` restricts which credentials in the subtree are revoked; the walk is
+     * unchanged. A credential excluded by `kinds` still has *its* descendants
+     * considered, because the parent link records who enrolled whom regardless of
+     * class — sparing a node must not silently spare what it created. `null` is a
+     * legal member and matches unclassified credentials.
+     *
+     * @param options.kinds - Revoke only credentials of these {@link Credential.kind} values.
      * @returns IDs actually revoked, root first. Already-revoked ones are skipped.
      */
-    revokeCredentialTree(userId: string, credentialId: string): Promise<string[]>;
+    revokeCredentialTree(userId: string, credentialId: string, options?: {
+        kinds?: (string | null)[];
+    }): Promise<string[]>;
     /** List a user's credentials; revoked ones only when `includeRevoked` is `true`. */
     listCredentials(userId: string, includeRevoked?: boolean): Promise<Credential[]>;
     /**

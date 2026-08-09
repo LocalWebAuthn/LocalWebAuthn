@@ -1215,14 +1215,29 @@ var LocalWebAuthn = class {
    * re-enrollment after a compromise. The account may therefore be left with no
    * usable credential; that is the intent.
    *
+   * **Unscoped, this crosses kinds, and that is usually a surprise.** Every API
+   * credential a person provisions has *their passkey* as its parent, so revoking
+   * a suspected passkey's tree also stops their scripts. For a compromise that is
+   * correct — the passkey could have minted those credentials, and after the fact
+   * a legitimate one is indistinguishable from an attacker's. When it is not what
+   * you meant, pass `kinds`.
+   *
+   * `kinds` restricts which credentials in the subtree are revoked; the walk is
+   * unchanged. A credential excluded by `kinds` still has *its* descendants
+   * considered, because the parent link records who enrolled whom regardless of
+   * class — sparing a node must not silently spare what it created. `null` is a
+   * legal member and matches unclassified credentials.
+   *
+   * @param options.kinds - Revoke only credentials of these {@link Credential.kind} values.
    * @returns IDs actually revoked, root first. Already-revoked ones are skipped.
    */
-  async revokeCredentialTree(userId, credentialId) {
+  async revokeCredentialTree(userId, credentialId, options = {}) {
     const now = this.#now();
+    const kinds = options.kinds ? new Set(options.kinds) : null;
     const subtree = await this.#store.credentialDescendants(userId, credentialId);
     const revoked = [];
     for (const credential of subtree) {
-      if (credential.revokedAt !== null) {
+      if (credential.revokedAt !== null || kinds && !kinds.has(credential.kind)) {
         continue;
       }
       const result = await this.#store.revokeCredential(userId, credential.id, now, {
@@ -1407,6 +1422,28 @@ var LocalWebAuthn = class {
   #kindAdmitted(kind, allowed) {
     return allowed === null ? kindPolicy(this.config, kind).interactive : allowed.includes(kind);
   }
+  /**
+   * The store, proved to implement {@link LocalWebAuthnDpopStore}.
+   *
+   * DPoP persistence is a separate contract because it serves an optional
+   * feature, so the check is here, at the point of use, rather than in the
+   * `store` type. A host that never issues API credentials writes none of these
+   * methods; one that does and forgot gets told which are missing.
+   */
+  #dpopStore() {
+    const store = this.#store;
+    const missing = ["claimDpopProof", "claimDpopNonce", "dpopNonces"].filter(
+      (method) => typeof store[method] !== "function"
+    );
+    if (missing.length > 0) {
+      throw new LocalWebAuthnError(
+        "invalid_configuration",
+        `DPoP needs a store implementing LocalWebAuthnDpopStore; missing ${missing.join(", ")}.`,
+        500
+      );
+    }
+    return store;
+  }
   /** `floor(now / rotationMs)` — the same value on every server, from the clock alone. */
   #dpopSlot(now, rotationMs) {
     return Math.floor(now / rotationMs);
@@ -1428,7 +1465,7 @@ var LocalWebAuthn = class {
     const { rotationMs } = this.config.dpopNonce;
     const now = this.#now();
     const slot = this.#dpopSlot(now, rotationMs);
-    return this.#store.claimDpopNonce(
+    return this.#dpopStore().claimDpopNonce(
       slot,
       createOpaqueToken(this.#randomBytes),
       // Outlive the previous-slot grace window before becoming reapable.
@@ -1442,12 +1479,9 @@ var LocalWebAuthn = class {
     }
     const { rotationMs } = this.config.dpopNonce;
     const slot = this.#dpopSlot(now, rotationMs);
-    await this.#store.claimDpopNonce(
-      slot,
-      createOpaqueToken(this.#randomBytes),
-      (slot + 3) * rotationMs
-    );
-    return this.#store.dpopNonces(slot, slot - 1);
+    const store = this.#dpopStore();
+    await store.claimDpopNonce(slot, createOpaqueToken(this.#randomBytes), (slot + 3) * rotationMs);
+    return store.dpopNonces(slot, slot - 1);
   }
   /**
    * Verify a DPoP proof (RFC 9449) for a request on an already-resolved session.
@@ -1465,6 +1499,7 @@ var LocalWebAuthn = class {
     if (!input.proof) {
       throw new LocalWebAuthnError("invalid_dpop_proof", "A DPoP proof is required.", 401);
     }
+    const dpopStore = this.#dpopStore();
     if (input.requireNonce && !this.config.dpopNonce) {
       throw new LocalWebAuthnError(
         "invalid_configuration",
@@ -1493,7 +1528,7 @@ var LocalWebAuthn = class {
         401
       );
     }
-    if (!await this.#store.claimDpopProof(verification.jtiHash, verification.expiresAt)) {
+    if (!await dpopStore.claimDpopProof(verification.jtiHash, verification.expiresAt)) {
       throw new LocalWebAuthnError(
         "invalid_dpop_proof",
         "The DPoP proof is not valid (replayed).",

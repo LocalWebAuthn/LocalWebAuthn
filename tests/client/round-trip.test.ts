@@ -29,7 +29,12 @@ import {
   parseCredentialPayload,
   type SoftwareCredential,
 } from '../../packages/client/src/index.js';
-import type { AuthUser, LocalWebAuthnEvent } from '../../packages/server/src/index.js';
+import type {
+  AuthUser,
+  LocalWebAuthnEvent,
+  LocalWebAuthnStore,
+  SessionIdentity,
+} from '../../packages/server/src/index.js';
 import { createUserHandle, LocalWebAuthn } from '../../packages/server/src/index.js';
 import { verifyDpopProof } from '../../packages/server/src/dpop.js';
 import { migrateSqlite, SqliteLocalWebAuthnStore } from '../../packages/server/src/sqlite.js';
@@ -449,6 +454,52 @@ describe('credential heritage', () => {
     await expect(auth.listCredentials('user-1')).resolves.toEqual([]);
   });
 
+  /** person 'laptop' -> service 'exporter' -> person 'phone'. */
+  async function mixedChain() {
+    const fixture = harness();
+    const laptop = await bootstrap(fixture.auth, 'person', 'laptop');
+    const exporter = await enroll(
+      fixture.auth,
+      laptop.verified.sessionToken,
+      undefined,
+      'service',
+      'exporter',
+    );
+    const phone = await enroll(
+      fixture.auth,
+      exporter.verified.sessionToken,
+      undefined,
+      'person',
+      'phone',
+    );
+    return { ...fixture, laptop, exporter, phone };
+  }
+
+  it('crosses kinds when unscoped, stopping the scripts a passkey provisioned', async () => {
+    const { auth, laptop } = await mixedChain();
+
+    // The consequence worth knowing about: an API credential's parent *is* the
+    // person's passkey, so revoking the passkey's tree stops their scripts too.
+    // Correct for a compromise, since that passkey could have minted them.
+    await auth.revokeCredentialTree('user-1', laptop.verified.credentialId);
+    await expect(auth.listCredentials('user-1')).resolves.toEqual([]);
+  });
+
+  it('revokes only the named kinds, still reaching through the ones it spares', async () => {
+    const { auth, laptop, exporter, phone } = await mixedChain();
+
+    const revoked = await auth.revokeCredentialTree('user-1', laptop.verified.credentialId, {
+      kinds: ['person'],
+    });
+
+    // 'exporter' is spared, but 'phone' — which 'exporter' enrolled — is not:
+    // sparing a node must not silently spare what it created.
+    expect(revoked).toEqual([laptop.verified.credentialId, phone.verified.credentialId]);
+    const active = await auth.listCredentials('user-1');
+    expect(active.map((credential) => credential.label)).toEqual(['exporter']);
+    expect(active[0].id).toBe(exporter.verified.credentialId);
+  });
+
   it('leaves pre-heritage credentials honestly unknown', async () => {
     const { auth, database } = harness();
     const issue = await auth.issueEnrollment('user-1');
@@ -858,6 +909,66 @@ describe('DPoP proofs bound to the credential key', () => {
     expect(
       await verifyDpopProof({ ...base, proof: good, now: Date.now() + 10 * 60_000 }),
     ).toMatchObject({ valid: false, reason: 'iat_out_of_window' });
+  });
+
+  it('refuses DPoP when the store implements only the required contract', async () => {
+    const database = new Database(':memory:');
+    migrateSqlite(database);
+    const complete = new SqliteLocalWebAuthnStore(database);
+    // A custom store that implements LocalWebAuthnStore and nothing else, which is
+    // legal: the three DPoP methods are a separate optional contract, so a host
+    // with no API credentials writes none of them. Bound to the real instance
+    // because its methods reach private fields.
+    const store = new Proxy(complete, {
+      get(target, property) {
+        if (property === 'claimDpopProof' || property === 'claimDpopNonce') {
+          return undefined;
+        }
+        const value: unknown = Reflect.get(target, property, target);
+        return typeof value === 'function'
+          ? (value as (...args: unknown[]) => unknown).bind(target)
+          : value;
+      },
+    }) as LocalWebAuthnStore;
+
+    const user: AuthUser = {
+      id: 'user-1',
+      name: 'person@example.test',
+      displayName: 'A Person',
+      active: true,
+      webAuthnUserHandle: createUserHandle(),
+    };
+    const auth = new LocalWebAuthn({
+      rpName: 'Round Trip',
+      rpId: RP_ID,
+      expectedOrigins: ORIGIN,
+      store,
+      users: { getUser: async (id) => (id === user.id ? user : null) },
+      dpopNonce: { rotationMs: 60_000 },
+    });
+
+    // Both DPoP entry points name what is missing, and only those two — this store
+    // still has `dpopNonces`, so the message must not claim otherwise.
+    await expect(auth.dpopNonce()).rejects.toMatchObject({ code: 'invalid_configuration' });
+    // Names what is missing, and only that — this store still has `dpopNonces`.
+    await expect(auth.dpopNonce()).rejects.toThrow(/missing claimDpopProof, claimDpopNonce\.$/u);
+    // A synthetic session is enough precisely because the check runs before any
+    // verification work: a misconfigured store is reported as such whether or not
+    // the proof would have passed.
+    await expect(
+      auth.verifyDpop({
+        proof: 'not.a.proof',
+        method: 'GET',
+        url: `${ORIGIN}/api/machine/v1/whoami`,
+        sessionToken: 'token',
+        session: { credentialId: 'credential-1', credentialKind: 'service' } as SessionIdentity,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_configuration' });
+
+    // Everything else about the store still works, so the split costs a host that
+    // does not use DPoP nothing at all.
+    await expect(auth.issueEnrollment('user-1')).resolves.toHaveProperty('enrollmentToken');
+    database.close();
   });
 
   it('claims a jti exactly once', async () => {

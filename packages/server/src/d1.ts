@@ -8,6 +8,7 @@ import type {
   Credential,
   EnrollmentGrantRecord,
   EnrollmentSession,
+  LocalWebAuthnDpopStore,
   LocalWebAuthnStore,
   NewCredential,
   NewSession,
@@ -95,7 +96,7 @@ async function returningRow<Row>(statement: D1PreparedStatementLike): Promise<Ro
  * {@link D1LocalWebAuthnStore.cleanup} to reap expired grants, challenges, and
  * sessions.
  */
-export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
+export class D1LocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAuthnDpopStore {
   readonly #database;
 
   constructor(database: D1DatabaseLike) {

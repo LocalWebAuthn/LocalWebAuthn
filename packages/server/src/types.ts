@@ -278,9 +278,13 @@ export type CleanupResult = {
   enrollmentGrants: number;
   challenges: number;
   sessions: number;
-  /** Expired DPoP proof-replay entries (see {@link LocalWebAuthnStore.claimDpopProof}). */
+  /**
+   * Expired DPoP proof-replay entries (see
+   * {@link LocalWebAuthnDpopStore.claimDpopProof}). A store that does not
+   * implement {@link LocalWebAuthnDpopStore} has no such rows and reports `0`.
+   */
   dpopProofs: number;
-  /** Expired DPoP nonce slots. */
+  /** Expired DPoP nonce slots; `0` for a store without DPoP support. */
   dpopNonces: number;
 };
 
@@ -496,6 +500,32 @@ export type LocalWebAuthnStore = {
   revokeUserAuthentication(userId: string, now: number): Promise<void>;
 
   /**
+   * Remove expired enrollment grants, finished challenges, dead sessions, and
+   * spent DPoP proof records.
+   *
+   * Call periodically (e.g. every few minutes) to reclaim storage. Does not
+   * touch credentials.
+   */
+  cleanup(now: number): Promise<CleanupResult>;
+};
+
+/**
+ * Additional persistence for DPoP (RFC 9449), required only when a deployment
+ * issues API credentials.
+ *
+ * Separate from {@link LocalWebAuthnStore} on purpose. These three methods serve
+ * an optional feature, and a host that will never call
+ * {@link LocalWebAuthn.verifyDpop} or {@link LocalWebAuthn.dpopNonce} should not
+ * have to write them — or stub them wrongly — to satisfy a type. Every official
+ * adapter implements both contracts, so passing one costs nothing and needs no
+ * declaration.
+ *
+ * The service checks for these methods where it uses them and throws
+ * `invalid_configuration` (500) naming the missing ones, which is a clearer
+ * failure than a compile error about a method the host has no interest in.
+ */
+export type LocalWebAuthnDpopStore = {
+  /**
    * Claim a DPoP proof's `jti` exactly once, for replay detection.
    *
    * Returns `true` when this digest was newly recorded and `false` when it was
@@ -528,15 +558,6 @@ export type LocalWebAuthnStore = {
    * client built moments earlier against the outgoing value.
    */
   dpopNonces(currentSlot: number, previousSlot: number): Promise<string[]>;
-
-  /**
-   * Remove expired enrollment grants, finished challenges, dead sessions, and
-   * spent DPoP proof records.
-   *
-   * Call periodically (e.g. every few minutes) to reclaim storage. Does not
-   * touch credentials.
-   */
-  cleanup(now: number): Promise<CleanupResult>;
 };
 
 export type LocalWebAuthnEvent =
@@ -689,7 +710,14 @@ export type LocalWebAuthnOptions = {
    * Defaults to `"/enroll"`.
    */
   enrollmentPath?: string;
-  /** Persistence adapter (see {@link SqliteLocalWebAuthnStore} or {@link D1LocalWebAuthnStore}). */
+  /**
+   * Persistence adapter (see {@link SqliteLocalWebAuthnStore} or
+   * {@link D1LocalWebAuthnStore}).
+   *
+   * Issuing API credentials additionally needs {@link LocalWebAuthnDpopStore};
+   * every official adapter implements both, and a custom store is checked for
+   * those three methods where they are used rather than up front.
+   */
   store: LocalWebAuthnStore;
   /** Host-provided user lookup. */
   users: UserProvider;

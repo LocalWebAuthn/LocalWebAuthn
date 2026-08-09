@@ -8,6 +8,7 @@ import type {
   Credential,
   EnrollmentGrantRecord,
   EnrollmentSession,
+  LocalWebAuthnDpopStore,
   LocalWebAuthnStore,
   NewSession,
   RevokeCredentialResult,
@@ -96,7 +97,7 @@ export function migrateSqlite(database: SqliteDatabase, now = Date.now()): void 
  * partial writes cannot be observed or left behind. The constructor enables
  * foreign-key enforcement on the given connection.
  */
-export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
+export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAuthnDpopStore {
   readonly #database;
 
   constructor(database: SqliteDatabase) {

@@ -58,20 +58,27 @@ before, so a deployment that ignores all of this sees no behaviour change.
 
 ### Custom `LocalWebAuthnStore` implementations
 
-Add one method:
+`LocalWebAuthnStore` itself gains **no new required method** for DPoP. The three DPoP
+methods live in a separate contract, `LocalWebAuthnDpopStore`, needed only if you call
+`verifyDpop` or `dpopNonce`:
 
 ```ts
 claimDpopProof(jtiHash: Uint8Array, expiresAt: number): Promise<boolean>;
-```
-
-Record the digest if absent and return `true`; return `false` if it was already there,
-which is a replayed proof. Must be atomic — two concurrent requests carrying the same `jti`
-must not both see `true`. Official adapters use `SQL.claimDpopProof`. Two more for server-issued DPoP nonces (RFC 9449 section 8):
-
-```ts
 claimDpopNonce(slot: number, candidate: string, expiresAt: number): Promise<string>;
 dpopNonces(currentSlot: number, previousSlot: number): Promise<string[]>;
 ```
+
+All three official adapters implement both contracts, so passing one needs no change and no
+declaration. A custom store that will never see an API credential can ignore this section
+entirely: the service checks for these methods where it uses them and throws
+`invalid_configuration` (500) naming the ones that are missing, which beats a compile error
+about a method you have no interest in. If you do implement them, declare
+`implements LocalWebAuthnStore, LocalWebAuthnDpopStore` so the compiler holds you to the
+signatures.
+
+`claimDpopProof` records the digest if absent and returns `true`; `false` means it was
+already there, which is a replayed proof. Must be atomic — two concurrent requests carrying
+the same `jti` must not both see `true`. Official adapters use `SQL.claimDpopProof`.
 
 `claimDpopNonce` inserts `candidate` for `slot` if unclaimed and returns the **stored**
 value — never `candidate` — so every server in a deployment converges on one nonce per
@@ -85,7 +92,9 @@ secrets — the server hands the current one to any caller in a response header.
 property needed is that a _future_ one cannot be guessed.
 
 `CleanupResult` gains `dpopProofs` and `dpopNonces`, reaped with
-`SQL.deleteExpiredDpopProofs` and `SQL.deleteExpiredDpopNonces`.
+`SQL.deleteExpiredDpopProofs` and `SQL.deleteExpiredDpopNonces`. Those two fields are on the
+base `CleanupResult` rather than being optional, so a store without DPoP support reports `0`
+for both — it has no such rows.
 
 Four records grow by a column each, and the shared SQL already selects and binds them:
 
@@ -192,6 +201,7 @@ what it needs, because everything else it could point at is ephemeral by design:
 await auth.credentialLineage(userId, credentialId); // root first, back to the enrollment
 await auth.credentialDescendants(userId, credentialId); // index 0 is the credential itself
 await auth.revokeCredentialTree(userId, credentialId); // the remediation primitive
+await auth.revokeCredentialTree(userId, credentialId, { kinds: ['service'] }); // scoped
 ```
 
 `revokeCredentialTree` exists because of a live attack that `canRegister` does not
@@ -201,6 +211,14 @@ revoking the credential you suspect leaves the attacker's behind, indistinguisha
 legitimate one after the fact. It revokes with `allowLastCredential` and may therefore
 empty the account: stopping short would leave a half-revoked subtree, which after a
 compromise is worse than requiring re-enrollment.
+
+**Unscoped it crosses kinds, which is usually a surprise.** Every API credential a person
+provisions has _their passkey_ as its parent, so revoking a suspected passkey's tree also
+stops their scripts. For a compromise that is right — the passkey could have minted those
+credentials, and afterwards a legitimate one is indistinguishable from an attacker's. When
+it is not what you meant, pass `kinds`, which restricts what gets revoked without changing
+the walk: a credential spared by `kinds` still has _its_ descendants considered, because
+sparing a node must not silently spare what that node enrolled.
 
 Credentials registered before this keep `created_via: NULL` — honestly unknown rather than
 guessed, since the rows that held the answer are long gone. Custom stores add

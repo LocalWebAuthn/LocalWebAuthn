@@ -8,6 +8,7 @@ import type {
   Credential,
   EnrollmentGrantRecord,
   EnrollmentSession,
+  LocalWebAuthnDpopStore,
   LocalWebAuthnStore,
   NewSession,
   RevokeCredentialResult,
@@ -115,7 +116,7 @@ export async function migratePostgres(pool: PostgresPool, now = Date.now()): Pro
  * inside a real transaction, so partial writes cannot be observed or left
  * behind.
  */
-export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
+export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAuthnDpopStore {
   readonly #pool;
 
   constructor(pool: PostgresPool) {

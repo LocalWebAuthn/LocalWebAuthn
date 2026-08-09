@@ -68,6 +68,7 @@ export type {
   EnrollmentGrantRecord,
   EnrollmentIssue,
   EnrollmentSession,
+  LocalWebAuthnDpopStore,
   LocalWebAuthnDurations,
   LocalWebAuthnEvent,
   LocalWebAuthnOptions,

@@ -1,4 +1,4 @@
-import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, g as RevokeCredentialResult, h as CleanupResult } from './types-BP-1nfog.js';
+import { L as LocalWebAuthnStore, a as LocalWebAuthnDpopStore, E as EnrollmentGrantRecord, b as EnrollmentSession, C as ChallengeRecord, c as ChallengeKind, d as ConsumedChallenge, e as Credential, f as CompleteRegistrationInput, g as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, h as RevokeCredentialResult, i as CleanupResult } from './types-BkXhC9Te.js';
 import '@simplewebauthn/server';
 
 type PostgresQueryResult<Row> = {
@@ -44,7 +44,7 @@ declare function migratePostgres(pool: PostgresPool, now?: number): Promise<void
  * inside a real transaction, so partial writes cannot be observed or left
  * behind.
  */
-declare class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
+declare class PostgresLocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAuthnDpopStore {
     #private;
     constructor(pool: PostgresPool);
     replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]>;

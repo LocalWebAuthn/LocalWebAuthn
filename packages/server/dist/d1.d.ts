@@ -1,4 +1,4 @@
-import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, g as RevokeCredentialResult, h as CleanupResult } from './types-BP-1nfog.js';
+import { L as LocalWebAuthnStore, a as LocalWebAuthnDpopStore, E as EnrollmentGrantRecord, b as EnrollmentSession, C as ChallengeRecord, c as ChallengeKind, d as ConsumedChallenge, e as Credential, f as CompleteRegistrationInput, g as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, h as RevokeCredentialResult, i as CleanupResult } from './types-BkXhC9Te.js';
 import '@simplewebauthn/server';
 
 type D1ResultLike<Row = Record<string, unknown>> = {
@@ -35,7 +35,7 @@ declare function migrateD1(database: D1DatabaseLike, now?: number): Promise<void
  * {@link D1LocalWebAuthnStore.cleanup} to reap expired grants, challenges, and
  * sessions.
  */
-declare class D1LocalWebAuthnStore implements LocalWebAuthnStore {
+declare class D1LocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAuthnDpopStore {
     #private;
     constructor(database: D1DatabaseLike);
     replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]>;
