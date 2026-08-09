@@ -13,7 +13,15 @@ changes, but must still run the schema upgrade.
 - **`@localwebauthn/client`** — a WebAuthn authenticator in software, for programs
   with no browser and no human: ceremony construction, ES256 and Ed25519 key
   stores, the two-line credential file, RFC 9449 DPoP proofs, and `MachineClient`.
-  Install it only where API credentials are used.
+  Install it only where API credentials are used. **Two entry points:** the default
+  one works entirely through an opaque `MachineKeyStore`, so a TPM, agent or KMS can
+  back it; raw key generation, import and the credential-file format are behind
+  `@localwebauthn/client/file-key`, so the import line says when a key is being
+  created, read or written.
+- **`provisioningPageHeaders()`** — the header set for a page that displays
+  credential material once: a CSP with no `unsafe-inline`, no framing, no caching,
+  no referrer, cross-origin isolation. The same recipe any API-key page needs, as a
+  function rather than a checklist.
 - **`credentials.kind` and per-kind policy.** A host-defined class, fixed by the
   server at registration and immutable after. `credentialKinds` turns a label into
   restrictions: `interactive: false` keeps a credential out of the browser sign-in

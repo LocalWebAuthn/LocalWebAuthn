@@ -1,13 +1,8 @@
 import { consumeEnrollmentToken, LocalWebAuthnBrowser } from '@localwebauthn/browser';
 // The same software authenticator the script uses, running in the page: it is
 // what lets this browser mint a credential whose private key can be exported.
-import {
-  createRegistrationResponse,
-  encodeBase64Url,
-  ES256,
-  formatCredentialFile,
-  generateKeyStore,
-} from '@localwebauthn/client';
+import { createRegistrationResponse, encodeBase64Url, ES256 } from '@localwebauthn/client';
+import { formatCredentialFile, generateKeyStore } from '@localwebauthn/client/file-key';
 import { parseSignupFragment } from '@localwebauthn/channels-core';
 import {
   Check,

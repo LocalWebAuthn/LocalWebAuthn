@@ -602,14 +602,11 @@ const result = await auth.verifyRegistration({ response, challengeToken, session
 #+end_src
 
 #+begin_src ts
-// Browser: generate, register, then hand the key to the human exactly once.
-import {
-  createRegistrationResponse,
-  encodeBase64Url,
-  ES256,
-  formatCredentialFile,
-  generateKeyStore,
-} from '@localwebauthn/client';
+// Browser: generate, register, then hand the key to the human once.
+import { createRegistrationResponse, encodeBase64Url, ES256 } from '@localwebauthn/client';
+// Raw private-key operations sit behind their own import, so the import line itself
+// says this file generates and writes a key.
+import { formatCredentialFile, generateKeyStore } from '@localwebauthn/client/file-key';
 
 const { keyStore, exportPrivateKey } = await generateKeyStore(ES256);
 const { response, credentialId } = await createRegistrationResponse({
@@ -644,14 +641,35 @@ LWA_CREDENTIAL='{"v":1,"baseUrl":"https://app.example.com","rpId":"app.example.c
 LWA_CREDENTIAL_KEY=MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg...
 #+end_src
 
-One piece of private key material, in one place.  The server holds a COSE public key and
-could not reissue this even if asked, which is why the page says *copy this now*.
+The server holds a COSE public key and could not reissue this even if asked, which is
+why the page says *copy this now*.
+
+*This is the same thing every service does* when it shows you an API key once --- a
+GitHub token, a Stripe key, an AWS access key.  The defence is the same too, and it is
+routine rather than exotic: serve that page from its own origin with your own bundle
+and no third-party JavaScript, and set the headers =provisioningPageHeaders()= returns
+(see [[./README-DETAIL.org][README-DETAIL.org]]).  One difference is worth knowing, and
+it favours this design: a server-generated key exists on the server and travels the
+whole response path, so it can surface in logs, traces and crash dumps --- this key
+never touches the server at all.
+
+The other half of the answer is that *the credential is cheap to replace*.  Rotation is
+mint, deploy, revoke, with both credentials live in between and no downtime:
+
+#+begin_src ts
+await auth.revokeCredential(userId, retiringCredentialId, { allowLastCredential: true });
+#+end_src
+
+So a key you are unsure about --- a decommissioned laptop, a clipboard manager, a
+screenshot in a chat --- is not a crisis; it is a five-minute chore.  Do it on a
+schedule too, so the procedure is proven before you need it in a hurry.  Better still,
+avoid the browser entirely by generating the key on the machine that will use it.
 
 ** The script
 
 #+begin_src ts
-import { importKeyStore, MachineClient, parseCredentialFile, parseCredentialPayload }
-  from '@localwebauthn/client';
+import { MachineClient, parseCredentialPayload } from '@localwebauthn/client';
+import { importKeyStore, parseCredentialFile } from '@localwebauthn/client/file-key';
 import { readFile } from 'node:fs/promises';
 
 const file = parseCredentialFile(await readFile('.env', 'utf8'))!;
@@ -794,9 +812,10 @@ fine.
   conforming SQLite, PostgreSQL and D1 stores exported from =/sqlite=, =/postgres= and =/d1=.
 - [[./packages/browser][=@localwebauthn/browser=]] --- enrollment, registration,
   authentication and logout over the six-route protocol.
-- [[./packages/client][=@localwebauthn/client=]] --- the software authenticator, DPoP proofs,
-  the two-line credential file and =MachineClient=.  Only for deployments issuing API
-  credentials; publishes with the next release.
+- [[./packages/client][=@localwebauthn/client=]] --- the software authenticator, DPoP proofs
+  and =MachineClient=, all working through an opaque signer so a TPM, agent or KMS can back
+  it.  Raw private-key generation and the credential-file format are behind a second entry
+  point, =@localwebauthn/client/file-key=.  Only for deployments issuing API credentials.
 
 This repository is an npm workspace; the packages are versioned together.
 

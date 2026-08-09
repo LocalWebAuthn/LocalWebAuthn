@@ -10,6 +10,26 @@ the platform authenticator for people.
 npm install @localwebauthn/client
 ```
 
+## Two entry points
+
+| Import                           | Contains                                                                       |
+| -------------------------------- | ------------------------------------------------------------------------------ |
+| `@localwebauthn/client`          | `MachineClient`, DPoP proofs, ceremony construction — all via an opaque signer |
+| `@localwebauthn/client/file-key` | `generateKeyStore`, `importKeyStore`, and the credential-file format           |
+
+The default entry point never handles private key bytes: it asks a `MachineKeyStore` for a
+public key and for signatures, so the same code runs over a file, an SSH-style agent, a TPM,
+a Secure Enclave or a cloud KMS. Raw key generation, import and the `.env` format are behind
+the second import, so a reviewer can see from the import line that a key is being created,
+read or written — and a deployment backed by a platform keystore never reaches them.
+
+Nothing behind `/file-key` is discouraged. A file-based credential is how a CLI holds a key,
+and it is the same shape as any API key a service hands out from a web page. It is separate
+because it deserves a decision. If you use it, remember that a key which has reached a file
+has copies you cannot see (clipboard history, Downloads, backups), that WebCrypto promises no
+erasure, and that **rotation is the answer rather than perfect custody**: mint a replacement,
+deploy it, revoke the old credential — both work in between, so there is no downtime.
+
 ## What it is for
 
 A WebAuthn assertion is a signature over `authenticatorData ‖ SHA-256(clientDataJSON)`.

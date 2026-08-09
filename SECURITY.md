@@ -23,9 +23,37 @@ The optional-component row is deliberate and worth stating plainly rather than g
 `importKeyStore` accepts private-key bytes — that is what a file-based CLI credential requires.
 The WebCrypto specification does not guarantee that key material is erased when application
 references are dropped ([Web Cryptography API](https://www.w3.org/TR/WebCryptoAPI/)), so this
-project does not claim zeroization, shredding, or that "exactly one copy" exists. Deployments
-wanting no exportable key material should use a platform-keystore signer, where the process
-sends bytes to sign and receives a signature but never holds the key.
+project does not claim zeroization, shredding, or that "exactly one copy" exists.
+
+Those operations live behind their own entry point, `@localwebauthn/client/file-key`, so the
+import line says what the code does and the default entry point cannot reach them. A test
+asserts the default export surface stays free of raw-key operations, and lint forbids the
+server and browser packages from importing them. Deployments wanting no exportable key
+material at all should implement `MachineKeyStore` over a platform keystore, an agent, a TPM
+or a KMS: the process sends bytes to sign and receives a signature, and never holds the key.
+
+**This is an ordinary problem with an ordinary answer.** A page that displays a credential
+once is what every service with an API-key screen already does — a GitHub token, a Stripe
+key, an AWS access key — and the defence is the same well-trodden recipe: serve it from a
+minimal dedicated origin with your own bundle and no third-party JavaScript, and set the
+headers `provisioningPageHeaders()` returns. One asymmetry favours this design: a
+server-generated key exists on the server and travels the whole response path, so it can
+appear in logs, traces and crash dumps, whereas a key minted in the page never reaches the
+server at all.
+
+**And rotation bounds whatever custody does not.** A user may hold several credentials of one
+kind at once, so replacing one is mint → deploy → revoke with both live in between and no
+downtime:
+
+```ts
+await auth.revokeCredential(userId, retiringCredentialId, { allowLastCredential: true });
+```
+
+That is the honest reason key custody is a cost to bound rather than a problem to solve
+perfectly: a credential you will cheerfully replace on suspicion — a decommissioned laptop, a
+clipboard manager, a screenshot in a chat — is worth much less to whoever finds a copy.
+Rotate on a schedule too, so the procedure is proven before it is urgent.
+[README-DETAIL.org](README-DETAIL.org) has the sequence and when to run it.
 
 Three consequences follow, and they are the reason to prefer this shape:
 

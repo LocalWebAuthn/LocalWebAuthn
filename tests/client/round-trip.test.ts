@@ -21,14 +21,16 @@ import {
   EDDSA,
   ES256,
   encodeBase64Url,
-  formatCredentialFile,
-  generateKeyStore,
-  importKeyStore,
   type MachineKeyStore,
-  parseCredentialFile,
   parseCredentialPayload,
   type SoftwareCredential,
 } from '../../packages/client/src/index.js';
+import {
+  formatCredentialFile,
+  generateKeyStore,
+  importKeyStore,
+  parseCredentialFile,
+} from '../../packages/client/src/file-key.js';
 import type {
   AuthUser,
   LocalWebAuthnEvent,

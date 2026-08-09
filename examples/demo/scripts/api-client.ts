@@ -16,13 +16,15 @@ import {
   createAssertionResponse,
   createDpopProof,
   decodeBase64Url,
-  importKeyStore,
-  isKeystoreReference,
   MachineClient,
   MachineClientError,
-  parseCredentialFile,
   parseCredentialPayload,
 } from '@localwebauthn/client';
+import {
+  importKeyStore,
+  isKeystoreReference,
+  parseCredentialFile,
+} from '@localwebauthn/client/file-key';
 import { readFile } from 'node:fs/promises';
 
 function fail(message: string): never {

@@ -1,3 +1,16 @@
+/**
+ * A WebAuthn authenticator in software, for programs with no browser and no human.
+ *
+ * This entry point works entirely through {@link MachineKeyStore}: it asks a signer
+ * for a public key and for signatures, and never handles private key bytes. That is
+ * what lets the same code run over a file-based key, an SSH-style agent, a TPM, a
+ * Secure Enclave or a cloud KMS.
+ *
+ * Generating or reading a raw private key — and the credential-file format that
+ * carries one — lives in `@localwebauthn/client/file-key`, deliberately behind its
+ * own import so the choice is visible at the call site.
+ */
+
 export {
   createAssertionResponse,
   createRegistrationResponse,
@@ -16,23 +29,11 @@ export {
   utf8,
 } from './bytes.js';
 export {
-  CREDENTIAL_KEY_VARIABLE,
   CREDENTIAL_PAYLOAD_VERSION,
-  CREDENTIAL_VARIABLE,
   type CredentialPayload,
-  formatCredentialFile,
-  isKeystoreReference,
-  parseCredentialFile,
   parseCredentialPayload,
 } from './credential-file.js';
 export { createDpopProof } from './dpop.js';
 export { rawSignatureToDer } from './ecdsa.js';
-export {
-  type CoseAlgorithm,
-  EDDSA,
-  ES256,
-  generateKeyStore,
-  importKeyStore,
-  type MachineKeyStore,
-} from './keystore.js';
+export { type CoseAlgorithm, EDDSA, ES256, type MachineKeyStore } from './keystore.js';
 export { MachineClient, MachineClientError, type MachineClientOptions } from './machine-client.js';

@@ -15,12 +15,11 @@ import {
   createRegistrationResponse,
   encodeBase64Url,
   ES256,
-  generateKeyStore,
-  importKeyStore,
   MachineClient,
   type MachineKeyStore,
   type SoftwareCredential,
 } from '@localwebauthn/client';
+import { generateKeyStore, importKeyStore } from '@localwebauthn/client/file-key';
 import { createUserHandle } from '@localwebauthn/server';
 import { randomUUID } from 'node:crypto';
 
@@ -387,6 +386,60 @@ describe('restrictions enforced over HTTP', () => {
       post('/api/auth/login/verify', assertion, challengeCookie),
     );
     expect(verified.status).toBe(401);
+  });
+
+  it('rotates a credential with no window where neither key works', async () => {
+    // Rotation is the routine answer to any doubt about a key — an SSD that was
+    // not wiped, a laptop that was lost, a contractor who left, or simply a
+    // schedule. It must therefore be boring: mint the replacement, deploy it,
+    // revoke the old one. Both work in between, so nothing is ever down.
+    const fixture = setup();
+    const person = await signedInPerson(fixture);
+
+    const oldKey = await mintApiKey(fixture, person.cookie, 'nightly export');
+    const oldClient = new MachineClient({
+      payload: oldKey.payload,
+      keyStore: await importKeyStore(oldKey.privateKey, ES256),
+      fetch: appFetch(fixture.app),
+    });
+    expect((await oldClient.fetch('/api/machine/v1/whoami')).status).toBe(200);
+
+    // Step 1: mint the replacement while the old one keeps running.
+    const newKey = await mintApiKey(fixture, person.cookie, 'nightly export (rotated)');
+    const newClient = new MachineClient({
+      payload: newKey.payload,
+      keyStore: await importKeyStore(newKey.privateKey, ES256),
+      fetch: appFetch(fixture.app),
+    });
+
+    // Step 2: both are live. This overlap is the whole point — the script can be
+    // redeployed at leisure rather than during an outage.
+    expect((await oldClient.fetch('/api/machine/v1/whoami')).status).toBe(200);
+    expect((await newClient.fetch('/api/machine/v1/whoami')).status).toBe(200);
+
+    // Step 3: retire the old credential once the new one is deployed.
+    const listed = (await (
+      await fixture.app.fetch(
+        new Request(`${ORIGIN}/api/api-keys`, { headers: { Cookie: person.cookie } }),
+      )
+    ).json()) as { apiKeys: { id: string; label: string }[] };
+    const retiring = listed.apiKeys.find((key) => key.label === 'nightly export');
+    expect(retiring).toBeDefined();
+    const revoked = await fixture.app.fetch(
+      post(`/api/api-keys/${retiring?.id ?? ''}/revoke`, {}, person.cookie),
+    );
+    expect(revoked.status).toBe(200);
+
+    // The replacement is unaffected; the retired key cannot open a new session.
+    expect((await newClient.fetch('/api/machine/v1/whoami')).status).toBe(200);
+    const stale = new MachineClient({
+      payload: oldKey.payload,
+      keyStore: await importKeyStore(oldKey.privateKey, ES256),
+      fetch: appFetch(fixture.app),
+    });
+    await expect(stale.fetch('/api/machine/v1/whoami')).rejects.toMatchObject({
+      code: 'authentication_failed',
+    });
   });
 
   it('leaves no live session behind when provisioning a credential', async () => {

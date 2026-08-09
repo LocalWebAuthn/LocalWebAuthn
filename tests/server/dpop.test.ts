@@ -15,11 +15,11 @@ import {
   EDDSA,
   ES256,
   encodeBase64Url,
-  generateKeyStore,
   type MachineKeyStore,
   sha256,
   utf8,
 } from '../../packages/client/src/index.js';
+import { generateKeyStore } from '../../packages/client/src/file-key.js';
 import {
   coseToJwk,
   type DpopVerificationInput,

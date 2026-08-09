@@ -13,11 +13,11 @@ import {
   createDpopProof,
   encodeBase64Url,
   ES256,
-  generateKeyStore,
   MachineClient,
   MachineClientError,
   type MachineKeyStore,
 } from '../../packages/client/src/index.js';
+import { generateKeyStore } from '../../packages/client/src/file-key.js';
 
 const ORIGIN = 'https://app.example.test';
 
@@ -99,6 +99,39 @@ function stubServer(
 
   return { fetchStub, calls, sessionCount: () => sessions };
 }
+
+describe('the default entry point', () => {
+  // The split is only worth having if the default entry stays clean: a consumer that
+  // never imports `/file-key` must have no way to generate, read or write a raw
+  // private key. Asserted against the module's own exports rather than trusted.
+  it('exposes no raw private-key operation', async () => {
+    const core: Record<string, unknown> = await import('../../packages/client/src/index.js');
+    for (const name of [
+      'generateKeyStore',
+      'importKeyStore',
+      'formatCredentialFile',
+      'parseCredentialFile',
+      'isKeystoreReference',
+    ]) {
+      expect(core, `${name} must live behind /file-key`).not.toHaveProperty(name);
+    }
+    // What it does offer: the opaque signer interface and everything built on it,
+    // which a TPM, agent or KMS satisfies without exportable material.
+    expect(core).toHaveProperty('MachineClient');
+    expect(core).toHaveProperty('createDpopProof');
+    expect(core).toHaveProperty('createAssertionResponse');
+    // Public credential metadata is not key material, so it stays.
+    expect(core).toHaveProperty('parseCredentialPayload');
+  });
+
+  it('keeps the raw-key operations available behind the explicit import', async () => {
+    const fileKey: Record<string, unknown> = await import('../../packages/client/src/file-key.js');
+    expect(fileKey).toHaveProperty('generateKeyStore');
+    expect(fileKey).toHaveProperty('importKeyStore');
+    expect(fileKey).toHaveProperty('formatCredentialFile');
+    expect(fileKey).toHaveProperty('parseCredentialFile');
+  });
+});
 
 describe('MachineClient', () => {
   let keyStore: MachineKeyStore;

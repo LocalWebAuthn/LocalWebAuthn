@@ -430,6 +430,24 @@ Two limits to internalise:
 The full design is [[./docs/API-AUTH.org][docs/API-AUTH.org]]; [[./README.org][README.org]]
 "A Passkey for a script" is the working code.  What belongs here is the operational surface.
 
+*The client package has two entry points, and the split is the interesting part.*
+=@localwebauthn/client= works entirely through the =MachineKeyStore= interface: it asks
+a signer for a public key and for signatures, and never handles private key bytes ---
+so the same code runs over a file, an agent, a TPM, a Secure Enclave or a cloud KMS.
+Generating or reading a *raw* private key, and the credential-file format that carries
+one, live in =@localwebauthn/client/file-key=:
+
+#+begin_src ts
+import { MachineClient } from '@localwebauthn/client';          // opaque signers
+import { importKeyStore, parseCredentialFile } from '@localwebauthn/client/file-key';
+#+end_src
+
+Nothing behind that second import is discouraged --- a file-based credential is how a
+CLI holds a key.  It is separate so the import line says what the code does, and so a
+deployment that uses a platform keystore never reaches it at all.  A test asserts the
+default entry point exposes no raw-key operation, and lint forbids the server and
+browser packages from importing it.
+
 *A machine route should call =authenticateMachineRequest=, not assemble the check by hand.*
 It takes the raw token, derives the session from it, requires a DPoP proof, and refreshes the
 session's activity only after the proof holds --- one fail-closed operation:
@@ -473,6 +491,44 @@ A custom store needs the three DPoP methods only if you use this feature: they l
 separate =LocalWebAuthnDpopStore= contract, and the service checks for them where it uses
 them, throwing =invalid_configuration= naming the missing ones.  Every official adapter
 implements both.
+
+* Rotating an API credential
+
+Rotation is not incident response --- it is maintenance, and it should be dull enough
+to do on a schedule or on a hunch.  There is no re-keying step and no downtime,
+because a user may hold several credentials of the same kind at once:
+
+1. *Mint the replacement.*  The old credential keeps working.
+2. *Deploy it* --- write the new =.env=, restart the script, confirm it works.
+3. *Revoke the old one.*  =revokeCredential(userId, oldId, { allowLastCredential: true })=.
+
+Both credentials are live between steps 1 and 3, so nothing is ever down and the
+window is as long as you want it to be.  =examples/demo/tests/machine.test.ts= runs
+exactly this sequence and asserts the overlap.
+
+#+begin_src ts
+// Step 3, after the new credential is deployed and verified.
+await auth.revokeCredential(userId, retiringCredentialId, { allowLastCredential: true });
+#+end_src
+
+=allowLastCredential= is needed because the last-credential guard is scoped by kind:
+it exists to stop a person locking themselves out of their *own* account, and an API
+credential is never a person's way back in.  Rotation is also why
+[[./SECURITY.md][SECURITY.md]] treats key custody as a cost to be *bounded* rather
+than a problem to be solved perfectly --- a credential you will happily replace is
+worth far less to whoever finds a copy of it.
+
+Rotate when:
+
+- a laptop, phone or CI runner that held the file is lost, sold or decommissioned;
+- somebody with access to it leaves;
+- the file may have gone somewhere you did not intend (a clipboard manager, a chat, a
+  screenshot, a repository);
+- on a schedule, so the procedure is proven before you need it in a hurry.
+
+If the old credential enrolled anything --- it cannot, when
+=canRegister: false= --- =credentialDescendants= shows what, and
+=revokeCredentialTree= retires the subtree instead.
 
 * Provisioning pages: showing a secret once
 
