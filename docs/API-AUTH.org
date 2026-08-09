@@ -22,19 +22,22 @@ every byte of that exchange flows, and what each side must remember afterwards.
 The human's Passkey is a synced platform credential, reachable only through
 =navigator.credentials.get()=.  It signs one kind of object and can never sign on the
 script's behalf; its role is to /authorize/, once, the creation of the API credential.
-That credential's private key is generated in the browser page, displayed exactly
-once, and pasted into the script's =.env=.  One piece of private key material, in one
-place.  The server holds only a COSE public key -- it never possesses a secret that
-authenticates.
+That credential's private key is generated in the browser page, displayed once, and
+pasted into the script's =.env=.  The server holds only a COSE public key -- it never
+possesses a secret that authenticates.  "Displayed once" describes the page, not the
+world: a value that has passed through a clipboard, a download or a backup has copies
+this design cannot account for, which is why browser minting is a /compatibility/ path
+and generating the key on the target host is the safer shape.
 
 At runtime the script performs the full WebAuthn ceremony in software, and /the same
 key/ signs the per-request DPoP proofs (RFC 9449).  That single-key choice yields the
 central result: the server stores *nothing* per session beyond the ordinary
 =sessions= row.  The DPoP key thumbprint is /derived/ from =credentials.public_key=,
 not stored, so the per-request check reduces to "this proof was signed by the same key
-that produced the assertion that opened this session."  The only new server state in
-the entire design is a =jti= replay cache -- structurally the same row the challenge
-table already is.
+that produced the assertion that opened this session."  The new server state is small:
+a =jti= replay cache -- structurally the same row the challenge table already is -- plus
+a nonce-slot table when server-issued nonces are enabled, and a per-user registration
+generation used to fence revocation against in-flight registrations.
 #+END_ABSTRACT
 
 #+LATEX: \clearpage
@@ -82,11 +85,29 @@ What exists:
   the latest =DPoP-Nonce= and retry once when challenged.
 - The demo's =/api/api-keys/*= and =/api/machine/v1/*= routes, an API-credentials UI
   panel, and =npm run api-demo= for the script side.
+- =authenticateMachineRequest=: the one fail-closed call a machine route should use.
+  It derives the session from the token, requires a proof, and refreshes the session's
+  activity /only after/ the proof holds --- so a thief with the bearer token alone
+  cannot keep a session alive.  =verifyDpop= remains as the lower-level primitive.
+- =dpopChallenge()= for the RFC 9449 section 8 header pair.
+- A *registration fence*: a per-user generation stamped on every registration
+  challenge and re-checked by the statement that commits the credential, so a
+  revocation cancels ceremonies already in flight rather than racing them.
+- Fixed-point revocation, which throws =revocation_not_converged= rather than
+  reporting an incomplete remediation as success.
 
-Not built, and still design only:
+Not built, and still design only.  Every /proposed/ marker below refers to one of
+these:
 
 - Keystore backends beyond a base64 PKCS#8 key.  The =keystore:= URI is parsed and
   refused with a pointer to /Key Custody/.
+- The =localwebauthn-client import= CLI that would move a key into a platform
+  keystore.
+- A client build-version header.
+- The device-authorization (RFC 8628-shaped) provisioning flow, and target-host key
+  generation generally.  This document still describes browser minting as the primary
+  flow because that is what ships; it is the /compatibility/ path, and its hazards are
+  in /Where the key material ends up/.
 
 Companion documents in =docs/API-AUTH/=: three independent design treatments, a
 consensus analysis with the standards survey, and the provisioning discussion this
@@ -135,7 +156,7 @@ column that could hold it.
 |------------------------+---------------------------------------+-----------------------------------|
 | Key custody            | Apple Passwords, Secure Enclave       | =.env= on the script host         |
 | Reachable from         | a browser, only                       | any process that can read =.env=  |
-| =kind= (/proposed/)    | =person=                              | =service=                         |
+| =kind=                 | =person=                              | =service=                         |
 | =label=                | "Perry's MacBook"                     | "Perry's Blah maintenance script" |
 | =deviceType=           | =multiDevice=                         | =singleDevice=                    |
 | =backedUp=             | =true=                                | =false=                           |
@@ -420,14 +441,24 @@ There is no web API for the system keychain, and the near misses are all dead en
 
 The division is therefore firm: *the page can deliver the material; only a process on
 the script host can place it in a keystore.*  Hence a two-step, where the page's job
-ends at the file:
+ends at the file.
+
+*/Proposed --- no such command exists./*  Sketched here because it is the shape the
+=keystore:= URI anticipates, not because you can run it:
 
 #+BEGIN_SRC sh
+  # PROPOSED, not implemented in v3.
   localwebauthn-client import ./nightly-export.env \
       --keystore keychain/localwebauthn/nightly-export
-  # reads line 2, stores the key in the keychain, rewrites line 2 as
-  # keystore:keychain/localwebauthn/nightly-export, then shreds the original
+  # would read line 2, store the key in the keychain, and rewrite line 2 as
+  # keystore:keychain/localwebauthn/nightly-export
 #+END_SRC
+
+Note what such a command could /not/ promise: erasing the original.  Overwriting a
+file's bytes does not reach a copy-on-write snapshot, a journal, a backup, a clipboard
+history or an SSD's spare blocks, and no user-space tool can claim otherwise.  Prefer
+never writing the key to a file at all --- generate it on the target host, or have the
+keystore generate it --- over writing one and hoping to unwrite it.
 
 *** The constraint that decides which flow to use
 
@@ -461,8 +492,8 @@ into; that one is the only route to a non-exportable key.
   +--------------------+                  +---------------------+
   | Browser page       |                  | credentials row     |
   | generates the pair |  public half     | kind = service      |
-  | then DESTROYS the  +----------------->+ public_key = COSE   |
-  | PRIVATE half       |  at register     | label, last_used_at |
+  | and DROPS its ref  +----------------->+ public_key = COSE   |
+  | to the PRIVATE half|  at register     | label, last_used_at |
   |               cYEL |                  |                cGRE |
   +---------+----------+                  +---------------------+
             |
@@ -471,7 +502,7 @@ into; that one is the only route to a non-exportable key.
   +--------------------+                  +---------------------+
   | .env, mode 0600    |  optional import | OS keystore         |
   | LWA_CREDENTIAL_KEY +----------------->+ keychain, DPAPI,    |
-  | base64 PKCS8       |  then shred      | keyring, cloud KMS  |
+  | base64 PKCS8       |  (proposed)      | keyring, cloud KMS  |
   |               cRED |                  |                cPNK |
   +--------------------+                  +---------------------+
                                            line 2 becomes
@@ -537,15 +568,24 @@ memory:
 
 #+BEGIN_SRC ts
   type MachineKeyStore = {
-    algorithm: -7 | -8;
-    publicKeyCose(): Promise<Uint8Array>;         // registration only
-    sign(data: Uint8Array): Promise<Uint8Array>;  // DER for -7, raw for -8
+    readonly algorithm: CoseAlgorithm;              // -7 (ES256) or -8 (EdDSA)
+    publicKeyCose(): Promise<Uint8Array>;           // COSE_Key, for registration
+    publicJwk(): Promise<JsonWebKey>;               // the DPoP proof's `jwk` header
+    signWebAuthn(data: Uint8Array): Promise<Uint8Array>; // DER for -7, raw for -8
+    signJws(data: Uint8Array): Promise<Uint8Array>;      // raw r||s for -7, raw for -8
   };
 #+END_SRC
 
-For the DPoP path the client needs one more thing from the same key -- the RFC 7638
-thumbprint of its public JWK -- which is derivable from =publicKeyCose()= and needs no
-extra backend capability.
+Four methods rather than two, and the split is not cosmetic: the same key signs an
+assertion and a DPoP proof, and the two want *different signature encodings* --- DER
+for WebAuthn, raw =r || s= for JWS.  See /The signature-format trap/.  A backend that
+exposed one =sign()= would force every caller to know which encoding the current
+operation wanted, which is exactly the mistake that costs an afternoon.
+
+=publicJwk()= is separate for the same reason: the DPoP header carries a JWK, and
+deriving one from the COSE encoding is work every backend would otherwise repeat.
+Nothing here requires the key to be in memory --- an agent, a TPM or a KMS satisfies
+this interface by signing bytes it is handed.
 
 #+LATEX: \clearpage
 * Part 2: The Script Opens an API Session
@@ -575,7 +615,7 @@ sequenceDiagram
   CL->>SV: POST /api/machine/v1/login/verify
   SV->>DB: consumeChallenge, check credential.kind is permitted,<br/>verify signature, counter 0 -> 0
   SV->>DB: INSERT sessions, UPDATE credentials.last_used_at
-  SV-->>CL: sessionToken (JSON body) + DPoP-Nonce header
+  SV-->>CL: sessionToken (JSON body)
 
   Note over CL,DB: Steady state -- per request, no further ceremony
 
@@ -585,7 +625,7 @@ sequenceDiagram
     SV->>DB: resolveSession -> credentialId -> public_key
     SV->>SV: derive expected jkt from COSE, compare to proof jwk
     SV->>DB: jti unseen? INSERT into replay cache
-    SV-->>CL: 200, or 401 with a fresh DPoP-Nonce
+    SV-->>CL: 200 + DPoP-Nonce, or 401 + WWW-Authenticate: DPoP<br/>error="use_dpop_nonce" and a fresh DPoP-Nonce
   end
 #+END_SRC
 
@@ -724,7 +764,8 @@ standard Passkey server-side confirmation is required: it is not.
                                               | expires_at                |
                                               |                      cPNK |
                                               +---------------------------+
-                                               The only new table. Same shape
+                                               One of two new tables (the other
+                                               holds nonce slots). Same shape
                                                as the challenges table:
                                                hashed key, expiry, single use,
                                                swept by cleanup().
@@ -933,7 +974,7 @@ on different clocks:
 | =LWA_CREDENTIAL= =v=               | the =.env= payload schema     | client refuses an unknown =v= rather than guessing |
 | =/api/machine/v1/=                 | the endpoint contract         | old path served until its clients are retired  |
 | =LOCALWEBAUTHN_SCHEMA_VERSION=     | the database schema           | versioned migration, per /Open Items/          |
-| client build version               | diagnostics and EOL policy    | reported in a header, optionally refused       |
+| client build version (/proposed/)  | diagnostics and EOL policy    | not implemented; no version header is sent    |
 
 Path-versioning the machine endpoints matters more than for browser endpoints: a
 browser reloads and gets the new client, whereas a script keeps its =.env= and its

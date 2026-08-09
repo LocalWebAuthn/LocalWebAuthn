@@ -126,9 +126,7 @@ release-check:
 # Post-processing lives here rather than in a hand edit, so regenerating cannot
 # silently reintroduce whitespace that `git diff --check` then rejects.
 docs-export:
-	cd docs && emacs --batch --load ~/.emacs.d/init.el --visit API-AUTH.org \
-		--eval '(progn (setq org-confirm-babel-evaluate nil) \
-		               (org-latex-export-to-pdf) (org-ascii-export-to-ascii))'
+	cd docs && emacs --batch --load ~/.emacs.d/init.el --visit API-AUTH.org --eval '(progn (setq org-confirm-babel-evaluate nil) (org-latex-export-to-pdf) (org-ascii-export-to-ascii))'
 	$(MAKE) docs-strip
 	git diff --check -- docs/api-auth.txt
 
