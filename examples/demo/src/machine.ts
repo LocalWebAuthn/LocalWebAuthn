@@ -21,7 +21,7 @@ import type {
   RegistrationVerificationInput,
   SessionIdentity,
 } from '@localwebauthn/server';
-import { isLocalWebAuthnError } from '@localwebauthn/server';
+import { dpopChallenge, isLocalWebAuthnError } from '@localwebauthn/server';
 import type { Context, Hono, MiddlewareHandler } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 
@@ -226,12 +226,11 @@ export function requireMachineSession(
         // RFC 9449 section 8: hand the client a nonce and let it retry. The nonce
         // is not a secret — it goes to any caller that asks — so answering an
         // unauthenticated-looking request with one gives nothing away.
-        const nonce = await authentication.dpopNonce();
-        if (nonce) {
-          context.header('DPoP-Nonce', nonce);
-        }
-        context.header('WWW-Authenticate', 'DPoP error="use_dpop_nonce"');
-        return context.json({ error: error.code, message: error.message }, 401);
+        return context.json(
+          { error: error.code, message: error.message },
+          401,
+          dpopChallenge(await authentication.dpopNonce()),
+        );
       }
       return errorResponse(context, error);
     }

@@ -114,6 +114,29 @@ export function cookieAttributes(options: CookieAttributesOptions): CookieAttrib
 }
 
 /**
+ * Response headers that ask a DPoP client to retry with a server-issued nonce
+ * (RFC 9449 section 8).
+ *
+ * Send these with a `401` when `verifyDpop` throws `dpop_nonce_required`, passing
+ * the value of `auth.dpopNonce()`. Without a helper this is four things to get
+ * right in every host — catch the code, fetch a nonce, name both headers exactly
+ * — for one fixed protocol behaviour.
+ *
+ * The nonce is not a secret: the server hands the current one to any caller, and
+ * its only property is being unguessable *in advance*. So answering a request
+ * that failed authentication with one gives nothing away. `null` or `undefined`
+ * (nonces not configured) yields the challenge without the nonce header, which is
+ * a client-side bug worth surfacing rather than hiding.
+ */
+export function dpopChallenge(nonce?: string | null): Record<string, string> {
+  const headers: Record<string, string> = { 'WWW-Authenticate': 'DPoP error="use_dpop_nonce"' };
+  if (nonce) {
+    headers['DPoP-Nonce'] = nonce;
+  }
+  return headers;
+}
+
+/**
  * Exact-origin check for state-changing requests.
  *
  * Pass the `Origin` header value (or `null` if absent). Returns true only when

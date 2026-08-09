@@ -539,10 +539,9 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
            ) VALUES (?, ?, ?, 'client', ?, ?)`,
         )
         .run(id, email, displayName, createUserHandle(), Date.now());
-      const enrollment = await authentication.issueEnrollment(
-        id,
-        context.get('authenticatedUser').id,
-      );
+      const enrollment = await authentication.issueEnrollment(id, {
+        approvedByUserId: context.get('authenticatedUser').id,
+      });
       const created = clientById(database, id);
       if (!created) {
         throw new Error('The client was not persisted.');
@@ -571,10 +570,9 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
     if (!client?.active) {
       return context.json({ error: 'client_not_found', message: 'The client was not found.' }, 404);
     }
-    const enrollment = await authentication.issueEnrollment(
-      client.id,
-      context.get('authenticatedUser').id,
-    );
+    const enrollment = await authentication.issueEnrollment(client.id, {
+      approvedByUserId: context.get('authenticatedUser').id,
+    });
     return context.json({
       enrollmentUrl: enrollment.enrollmentUrl,
       expiresAt: enrollment.expiresAt,
@@ -602,10 +600,9 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
       );
     }
     await authentication.revokeUserAuthentication(client.id);
-    const enrollment = await authentication.issueEnrollment(
-      client.id,
-      context.get('authenticatedUser').id,
-    );
+    const enrollment = await authentication.issueEnrollment(client.id, {
+      approvedByUserId: context.get('authenticatedUser').id,
+    });
     return context.json({
       client: await clientPayload(client, authentication),
       enrollmentUrl: enrollment.enrollmentUrl,

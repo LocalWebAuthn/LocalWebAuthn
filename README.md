@@ -450,7 +450,9 @@ an operator. The strongest version ships **no self-service recovery endpoint at 
 // Order matters. revokeUserAuthentication() revokes pending enrollment grants,
 // so issuing first and revoking second would destroy the link you just made.
 await auth.revokeUserAuthentication(user.id);
-const { enrollmentUrl } = await auth.issueEnrollment(user.id, administrator.id);
+const { enrollmentUrl } = await auth.issueEnrollment(user.id, {
+  approvedByUserId: administrator.id,
+});
 ```
 
 The second argument is stored on the grant as `approved_by_user_id`, so every recovery has

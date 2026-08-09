@@ -41,7 +41,7 @@ describe('recovery flow', () => {
 
   it('revoke-then-issue leaves the recovery link usable', async () => {
     await auth.revokeUserAuthentication(user.id);
-    const issued = await auth.issueEnrollment(user.id, 'administrator-1');
+    const issued = await auth.issueEnrollment(user.id, { approvedByUserId: 'administrator-1' });
 
     await expect(auth.exchangeEnrollment(issued.enrollmentToken)).resolves.toMatchObject({
       user: { id: user.id },
@@ -50,7 +50,7 @@ describe('recovery flow', () => {
   });
 
   it('issue-then-revoke destroys the link, which is why order matters', async () => {
-    const issued = await auth.issueEnrollment(user.id, 'administrator-1');
+    const issued = await auth.issueEnrollment(user.id, { approvedByUserId: 'administrator-1' });
     await auth.revokeUserAuthentication(user.id);
 
     await expect(auth.exchangeEnrollment(issued.enrollmentToken)).rejects.toMatchObject({
@@ -60,7 +60,7 @@ describe('recovery flow', () => {
   });
 
   it('records the approving administrator against the issued grant', async () => {
-    const issued = await auth.issueEnrollment(user.id, 'administrator-1');
+    const issued = await auth.issueEnrollment(user.id, { approvedByUserId: 'administrator-1' });
 
     const grant = database
       .prepare('SELECT approved_by_user_id FROM localwebauthn_enrollment_grants WHERE id = ?')

@@ -46,9 +46,12 @@ is a no-op.
 Two traps if you extend this. `LOCALWEBAUTHN_SCHEMA_SQL` must contain **no `--`
 comments**: the statement splitter collapses whitespace, which joins a comment to the
 statement after it and comments the whole thing out — D1 reports "SQL code did not contain
-a statement". And a new _table_ needs no entry in `LOCALWEBAUTHN_MIGRATIONS`, because
-`localWebAuthnUpgradeStatements` lifts its `CREATE TABLE IF NOT EXISTS` out of the full
-schema in the right dialect; only columns and index changes need explicit statements.
+a statement". And a new _table_ needs no DDL in `LOCALWEBAUTHN_MIGRATIONS`, only its name
+in that version's `newTables`: `localWebAuthnUpgradeStatements` lifts its
+`CREATE TABLE IF NOT EXISTS`, and every index over it, out of the full schema in the right
+dialect. Only columns and changes to existing indexes need explicit statements. A table the
+schema creates that no version claims would exist on fresh installs and be missing on
+upgraded ones, so the migration test asserts the two agree.
 
 **Every existing credential keeps `kind: NULL`**, and an undeclared kind behaves exactly as
 before, so a deployment that ignores all of this sees no behaviour change.
@@ -136,9 +139,13 @@ An enrollment grant now carries the kind it is authorized to create, and that bi
 is what confines the token:
 
 ```ts
-issueEnrollment(userId, { credentialKind: 'service' }); // options form
-issueEnrollment(userId, 'admin-1'); // legacy positional approvedByUserId still works
+issueEnrollment(userId, { credentialKind: 'service' });
+issueEnrollment(userId, { approvedByUserId: 'admin-1' });
 ```
+
+That second argument is now an options object. It was a positional
+`approvedByUserId?: string` through 2.2.0, so a call passing one needs
+`{ approvedByUserId }` — the compiler flags every site.
 
 This closes a fail-open default rather than an attack. Previously the class was chosen
 by whichever route the token was redeemed at, and the ordinary human registration route

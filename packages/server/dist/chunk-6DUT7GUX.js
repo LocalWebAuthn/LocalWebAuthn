@@ -275,13 +275,16 @@ var LOCALWEBAUTHN_MIGRATIONS = [
       `CREATE UNIQUE INDEX IF NOT EXISTS localwebauthn_active_grant_user_idx
          ON localwebauthn_enrollment_grants(user_id, COALESCE(credential_kind, ''))
          WHERE completed_at IS NULL AND revoked_at IS NULL`
-      // `localwebauthn_dpop_proofs` and `localwebauthn_dpop_nonces` need no entry
-      // here: they are new tables, so the idempotent `CREATE TABLE IF NOT EXISTS`
-      // lifted out of the full schema by `localWebAuthnUpgradeStatements` creates
-      // them, in whichever dialect that schema is written for.
-    ]
+    ],
+    newTables: ["localwebauthn_dpop_proofs", "localwebauthn_dpop_nonces"]
   }
 ];
+function declaredTable(statement) {
+  return /^CREATE TABLE IF NOT EXISTS (\w+)/u.exec(statement)?.[1] ?? null;
+}
+function indexedTable(statement) {
+  return /^CREATE (?:UNIQUE )?INDEX IF NOT EXISTS \w+ ON (\w+)\s*\(/u.exec(statement)?.[1] ?? null;
+}
 function migrationStatements(fromVersion) {
   return LOCALWEBAUTHN_MIGRATIONS.filter((entry) => entry.version > fromVersion).flatMap(
     (entry) => entry.statements.map((statement) => statement.replace(/\s+/gu, " ").trim())
@@ -311,10 +314,21 @@ function localWebAuthnUpgradeStatements(fromVersion, dialect = "sqlite") {
   if (fromVersion >= LOCALWEBAUTHN_SCHEMA_VERSION) {
     return [];
   }
-  const newTables = schema.filter(
-    (statement) => /^CREATE (TABLE|INDEX|UNIQUE INDEX) IF NOT EXISTS localwebauthn_dpop/u.test(statement)
+  const introduced = new Set(
+    LOCALWEBAUTHN_MIGRATIONS.filter((entry) => entry.version > fromVersion).flatMap(
+      (entry) => entry.newTables
+    )
   );
-  return [...migrationStatements(fromVersion), ...newTables];
+  for (const table of introduced) {
+    if (!schema.some((statement) => declaredTable(statement) === table)) {
+      throw new Error(`A migration introduces ${table}, which the schema does not create.`);
+    }
+  }
+  const tableStatements = schema.filter((statement) => {
+    const table = declaredTable(statement) ?? indexedTable(statement);
+    return table !== null && introduced.has(table);
+  });
+  return [...migrationStatements(fromVersion), ...tableStatements];
 }
 function localWebAuthnMigrationStatements(now = Date.now()) {
   return [

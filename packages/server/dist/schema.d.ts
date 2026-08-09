@@ -74,10 +74,20 @@ declare const LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL = "\nCREATE TABLE IF NOT EXISTS 
  * install lacks — the two would diverge and only one of them would be tested.
  * Constraints that would otherwise live in the schema are enforced in the
  * service layer instead.
+ *
+ * `newTables` names the tables the version introduces. Their DDL is *not*
+ * written here: {@link localWebAuthnUpgradeStatements} lifts the idempotent
+ * `CREATE TABLE IF NOT EXISTS`, and every index over them, out of the full
+ * schema in whichever dialect it was asked for. Adding a table therefore means
+ * adding its name to this list — a table the schema creates but no entry claims
+ * will exist on a fresh install and be missing on an upgraded one, which is a
+ * failure only a fresh database would ever show.
  */
 declare const LOCALWEBAUTHN_MIGRATIONS: {
     version: number;
     statements: string[];
+    /** Tables this version introduces; their DDL comes from the full schema. */
+    newTables: string[];
 }[];
 declare function localWebAuthnSchemaStatements(): string[];
 /**
@@ -99,9 +109,9 @@ declare function localWebAuthnPostgresSchemaStatements(): string[];
  *
  * `fromVersion` of `0` means "no `localwebauthn_migrations` row", i.e. a fresh
  * database, and yields the full schema. Anything else yields only the
- * incremental upgrades above that version — plus, for a v1 database, the
- * `CREATE TABLE IF NOT EXISTS` for tables introduced after v1, which the
- * incremental list cannot express portably.
+ * incremental upgrades above that version — plus, for every table those versions
+ * declare in `newTables`, its `CREATE TABLE IF NOT EXISTS` and indexes lifted
+ * from the full schema, which the incremental list cannot express portably.
  *
  * Returns an empty array when the database is already current.
  */

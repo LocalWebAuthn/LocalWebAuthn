@@ -140,18 +140,18 @@ export class LocalWebAuthn {
    * `webAuthnUserHandle` that is not 32 bytes.
    *
    * @param userId - The application user ID to enroll.
-   * @param approvedByUserId - Optional ID of the administrator who approved this enrollment.
+   * @param options.approvedByUserId - ID of the administrator who approved this
+   *   enrollment, recorded on the grant and on any credential it creates.
+   * @param options.credentialKind - The {@link Credential.kind} this grant may
+   *   create. Confines the token to that class: whichever route redeems it, the
+   *   resulting credential gets this kind and its restrictions.
    * @returns The enrollment URL (with `#token=` fragment), raw token, expiry,
    *   and the IDs of any grants this issue superseded.
    */
   async issueEnrollment(
     userId: string,
-    approvedByUserIdOrOptions?: string | { approvedByUserId?: string; credentialKind?: string },
+    options: { approvedByUserId?: string; credentialKind?: string } = {},
   ): Promise<EnrollmentIssue> {
-    const options =
-      typeof approvedByUserIdOrOptions === 'string'
-        ? { approvedByUserId: approvedByUserIdOrOptions }
-        : (approvedByUserIdOrOptions ?? {});
     const credentialKind = normalizeKind(options.credentialKind);
     const user = await this.#activeUser(userId);
     if (!user) {

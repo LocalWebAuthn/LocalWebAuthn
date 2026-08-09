@@ -4,6 +4,7 @@ import {
   authCookieNames,
   cookieAttributes,
   describeSignupPhase,
+  dpopChallenge,
   isExactOrigin,
   isHttpsPublicOrigin,
   nextSignupStep,
@@ -76,6 +77,17 @@ describe('HTTP cookie and origin helpers', () => {
     expect(() => serializeCookie('name', 'semi;colon', attributes)).toThrow(TypeError);
     expect(() => serializeCookie('name', 'new\nline', attributes)).toThrow(TypeError);
     expect(serializeCookie('name', 'tokenb32value', attributes)).toContain('name=tokenb32value');
+  });
+
+  it('builds the RFC 9449 nonce challenge headers', () => {
+    expect(dpopChallenge('nonce-1')).toEqual({
+      'WWW-Authenticate': 'DPoP error="use_dpop_nonce"',
+      'DPoP-Nonce': 'nonce-1',
+    });
+    // No nonce configured: still challenge, so the client is told why it failed
+    // rather than being handed a header with an empty value.
+    expect(dpopChallenge(null)).toEqual({ 'WWW-Authenticate': 'DPoP error="use_dpop_nonce"' });
+    expect(dpopChallenge()).not.toHaveProperty('DPoP-Nonce');
   });
 
   it('parses and serializes cookies for plain Node adapters', () => {

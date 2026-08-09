@@ -26,6 +26,7 @@ export { isLocalWebAuthnError, LocalWebAuthnError, type LocalWebAuthnErrorCode }
 export {
   authCookieNames,
   cookieAttributes,
+  dpopChallenge,
   isExactOrigin,
   isHttpsPublicOrigin,
   parseCookieHeader,

@@ -9,7 +9,7 @@ import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnMigrationsTableStatement,
   localWebAuthnUpgradeStatements
-} from "./chunk-WLETUGZ6.js";
+} from "./chunk-6DUT7GUX.js";
 
 // src/sqlite.ts
 var Rollback = class extends Error {

@@ -220,6 +220,22 @@ declare function authCookieNames(publicOrigin: string, namespace?: string): Auth
  */
 declare function cookieAttributes(options: CookieAttributesOptions): CookieAttributes;
 /**
+ * Response headers that ask a DPoP client to retry with a server-issued nonce
+ * (RFC 9449 section 8).
+ *
+ * Send these with a `401` when `verifyDpop` throws `dpop_nonce_required`, passing
+ * the value of `auth.dpopNonce()`. Without a helper this is four things to get
+ * right in every host — catch the code, fetch a nonce, name both headers exactly
+ * — for one fixed protocol behaviour.
+ *
+ * The nonce is not a secret: the server hands the current one to any caller, and
+ * its only property is being unguessable *in advance*. So answering a request
+ * that failed authentication with one gives nothing away. `null` or `undefined`
+ * (nonces not configured) yields the challenge without the nonce header, which is
+ * a client-side bug worth surfacing rather than hiding.
+ */
+declare function dpopChallenge(nonce?: string | null): Record<string, string>;
+/**
  * Exact-origin check for state-changing requests.
  *
  * Pass the `Origin` header value (or `null` if absent). Returns true only when
@@ -358,11 +374,15 @@ declare class LocalWebAuthn {
      * `webAuthnUserHandle` that is not 32 bytes.
      *
      * @param userId - The application user ID to enroll.
-     * @param approvedByUserId - Optional ID of the administrator who approved this enrollment.
+     * @param options.approvedByUserId - ID of the administrator who approved this
+     *   enrollment, recorded on the grant and on any credential it creates.
+     * @param options.credentialKind - The {@link Credential.kind} this grant may
+     *   create. Confines the token to that class: whichever route redeems it, the
+     *   resulting credential gets this kind and its restrictions.
      * @returns The enrollment URL (with `#token=` fragment), raw token, expiry,
      *   and the IDs of any grants this issue superseded.
      */
-    issueEnrollment(userId: string, approvedByUserIdOrOptions?: string | {
+    issueEnrollment(userId: string, options?: {
         approvedByUserId?: string;
         credentialKind?: string;
     }): Promise<EnrollmentIssue>;
@@ -625,4 +645,4 @@ declare class LocalWebAuthn {
     }): Promise<void>;
 }
 
-export { type AuthCookieKind, type AuthCookieNames, AuthUser, AuthenticationOptionsInput, AuthenticationOptionsResult, AuthenticationVerificationInput, AuthenticationVerificationResult, CleanupResult, type CookieAttributes, type CookieAttributesOptions, Credential, type DpopVerification, type DpopVerificationInput, EnrollmentExchange, EnrollmentIssue, LocalWebAuthn, LocalWebAuthnError, type LocalWebAuthnErrorCode, LocalWebAuthnOptions, type NormalizedConfig, type NormalizedCredentialKind, type PublicJwk, RegistrationOptionsInput, RegistrationOptionsResult, RegistrationVerificationInput, RegistrationVerificationResult, SELF_SERVE_SIGNUP_STEPS, SessionIdentity, type SignupFacts, type SignupNextStep, type SignupPhase, authCookieNames, cookieAttributes, coseToJwk, createEnrollmentToken, createOpaqueToken, createUserHandle, decodeBase64Url, defaultKindPolicy, describeSignupPhase, encodeBase32, encodeBase64Url, equalBytes, isExactOrigin, isHttpsPublicOrigin, isLocalWebAuthnError, jwkThumbprint, kindPolicy, nextSignupStep, parseCookieHeader, serializeClearedCookie, serializeCookie, sha256, signupPhase, verifyDpopProof };
+export { type AuthCookieKind, type AuthCookieNames, AuthUser, AuthenticationOptionsInput, AuthenticationOptionsResult, AuthenticationVerificationInput, AuthenticationVerificationResult, CleanupResult, type CookieAttributes, type CookieAttributesOptions, Credential, type DpopVerification, type DpopVerificationInput, EnrollmentExchange, EnrollmentIssue, LocalWebAuthn, LocalWebAuthnError, type LocalWebAuthnErrorCode, LocalWebAuthnOptions, type NormalizedConfig, type NormalizedCredentialKind, type PublicJwk, RegistrationOptionsInput, RegistrationOptionsResult, RegistrationVerificationInput, RegistrationVerificationResult, SELF_SERVE_SIGNUP_STEPS, SessionIdentity, type SignupFacts, type SignupNextStep, type SignupPhase, authCookieNames, cookieAttributes, coseToJwk, createEnrollmentToken, createOpaqueToken, createUserHandle, decodeBase64Url, defaultKindPolicy, describeSignupPhase, dpopChallenge, encodeBase32, encodeBase64Url, equalBytes, isExactOrigin, isHttpsPublicOrigin, isLocalWebAuthnError, jwkThumbprint, kindPolicy, nextSignupStep, parseCookieHeader, serializeClearedCookie, serializeCookie, sha256, signupPhase, verifyDpopProof };

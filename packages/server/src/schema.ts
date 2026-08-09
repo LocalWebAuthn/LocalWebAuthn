@@ -321,8 +321,21 @@ CREATE INDEX IF NOT EXISTS localwebauthn_dpop_nonce_expiry_idx
  * install lacks — the two would diverge and only one of them would be tested.
  * Constraints that would otherwise live in the schema are enforced in the
  * service layer instead.
+ *
+ * `newTables` names the tables the version introduces. Their DDL is *not*
+ * written here: {@link localWebAuthnUpgradeStatements} lifts the idempotent
+ * `CREATE TABLE IF NOT EXISTS`, and every index over them, out of the full
+ * schema in whichever dialect it was asked for. Adding a table therefore means
+ * adding its name to this list — a table the schema creates but no entry claims
+ * will exist on a fresh install and be missing on an upgraded one, which is a
+ * failure only a fresh database would ever show.
  */
-export const LOCALWEBAUTHN_MIGRATIONS: { version: number; statements: string[] }[] = [
+export const LOCALWEBAUTHN_MIGRATIONS: {
+  version: number;
+  statements: string[];
+  /** Tables this version introduces; their DDL comes from the full schema. */
+  newTables: string[];
+}[] = [
   {
     version: 2,
     statements: [
@@ -351,13 +364,20 @@ export const LOCALWEBAUTHN_MIGRATIONS: { version: number; statements: string[] }
       `CREATE UNIQUE INDEX IF NOT EXISTS localwebauthn_active_grant_user_idx
          ON localwebauthn_enrollment_grants(user_id, COALESCE(credential_kind, ''))
          WHERE completed_at IS NULL AND revoked_at IS NULL`,
-      // `localwebauthn_dpop_proofs` and `localwebauthn_dpop_nonces` need no entry
-      // here: they are new tables, so the idempotent `CREATE TABLE IF NOT EXISTS`
-      // lifted out of the full schema by `localWebAuthnUpgradeStatements` creates
-      // them, in whichever dialect that schema is written for.
     ],
+    newTables: ['localwebauthn_dpop_proofs', 'localwebauthn_dpop_nonces'],
   },
 ];
+
+/** The table a collapsed `CREATE TABLE` statement declares, else `null`. */
+function declaredTable(statement: string): string | null {
+  return /^CREATE TABLE IF NOT EXISTS (\w+)/u.exec(statement)?.[1] ?? null;
+}
+
+/** The table a collapsed `CREATE INDEX` statement is defined over, else `null`. */
+function indexedTable(statement: string): string | null {
+  return /^CREATE (?:UNIQUE )?INDEX IF NOT EXISTS \w+ ON (\w+)\s*\(/u.exec(statement)?.[1] ?? null;
+}
 
 /** Incremental statements for every entry above `fromVersion`, whitespace collapsed. */
 function migrationStatements(fromVersion: number): string[] {
@@ -411,9 +431,9 @@ export function localWebAuthnPostgresSchemaStatements(): string[] {
  *
  * `fromVersion` of `0` means "no `localwebauthn_migrations` row", i.e. a fresh
  * database, and yields the full schema. Anything else yields only the
- * incremental upgrades above that version — plus, for a v1 database, the
- * `CREATE TABLE IF NOT EXISTS` for tables introduced after v1, which the
- * incremental list cannot express portably.
+ * incremental upgrades above that version — plus, for every table those versions
+ * declare in `newTables`, its `CREATE TABLE IF NOT EXISTS` and indexes lifted
+ * from the full schema, which the incremental list cannot express portably.
  *
  * Returns an empty array when the database is already current.
  */
@@ -431,15 +451,26 @@ export function localWebAuthnUpgradeStatements(
   if (fromVersion >= LOCALWEBAUTHN_SCHEMA_VERSION) {
     return [];
   }
-  // Tables introduced after v1 come from the full schema's idempotent
+  // Tables introduced above `fromVersion` come from the full schema's idempotent
   // `CREATE ... IF NOT EXISTS`, which the incremental list cannot express
   // portably: the two dialects spell the same table differently (BLOB/BYTEA,
   // INTEGER/BIGINT, STRICT). Columns still need explicit ALTERs, which are
   // dialect-neutral.
-  const newTables = schema.filter((statement) =>
-    /^CREATE (TABLE|INDEX|UNIQUE INDEX) IF NOT EXISTS localwebauthn_dpop/u.test(statement),
+  const introduced = new Set(
+    LOCALWEBAUTHN_MIGRATIONS.filter((entry) => entry.version > fromVersion).flatMap(
+      (entry) => entry.newTables,
+    ),
   );
-  return [...migrationStatements(fromVersion), ...newTables];
+  for (const table of introduced) {
+    if (!schema.some((statement) => declaredTable(statement) === table)) {
+      throw new Error(`A migration introduces ${table}, which the schema does not create.`);
+    }
+  }
+  const tableStatements = schema.filter((statement) => {
+    const table = declaredTable(statement) ?? indexedTable(statement);
+    return table !== null && introduced.has(table);
+  });
+  return [...migrationStatements(fromVersion), ...tableStatements];
 }
 
 /**

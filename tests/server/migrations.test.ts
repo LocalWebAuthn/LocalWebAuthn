@@ -11,7 +11,11 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
-import { LOCALWEBAUTHN_SCHEMA_VERSION } from '../../packages/server/src/schema.js';
+import {
+  LOCALWEBAUTHN_MIGRATIONS,
+  LOCALWEBAUTHN_SCHEMA_VERSION,
+  localWebAuthnUpgradeStatements,
+} from '../../packages/server/src/schema.js';
 import { migrateSqlite, SqliteLocalWebAuthnStore } from '../../packages/server/src/sqlite.js';
 
 const V1_SCHEMA_SQL = `
@@ -240,6 +244,37 @@ describe('version 1 to version 2', () => {
     expect(() => migrateSqlite(database, now)).not.toThrow();
     expect(() => migrateSqlite(database, now)).not.toThrow();
     database.close();
+  });
+
+  it('lifts a new version’s tables and their indexes out of the schema', () => {
+    // The upgrade path cannot write dialect-specific DDL, so each version names
+    // the tables it introduces and their real DDL is taken from the full schema.
+    for (const dialect of ['sqlite', 'postgres'] as const) {
+      const statements = localWebAuthnUpgradeStatements(1, dialect);
+      for (const table of LOCALWEBAUTHN_MIGRATIONS.flatMap((entry) => entry.newTables)) {
+        expect(statements, `${dialect} ${table}`).toContainEqual(
+          expect.stringContaining(`CREATE TABLE IF NOT EXISTS ${table}`),
+        );
+      }
+      expect(statements).toContainEqual(
+        expect.stringContaining('ON localwebauthn_dpop_nonces(expires_at)'),
+      );
+    }
+  });
+
+  it('refuses a version that introduces a table the schema does not create', () => {
+    // A typo here would otherwise produce a table on fresh installs and no table
+    // on upgraded ones — the failure shape only a fresh database ever reveals.
+    LOCALWEBAUTHN_MIGRATIONS.push({
+      version: 99,
+      statements: [],
+      newTables: ['localwebauthn_typo'],
+    });
+    try {
+      expect(() => localWebAuthnUpgradeStatements(1)).toThrow(/localwebauthn_typo/u);
+    } finally {
+      LOCALWEBAUTHN_MIGRATIONS.pop();
+    }
   });
 
   it('leaves an upgraded database fully usable', async () => {

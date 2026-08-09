@@ -401,6 +401,13 @@ function cookieAttributes(options) {
   }
   return attributes;
 }
+function dpopChallenge(nonce) {
+  const headers = { "WWW-Authenticate": 'DPoP error="use_dpop_nonce"' };
+  if (nonce) {
+    headers["DPoP-Nonce"] = nonce;
+  }
+  return headers;
+}
 function isExactOrigin(requestOrigin, expectedOrigin) {
   if (requestOrigin == null || requestOrigin === "") {
     return false;
@@ -586,12 +593,15 @@ var LocalWebAuthn = class {
    * `webAuthnUserHandle` that is not 32 bytes.
    *
    * @param userId - The application user ID to enroll.
-   * @param approvedByUserId - Optional ID of the administrator who approved this enrollment.
+   * @param options.approvedByUserId - ID of the administrator who approved this
+   *   enrollment, recorded on the grant and on any credential it creates.
+   * @param options.credentialKind - The {@link Credential.kind} this grant may
+   *   create. Confines the token to that class: whichever route redeems it, the
+   *   resulting credential gets this kind and its restrictions.
    * @returns The enrollment URL (with `#token=` fragment), raw token, expiry,
    *   and the IDs of any grants this issue superseded.
    */
-  async issueEnrollment(userId, approvedByUserIdOrOptions) {
-    const options = typeof approvedByUserIdOrOptions === "string" ? { approvedByUserId: approvedByUserIdOrOptions } : approvedByUserIdOrOptions ?? {};
+  async issueEnrollment(userId, options = {}) {
     const credentialKind = normalizeKind(options.credentialKind);
     const user = await this.#activeUser(userId);
     if (!user) {
@@ -1566,6 +1576,7 @@ export {
   decodeBase64Url,
   defaultKindPolicy,
   describeSignupPhase,
+  dpopChallenge,
   encodeBase32,
   encodeBase64Url,
   equalBytes,

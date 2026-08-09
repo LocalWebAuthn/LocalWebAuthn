@@ -9,7 +9,7 @@ import {
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnSchemaStatements
-} from "./chunk-WLETUGZ6.js";
+} from "./chunk-6DUT7GUX.js";
 
 // src/d1.ts
 async function migrateD1(database, now = Date.now()) {

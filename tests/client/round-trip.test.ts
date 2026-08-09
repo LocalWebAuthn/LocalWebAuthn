@@ -318,7 +318,7 @@ describe('restrictions on API credentials', () => {
 describe('credential heritage', () => {
   it('records where a credential came from, and when', async () => {
     const { auth } = harness();
-    const issue = await auth.issueEnrollment('user-1', 'admin-1');
+    const issue = await auth.issueEnrollment('user-1', { approvedByUserId: 'admin-1' });
     const exchange = await auth.exchangeEnrollment(issue.enrollmentToken);
     const root = await enroll(
       auth,
@@ -353,7 +353,7 @@ describe('credential heritage', () => {
 
   it('walks the chain back to the enrollment that started it', async () => {
     const { auth } = harness();
-    const issue = await auth.issueEnrollment('user-1', 'admin-1');
+    const issue = await auth.issueEnrollment('user-1', { approvedByUserId: 'admin-1' });
     const exchange = await auth.exchangeEnrollment(issue.enrollmentToken);
     const a = await enroll(auth, undefined, exchange.enrollmentSessionToken, undefined, 'a');
     const b = await enroll(auth, a.verified.sessionToken, undefined, undefined, 'b');
@@ -376,7 +376,7 @@ describe('credential heritage', () => {
 
   it('survives the cleanup that used to destroy the trail', async () => {
     const { auth } = harness();
-    const issue = await auth.issueEnrollment('user-1', 'admin-1');
+    const issue = await auth.issueEnrollment('user-1', { approvedByUserId: 'admin-1' });
     const exchange = await auth.exchangeEnrollment(issue.enrollmentToken);
     const root = await enroll(auth, undefined, exchange.enrollmentSessionToken, undefined, 'root');
     const child = await enroll(auth, root.verified.sessionToken, undefined, undefined, 'child');
@@ -560,14 +560,6 @@ describe('the kind on an enrollment grant', () => {
     const second = await auth.issueEnrollment('user-1');
     expect(second.supersededGrantIds).toEqual([first.grantId]);
   });
-
-  it('accepts the legacy positional approvedByUserId', async () => {
-    const { auth } = harness();
-    const issue = await auth.issueEnrollment('user-1', 'admin-1');
-    await expect(auth.exchangeEnrollment(issue.enrollmentToken)).resolves.toHaveProperty(
-      'enrollmentSessionToken',
-    );
-  });
 });
 
 describe('kind-filtered revocation', () => {
@@ -659,6 +651,79 @@ describe('kind-filtered revocation', () => {
     await expect(auth.exchangeEnrollment(issue.enrollmentToken)).rejects.toMatchObject({
       code: 'invalid_enrollment',
     });
+  });
+
+  /** A user whose every credential and grant shares one kind. */
+  async function singleKind() {
+    const fixture = harness();
+    const first = await bootstrap(fixture.auth, 'person', 'laptop');
+    const second = await enroll(
+      fixture.auth,
+      first.verified.sessionToken,
+      undefined,
+      'person',
+      'phone',
+    );
+    const grant = await fixture.auth.issueEnrollment('user-1', { credentialKind: 'person' });
+    return { ...fixture, first, second, grant };
+  }
+
+  type SingleKind = Awaited<ReturnType<typeof singleKind>>;
+
+  function liveSessionCount(database: SingleKind['database']): number {
+    return (
+      database
+        .prepare('SELECT COUNT(*) AS count FROM localwebauthn_sessions WHERE revoked_at IS NULL')
+        .get() as { count: number }
+    ).count;
+  }
+
+  /** Everything either revoke path is supposed to decide, by stable name. */
+  async function state(fixture: SingleKind) {
+    const credentials = await fixture.auth.listCredentials('user-1', true);
+    return {
+      first: (await fixture.auth.resolveSession(fixture.first.verified.sessionToken)) !== null,
+      second: (await fixture.auth.resolveSession(fixture.second.verified.sessionToken)) !== null,
+      liveSessions: liveSessionCount(fixture.database),
+      active: credentials
+        .filter((credential) => credential.revokedAt === null)
+        .map((credential) => credential.label)
+        .sort(),
+      grantLive: await fixture.auth.exchangeEnrollment(fixture.grant.enrollmentToken).then(
+        () => true,
+        () => false,
+      ),
+    };
+  }
+
+  // Two implementations of one behaviour: the scoped paths loop per credential
+  // because a variable-length kind filter cannot live in the shared static SQL,
+  // while the unscoped paths are single statements. For a user with one kind the
+  // two must be indistinguishable. This is the shape of assertion that would have
+  // caught the scoped revoke leaving pending grants alive.
+  it('agrees with the unscoped session revoke for a single-kind user', async () => {
+    const scoped = await singleKind();
+    const unscoped = await singleKind();
+
+    const scopedCount = await scoped.auth.revokeUserSessions('user-1', { kinds: ['person'] });
+    const unscopedCount = await unscoped.auth.revokeUserSessions('user-1');
+
+    expect(scopedCount).toBe(unscopedCount);
+    expect(await state(scoped)).toEqual(await state(unscoped));
+  });
+
+  it('agrees with the unscoped authentication revoke for a single-kind user', async () => {
+    const scoped = await singleKind();
+    const unscoped = await singleKind();
+
+    await scoped.auth.revokeUserAuthentication('user-1', { kinds: ['person'] });
+    await unscoped.auth.revokeUserAuthentication('user-1');
+
+    // Unconsumed *challenges* are the one deliberate difference — the unscoped path
+    // clears them, the scoped path leaves them, which is harmless because a
+    // challenge whose credential or grant is revoked can no longer complete. This
+    // fixture has none outstanding, so the two states must match exactly.
+    expect(await state(scoped)).toEqual(await state(unscoped));
   });
 
   it('reports the scope on the event', async () => {
