@@ -816,7 +816,7 @@ authorization decisions, which the package enables by reporting =credentialKind=
 | 8 | enumerate the user's other credentials            | host        | =listCredentials= is privileged                                 |
 | 9 | change account settings, channels, or recovery    | host        | account-takeover surface                                        |
 | 10 | count as the user's last credential              | *package*   | kind-scoped last-credential guard                               |
-| 11 | present a bare Bearer token                      | *package*   | per-kind =requireDpop=                                          |
+| 11 | present a bare Bearer token                      | host        | resolve machine routes through =authenticateMachineRequest=, which always requires a DPoP proof |
 | 12 | hold a long session                              | *package*   | per-kind =sessionAbsoluteMs=                                    |
 | 13 | authenticate without being distinguishable        | *package*   | =credentialKind= on =credential.authenticated= and =session.created= |
 
@@ -894,11 +894,12 @@ policy is visible in one place and a route cannot forget it:
       service: {
         interactive: false,        // excluded from authenticationOptions() by default
         canRegister: false,        // rule 1
-        requireDpop: true,         // rule 11
         sessionAbsoluteMs: 15 * 60_000,   // rule 12
       },
     },
   });
+  // Rule 11 is enforced at the route, not by config: a machine route calls
+  // authenticateMachineRequest(), which always requires a DPoP proof.
 #+END_SRC
 
 Undeclared kinds -- including =null= -- behave exactly as today, so the change is

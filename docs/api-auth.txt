@@ -616,21 +616,21 @@ _________________
 6.1 The rules
 ~~~~~~~~~~~~~
 
-    #  An API session must not...                      Enforced by  Mechanism                                                                                 
-  ------------------------------------------------------------------------------------------------------------------------------------------------------------
-    1  register any credential                         *package*    `registrationOptions' / `verifyRegistration' refuse a non-interactive authorizing session 
-    2  authenticate at a browser endpoint              *package*    challenge-scoped `credentialKinds'; non-interactive kinds excluded by default             
-    3  revoke a credential other than its own          host         gate on `session.credentialKind'                                                          
-    4  revoke sessions other than its own              host         same                                                                                      
-    5  issue or exchange an enrollment grant           host         see below --- the escalation this one prevents                                            
-    6  satisfy a step-up gate for a human operation    host         step-up checks *kind and freshness*, not freshness alone                                  
-    7  receive a session cookie                        host         machine routes never `Set-Cookie'                                                         
-    8  enumerate the user's other credentials          host         `listCredentials' is privileged                                                           
-    9  change account settings, channels, or recovery  host         account-takeover surface                                                                  
-   10  count as the user's last credential             *package*    kind-scoped last-credential guard                                                         
-   11  present a bare Bearer token                     *package*    per-kind `requireDpop'                                                                    
-   12  hold a long session                             *package*    per-kind `sessionAbsoluteMs'                                                              
-   13  authenticate without being distinguishable      *package*    `credentialKind' on `credential.authenticated' and `session.created'                      
+    #  An API session must not...                      Enforced by  Mechanism                                                                                       
+  ------------------------------------------------------------------------------------------------------------------------------------------------------------------
+    1  register any credential                         *package*    `registrationOptions' / `verifyRegistration' refuse a non-interactive authorizing session       
+    2  authenticate at a browser endpoint              *package*    challenge-scoped `credentialKinds'; non-interactive kinds excluded by default                   
+    3  revoke a credential other than its own          host         gate on `session.credentialKind'                                                                
+    4  revoke sessions other than its own              host         same                                                                                            
+    5  issue or exchange an enrollment grant           host         see below --- the escalation this one prevents                                                  
+    6  satisfy a step-up gate for a human operation    host         step-up checks *kind and freshness*, not freshness alone                                        
+    7  receive a session cookie                        host         machine routes never `Set-Cookie'                                                               
+    8  enumerate the user's other credentials          host         `listCredentials' is privileged                                                                 
+    9  change account settings, channels, or recovery  host         account-takeover surface                                                                        
+   10  count as the user's last credential             *package*    kind-scoped last-credential guard                                                               
+   11  present a bare Bearer token                     host         resolve machine routes through `authenticateMachineRequest', which always requires a DPoP proof 
+   12  hold a long session                             *package*    per-kind `sessionAbsoluteMs'                                                                    
+   13  authenticate without being distinguishable      *package*    `credentialKind' on `credential.authenticated' and `session.created'                            
 
 
 6.2 Rule 5 is the one that actually bites
@@ -719,11 +719,12 @@ _________________
   |     service: {
   |       interactive: false,        // excluded from authenticationOptions() by default
   |       canRegister: false,        // rule 1
-  |       requireDpop: true,         // rule 11
   |       sessionAbsoluteMs: 15 * 60_000,   // rule 12
   |     },
   |   },
   | });
+  | // Rule 11 is enforced at the route, not by config: a machine route calls
+  | // authenticateMachineRequest(), which always requires a DPoP proof.
   `----
 
   Undeclared kinds -- including `null' -- behave exactly as today, so

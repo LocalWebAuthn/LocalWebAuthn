@@ -82,16 +82,31 @@ Private keys live in exactly two places, neither of which is this package:
 
 ## What A Disclosure Costs
 
-| Disclosure                               | What the attacker gains                                                                                                                            |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| the whole server database, read-only     | **nothing usable** — public keys, digests, metadata                                                                                                |
-| a database backup from any point in time | nothing usable, then or ever — public keys do not become interesting with age                                                                      |
-| server logs, traces, crash dumps         | nothing usable — no reusable secret ever crosses the process                                                                                       |
-| a live session cookie                    | that one session, until it expires or `revokeSession` / `revokeUserSessions` ends it                                                               |
-| a live machine session token             | nothing on its own — each request also needs a DPoP proof signed by the credential's key                                                           |
-| an unredeemed enrollment link            | one passkey on that account. A real bearer capability — hence single-use, minutes long, and delivered on a channel the host chooses                |
-| a script's credential file               | that one credential, until `revokeCredential`; the heritage columns record what it created                                                         |
-| **write** access to the database         | everything — an attacker can insert their own public key. Read disclosure and write compromise are different events, and only the first is bounded |
+| Disclosure                               | What the attacker gains                                                                                                                                           |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| the whole server database, read-only     | **nothing usable** — public keys, digests, metadata                                                                                                               |
+| a database backup from any point in time | nothing usable, then or ever — public keys do not become interesting with age                                                                                     |
+| a live session cookie                    | that one session, until it expires or `revokeSession` / `revokeUserSessions` ends it                                                                              |
+| a live machine session token             | nothing on its own — a request also needs a DPoP proof signed by the credential's key, and a token without the key cannot even keep the session alive (see below) |
+| an unredeemed enrollment link            | one passkey on that account. A real bearer capability — hence single-use, minutes long, and delivered on a channel the host chooses                               |
+| a script's credential file               | that one credential, until `revokeCredential`; the heritage columns record what it created                                                                        |
+| **write** access to the database         | everything — an attacker can insert their own public key. Read disclosure and write compromise are different events, and only the first is bounded                |
+
+**The database rows above are what is durable and non-authenticating.** Raw bearer tokens are
+a different matter: LocalWebAuthn does not intentionally log or persist them, but they are
+generated and received by the server process and returned through HTTP, so a crash dump, a
+verbose trace, or an APM span captured **during a request** can contain a session token, an
+enrollment token, a live challenge, or an `Authorization`/`Cookie` header. That is a
+live-process and observability concern, distinct from database-at-rest disclosure, and it is
+the host's to manage: redact `Authorization`, `Cookie`, `Set-Cookie`, enrollment values and
+URL fragments from logs and traces, and disable or encrypt production crash dumps.
+
+The machine-session-token guarantee holds **when the host resolves machine requests through
+`authenticateMachineRequest`** (or an equivalent that verifies the DPoP proof before touching
+the session). That one call derives the session from the token, requires a proof, and refreshes
+the session's activity only after the proof succeeds — so a token-only thief can neither make a
+request nor keep the session alive. Resolving the session first with the default activity touch,
+and verifying the proof afterward, reopens the idle-refresh side channel; do not.
 
 Two things this does **not** claim. A compromised server can alter code and hijack future
 sessions; no storage property helps there. And recovery is where a passkey deployment can end
@@ -178,16 +193,21 @@ The SQLite adapter enables `PRAGMA foreign_keys = ON` for the connection it is g
 (in both `migrateSqlite` and the store constructor). Keep using that same connection so
 schema foreign keys stay enforced.
 
-## D1 Batch Non-Atomicity
+## D1 Batch Transactions
 
-The Cloudflare D1 adapter uses `batch()` to execute multiple statements. Unlike the
-SQLite adapter's explicit transactions, D1 batches are **not atomic** — each statement
-commits independently. A rare concurrent-failure scenario in `completeRegistration` can
-leave a credential row without its initial session when a later statement in the batch
-fails after the credential INSERT committed.
+The Cloudflare D1 adapter runs each multi-statement operation as one `batch()`, which D1
+executes as a single transaction: "If a statement in the sequence fails, then an error is
+returned for that specific statement, and it aborts or rolls back the entire sequence"
+([Cloudflare D1 Worker API](https://developers.cloudflare.com/d1/worker-api/d1-database/)).
+So `completeRegistration` on D1 commits the credential, the grant completion and the initial
+session together, or not at all — the same all-or-nothing outcome the SQLite and PostgreSQL
+adapters get from an explicit transaction. The row-count guard the D1 adapter carries
+(the `localwebauthn_transaction_guard` CHECK) is a compare-and-swap check, not a substitute
+for atomicity: a guard that trips fails its statement and rolls the whole batch back.
 
-That row remains a normal passkey: the next successful authentication creates a session.
-There is no separate “orphan credential” cleanup path.
+(Earlier releases of this document described D1 batches as non-atomic and warned of an
+"orphan credential without a session." That was based on outdated behaviour; current D1
+rolls the batch back, so that outcome does not occur.)
 
 ## Enrollment Invariant
 
@@ -196,13 +216,26 @@ enrollment session. Replacing an enrollment grant revokes the prior grant and em
 `enrollment.revoked` event.
 
 Credential creation, exact-grant completion, and session creation are committed as one
-transaction by the SQLite and PostgreSQL adapters. The D1 adapter cannot open a
-transaction and instead guards each step on the preceding statement's row count; see
-[D1 Batch Non-Atomicity](#d1-batch-non-atomicity) above for what that does and does not
-guarantee. On SQLite and PostgreSQL, a registration that loses its authorization
-mid-flight rolls back completely. On D1, a mid-batch failure after the credential INSERT
-can leave a usable credential without an initial session — the user signs in again rather
-than being auto-logged-in. No cleanup step is required to reconcile that state.
+transaction by all three adapters — SQLite and PostgreSQL through explicit transactions, D1
+through a single [batch transaction](#d1-batch-transactions). A registration that loses its
+authorization mid-flight rolls back completely on every adapter, so there is no partial or
+orphaned state to reconcile.
+
+## Compromise Revocation Is Bounded, Not Instantaneous
+
+`revokeCredentialTree` and the kind-scoped `revokeUserAuthentication` are the remediation
+primitives for a compromised credential: they revoke a credential and everything descended
+from it. They re-enumerate to a fixed point, so a credential registered **concurrently** with
+the revoke — by a live session racing it — is caught on re-read rather than surviving a stale
+snapshot, and a batch of registrations pre-staged against a credential all fail once that
+credential is revoked (the conditional insert requires the authorizer's `revoked_at IS NULL`).
+
+The bound is honest: an attacker who wins the registration race in _every_ pass is not fully
+fenced by re-enumeration alone. A complete guarantee needs a registration epoch that a single
+revoke invalidates (tracked in [docs/REVIEW-20260809.md](docs/REVIEW-20260809.md) §3). Until
+that lands, a host performing incident response should also stop accepting registrations for
+the affected user — the surest fence is to remove the authority to register at all while
+remediating.
 
 ## Non-Goals
 

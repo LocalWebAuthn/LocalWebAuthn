@@ -87,11 +87,13 @@ await migrateD1(env.DB);
 // store: new D1LocalWebAuthnStore(env.DB)
 #+end_src
 
-D1 cannot open a transaction.  The adapter uses =batch()= and guards each statement on the
-preceding row count, which is not the same thing: a mid-batch failure after the credential
-=INSERT= can leave a credential without its initial session.  That row is a normal passkey
---- the next sign-in creates a session --- and no cleanup reconciles it.  See
-[[./SECURITY.md][SECURITY.md]] D1 Batch Non-Atomicity.
+D1 runs each multi-statement operation as one =batch()=, which D1 executes as a single
+transaction --- a failing statement rolls the whole sequence back
+([[https://developers.cloudflare.com/d1/worker-api/d1-database/][Cloudflare D1 Worker API]]).
+So a registration commits the credential, grant completion and initial session together or
+not at all, the same all-or-nothing the transactional adapters give.  =migrateD1= is
+version-aware like the others: it reads the stored schema version and applies only the
+missing upgrades, in one batch.  See [[./SECURITY.md][SECURITY.md]] D1 Batch Transactions.
 
 ** Maintenance
 
@@ -235,6 +237,13 @@ be forbidden --- and afterwards the attacker's credential is indistinguishable f
 legitimate one.  Revoking the subtree is the only remedy.  It revokes with
 =allowLastCredential= and may empty the account: stopping short would leave a half-revoked
 tree, which after a compromise is worse than re-enrolling.
+
+It re-enumerates to a fixed point rather than revoking a single snapshot, so a credential
+registered *while* the revoke runs --- by a live session racing it --- is caught on re-read.
+The bound is honest, and stated in [[./SECURITY.md][SECURITY.md]]: an attacker who wins the
+registration race in every pass is not fully fenced by re-enumeration alone, so during
+incident response also stop accepting registrations for the user.  The complete fix is a
+registration epoch, tracked in [[./docs/REVIEW-20260809.md][the review]].
 
 Unscoped, it crosses kinds, and that is usually a surprise worth knowing: every API
 credential a person provisions has *their passkey* as its parent, so revoking a suspected
@@ -417,11 +426,27 @@ Two limits to internalise:
 The full design is [[./docs/API-AUTH.org][docs/API-AUTH.org]]; [[./README.org][README.org]]
 "A Passkey for a script" is the working code.  What belongs here is the operational surface.
 
-=verifyDpop= verifies an [[https://www.rfc-editor.org/rfc/rfc9449.html][RFC 9449]] proof
-against the session's credential.  There is no per-session key material: the expected
-thumbprint is *derived* from =credentials.public_key=, so the per-request check reduces to
-"signed by the same key that opened this session".  The only new state is a =jti= replay
-cache.
+*A machine route should call =authenticateMachineRequest=, not assemble the check by hand.*
+It takes the raw token, derives the session from it, requires a DPoP proof, and refreshes the
+session's activity only after the proof holds --- one fail-closed operation:
+
+#+begin_src ts
+const { user, session, nonce } = await auth.authenticateMachineRequest({
+  sessionToken, proof: request.header('DPoP'), method, url, requireNonce: true,
+});
+#+end_src
+
+That ordering matters.  Resolving the session first with the default activity touch, then
+verifying the proof, would let a thief holding only the bearer token keep the session alive to
+absolute expiry without ever signing a proof.  =authenticateMachineRequest= closes that: a
+request that cannot prove possession changes no server state, and because the session comes
+from the token there is no way to pair a token with a different resolved session.
+
+=verifyDpop= is the lower-level primitive it is built on; verify a proof against an
+already-resolved session only if you cannot use the higher-level method.  Either way there is
+no per-session key material: the expected thumbprint is *derived* from =credentials.public_key=,
+so the per-request check reduces to "signed by the same key that opened this session".  The
+only new state is a =jti= replay cache.
 
 Server-issued nonces are opt-in, because they cost the client something real --- it must
 retain the latest =DPoP-Nonce= and retry once when challenged:
