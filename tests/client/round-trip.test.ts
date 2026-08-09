@@ -1290,3 +1290,84 @@ describe('compromise revocation and the registration race', () => {
     database.close();
   });
 });
+
+describe('revocation that cannot converge fails loudly', () => {
+  // A logged warning is not an API contract. If credentials keep appearing as fast
+  // as they are revoked, the caller — who is responding to a compromise — must not
+  // receive a normal return that looks like "remediation finished".
+  it('throws revocation_not_converged instead of reporting success', async () => {
+    const database = new Database(':memory:');
+    migrateSqlite(database);
+    const realStore = new SqliteLocalWebAuthnStore(database);
+    const user: AuthUser = {
+      id: 'user-1',
+      name: 'person@example.test',
+      displayName: 'A Person',
+      active: true,
+      webAuthnUserHandle: createUserHandle(),
+    };
+
+    // Insert a fresh active credential on *every* enumeration, so no pass is ever
+    // quiet. This is the pathological attacker who wins the race each round.
+    let injected = 0;
+    const store = new Proxy(realStore, {
+      get(target, property, receiver) {
+        if (property === 'credentialDescendants') {
+          return async (...args: Parameters<typeof target.credentialDescendants>) => {
+            const snapshot = await target.credentialDescendants(...args);
+            if (snapshot.length > 0) {
+              const parent = snapshot[0];
+              injected += 1;
+              database
+                .prepare(
+                  `INSERT INTO localwebauthn_credentials(
+                     id, user_id, public_key, device_type, label, kind,
+                     created_via, parent_credential_id, created_at
+                   ) VALUES (?, 'user-1', ?, 'singleDevice', ?, NULL, 'session', ?, ?)`,
+                )
+                .run(
+                  `injected-${String(injected)}`,
+                  new Uint8Array(9).fill(9),
+                  `injected-${String(injected)}`,
+                  parent.id,
+                  Date.now(),
+                );
+              // Re-read so the newcomer is part of this pass's frontier.
+              return target.credentialDescendants(...args);
+            }
+            return snapshot;
+          };
+        }
+        const value: unknown = Reflect.get(target, property, receiver);
+        return typeof value === 'function'
+          ? (value as (...a: unknown[]) => unknown).bind(target)
+          : value;
+      },
+    }) as unknown as typeof realStore;
+
+    const events: LocalWebAuthnEvent[] = [];
+    const auth = new LocalWebAuthn({
+      rpName: 'Round Trip',
+      rpId: RP_ID,
+      expectedOrigins: ORIGIN,
+      store,
+      users: { getUser: async (id) => (id === user.id ? user : null) },
+      onEvent: (event) => {
+        events.push(event);
+      },
+      logger: { ...console, warn: () => undefined },
+    });
+
+    const root = await bootstrap(auth, undefined, 'root');
+    await expect(
+      auth.revokeCredentialTree('user-1', root.verified.credentialId),
+    ).rejects.toMatchObject({ code: 'revocation_not_converged', status: 503 });
+
+    // It did real work before giving up, and said so rather than claiming success.
+    expect(injected).toBeGreaterThan(1);
+    const all = await auth.listCredentials('user-1', true);
+    expect(all.filter((credential) => credential.revokedAt !== null).length).toBeGreaterThan(1);
+
+    database.close();
+  });
+});

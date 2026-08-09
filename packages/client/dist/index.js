@@ -406,6 +406,16 @@ var MachineClientError = class extends Error {
     this.status = status;
   }
 };
+function dpopRejection(response) {
+  const challenges = response.headers.get("WWW-Authenticate") ?? "";
+  if (!/(?:^|[\s,])DPoP\b/iu.test(challenges)) {
+    return null;
+  }
+  if (/error\s*=\s*"?use_dpop_nonce"?/iu.test(challenges)) {
+    return response.headers.get("DPoP-Nonce") ? "nonce" : null;
+  }
+  return "session";
+}
 var DEFAULT_ENDPOINTS = {
   options: "/api/machine/v1/login/options",
   verify: "/api/machine/v1/login/verify"
@@ -490,20 +500,65 @@ var MachineClient = class {
   /**
    * Call an API endpoint, authenticating first if needed.
    *
-   * Retries once on `401`, which covers both an expired session and a server that
-   * has started demanding a `DPoP-Nonce` — in the latter case the retry carries
-   * the nonce the failing response supplied.
+   * Retries a `401` **only** when the response positively identifies itself as an
+   * authentication rejection made *before* the application handler ran:
+   *
+   * - an RFC 9449 nonce challenge — `WWW-Authenticate: DPoP …
+   *   error="use_dpop_nonce"` — which the DPoP middleware emits instead of
+   *   dispatching. The retry carries the supplied nonce and a fresh proof.
+   * - a bare `WWW-Authenticate: DPoP` challenge with no nonce error, which means
+   *   the session itself was refused; the retry re-authenticates first.
+   *
+   * Any other `401` is returned as-is. That matters more than it looks: a `401`
+   * from the application's *own* handler carries no promise that the handler did
+   * no work, and this client previously retried on any `401` that happened to
+   * carry a `DPoP-Nonce` header — which authenticated responses legitimately do,
+   * since the server rotates the nonce forward on success. A `POST` that failed
+   * authorization after taking effect would have been sent twice. HTTP status is
+   * not evidence of non-execution; the challenge header is.
+   *
+   * A retried request re-sends `init` unchanged, so a one-shot body (a
+   * `ReadableStream`) cannot be replayed — pass `bodyFactory` to rebuild it, or the
+   * retry is refused rather than silently sending a consumed body. Strings, byte
+   * arrays and other reusable bodies need nothing.
    */
   async fetch(path, init = {}) {
-    const first = await this.#send(path, init);
+    const { bodyFactory, ...request } = init;
+    const first = await this.#send(path, request);
     if (first.status !== 401) {
       return first;
     }
     this.#captureNonce(first);
-    if (!first.headers.get("DPoP-Nonce")) {
+    const rejection = dpopRejection(first);
+    if (!rejection) {
+      return first;
+    }
+    if (rejection === "session") {
       this.#session = null;
     }
-    return this.#send(path, init);
+    const retry = this.#retryBody(request, bodyFactory);
+    if (retry === null) {
+      throw new MachineClientError(
+        "body_not_replayable",
+        "The server asked for a retry, but this request body cannot be resent. Pass bodyFactory to rebuild it.",
+        first.status
+      );
+    }
+    return this.#send(path, retry);
+  }
+  /** `init` for a retry, or `null` when the body cannot be produced again. */
+  #retryBody(init, bodyFactory) {
+    if (bodyFactory) {
+      return { ...init, body: bodyFactory() };
+    }
+    const body = init.body;
+    if (body === void 0 || body === null || typeof body === "string") {
+      return init;
+    }
+    if (body instanceof ArrayBuffer || ArrayBuffer.isView(body) || body instanceof URLSearchParams || typeof Blob !== "undefined" && body instanceof Blob || typeof FormData !== "undefined" && body instanceof FormData) {
+      return init;
+    }
+    return null;
   }
   async #send(path, init) {
     const session = await this.#liveSession();

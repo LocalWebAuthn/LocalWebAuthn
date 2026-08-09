@@ -37,15 +37,28 @@ idea.  Deeper treatment of every option lives in the two detail documents:
 
 * There is no secret to steal
 
-*LocalWebAuthn never possesses private key material.*  Not on the server, not in either
-client package, not in transit, not in a log, not in a backup.  There is no moment in any
-flow at which a private key passes through code in this repository --- which is why no bug in
-this repository can leak one.
+*=@localwebauthn/server= never receives or stores credential private keys.*  Its durable state
+is public credential material and one-way token digests.  Nothing in any flow gives the server
+a private key, so no bug in the server package can leak one --- which is not a claim about how
+carefully it was written, but a property of where the keys live: the authenticator generates
+the key pair and keeps the private half, and the only things the relying party ever receives
+are a public key and signatures over challenges it chose itself.
 
-That is not a claim about how carefully this code was written.  It is a property of where the
-keys live: the authenticator generates the key pair and keeps the private half, and the only
-things the relying party ever receives are a public key and signatures over challenges it
-chose itself.
+Three custody questions are separate, and this document keeps them separate:
+
+- *Server persistence* --- none, as above.  This is the property a database breach tests.
+- *Transient possession* --- a human's passkey is never touched by our code at all
+  (=@localwebauthn/browser= hands the ceremony to the browser).  The *optional* pieces are
+  different: =@localwebauthn/client= imports a script's private key to sign with it, and the
+  demo's browser minting page generates and displays one.  Both handle exportable key material
+  in process for as long as they run.
+- *Client keystore* --- where a script's key comes to rest is the operator's choice: a
+  =chmod 0600= file, or a platform keystore holding it non-exportably.
+
+So the honest one-line version is *the server has no private key to lose, and no human
+passkey ever reaches our code* --- not that the repository never touches a private key.  If
+you issue API credentials, [[./docs/API-AUTH.org][docs/API-AUTH.org]] covers custody options
+including keeping the key in a TPM or Secure Enclave so no file holds it.
 
 ** What the server stores
 
@@ -73,21 +86,25 @@ and a digest of a 256-bit random token has no shortcut.
 
 ** What lives on the client
 
-Private keys do exist.  They live in exactly two places, neither of which is code in this
-project:
+Private keys do exist, and they come to rest in two places:
 
-- *A person's passkey* lives in the platform's own keystore --- a secure element, a TPM, a
-  hardware key, or a password manager the user already trusts with everything else.  For
-  device-bound credentials the key is non-exportable in hardware.  For synced platform
-  passkeys the provider protects it with the user's account and device unlock, and is still
-  not an identity provider for your application: it never hands LocalWebAuthn a key.
-  =@localwebauthn/browser= never touches key material at all --- the browser performs the
+- *A person's passkey* is held by a WebAuthn authenticator --- a secure element, a TPM, a
+  hardware key, or a password manager the user already trusts with everything else.  How well
+  it is protected is a property of *that* authenticator, not of this project: WebAuthn permits
+  hardware, software, platform, roaming and synced credentials, and a backup-eligible
+  credential may be synchronized or recovered by its provider (Apple's passkeys, for instance,
+  sync through end-to-end-encrypted iCloud Keychain).  What is universal is that the provider
+  is not an identity provider for your application and never hands LocalWebAuthn a key ---
+  =@localwebauthn/browser= touches no key material at all, because the browser performs the
   ceremony.
-- *A script's Passkey* lives in the one file the operator provisioned: a =.env=, or a
-  reference to a platform keystore.  =@localwebauthn/client= reads it and keeps it in process
-  memory, and never writes it anywhere.  The mint page shows it exactly once and the server
-  keeps only the public half, so there is one copy, in one place, whose custody is a decision
-  you made rather than a default you inherited.
+- *A script's Passkey* comes to rest wherever the operator put it: a =.env= file, or a
+  reference to a platform keystore that holds it non-exportably.  =@localwebauthn/client=
+  reads it and keeps it in process memory to sign with; it writes it nowhere.  The mint page
+  displays it once and the server keeps only the public half, so the operator's copy is the
+  authoritative one --- but "once" describes the page, not the world: a value that reached a
+  clipboard, a Downloads folder, a terminal scrollback or a backup has copies this project
+  cannot see or erase.  Browser minting is an exportable-key *compatibility* path; generating
+  the key on the target machine avoids the transfer entirely.
 
 The user's side of the bargain is small and worth stating plainly: create human passkeys
 through the platform's own facility, and save a script's credential file where a secret
@@ -655,18 +672,26 @@ key, which is what makes a stolen session token useless on its own.  The server 
 nothing per session for this: the expected key thumbprint is derived from the credential's
 stored public key.
 
-Server side, the machine guard is =resolveSession= plus one call:
+Server side, the machine guard is *one* call.  Do not resolve the session first: that is the
+whole point of =authenticateMachineRequest=, which derives the session from the token, demands
+a proof, and refreshes the session's activity only after the proof holds.
 
 #+begin_src ts
 import { dpopChallenge, isLocalWebAuthnError } from '@localwebauthn/server';
 
+const header = c.req.header('Authorization') ?? '';
+const token = /^(?:DPoP|Bearer) (?<token>[A-Za-z0-9_-]+)$/u.exec(header)?.groups?.token;
+if (!token) {
+  return c.json({ error: 'unauthenticated' }, 401);
+}
+
+let authenticated;
 try {
-  await auth.verifyDpop({
+  authenticated = await auth.authenticateMachineRequest({
+    sessionToken: token,
     proof: c.req.header('DPoP'),
     method: c.req.method,
     url: c.req.url,
-    sessionToken: token,
-    session: resolved.session,
     requireNonce: true,
   });
 } catch (error) {
@@ -674,9 +699,27 @@ try {
     // RFC 9449 #8: hand out a nonce and let the client retry once.
     return c.json({ error: error.code }, 401, dpopChallenge(await auth.dpopNonce()));
   }
+  // Every other proof failure is one generic outcome: the reason (wrong key,
+  // replayed, bad signature) belongs in your log, never in the response.
+  if (isLocalWebAuthnError(error) && error.status === 401) {
+    return c.json({ error: 'unauthenticated' }, 401);
+  }
   throw error;
 }
+
+// The kind is a server row, so check it rather than anything the client said.
+if (authenticated.session.credentialKind !== 'service') {
+  return c.json({ error: 'forbidden' }, 403);
+}
+if (authenticated.nonce) {
+  c.header('DPoP-Nonce', authenticated.nonce); // rotate the client forward
+}
 #+end_src
+
+Had that been =resolveSession= followed by =verifyDpop=, a thief holding only the bearer token
+would keep the session's idle timer alive on every rejected request --- =resolveSession=
+refreshes activity by default.  =verifyDpop= remains available as the lower-level primitive
+for hosts that have already resolved a session *without* touching it; prefer the method above.
 
 Nonces are opt-in because they cost the client something real --- it must retain the latest
 =DPoP-Nonce= and retry when challenged.  =MachineClient= already does both.
@@ -687,11 +730,19 @@ Nonces are opt-in because they cost the client something real --- it must retain
 |----------------------------------------------+------------------------------------------------------------------------|
 | the =.env= leaks                             | revoke that one credential; nothing else changes                       |
 | a stolen session token is replayed           | every request needs a DPoP proof from the credential's key             |
-| a captured proof is replayed                 | the =jti= is single-use; =htm=, =htu= and =ath= bind it to one request |
+| a captured proof is replayed                 | the =jti= is single-use, and =htm=, =htu= and =ath= tie it to that method, target URI and token |
 | a leaked key mints itself a spare            | =canRegister: false=                                                   |
 | a script signs in at the browser route       | =interactive: false=                                                   |
 | a script calls a cookie route with its token | your =interactiveKind= check                                           |
 | the server database is read                  | it holds a public key; no secret to steal                              |
+
+*What DPoP does not do.*  It sender-constrains the token; it is not an HTTP message signature.
+RFC 9449's =htu= is the target URI with *query and fragment removed*, and nothing covers the
+body --- so two requests to the same method and path with different query strings or bodies
+share every bound component.  TLS is still required, ordinary authorization still applies, and
+if you need exact body integrity add a content digest or use
+[[https://www.rfc-editor.org/rfc/rfc9421.html][RFC 9421]] message signatures.  Never put an
+authorization-significant distinction only in a query parameter.
 
 The full design --- every byte of both flows, key custody options from a file to a TPM, and
 the reasoning behind each restriction --- is

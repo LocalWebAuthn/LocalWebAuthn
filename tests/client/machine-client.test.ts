@@ -39,8 +39,25 @@ type Call = { url: string; method: string; headers: Headers };
  * A stub server that completes the ceremony and then answers API calls.
  *
  * `apiStatus` lets a test make the first API call fail so the retry path runs.
+ * `challenge` controls the `WWW-Authenticate` header on a 401, because that header
+ * — not the status, and not an incidental `DPoP-Nonce` — is what marks a response
+ * as an authentication refusal made before the application handler ran:
+ *
+ * - `'nonce'` (default when a nonce is set): the RFC 9449 nonce challenge.
+ * - `'session'`: a bare DPoP challenge, i.e. the session was refused.
+ * - `'none'`: no challenge at all — an application's own 401.
+ *
+ * `alwaysNonce` models the real server behaviour of rotating the nonce forward on
+ * *every* response, including ones the application rejected.
  */
-function stubServer(options: { apiStatus?: (call: number) => number; nonce?: string } = {}) {
+function stubServer(
+  options: {
+    apiStatus?: (call: number) => number;
+    nonce?: string;
+    challenge?: 'nonce' | 'session' | 'none';
+    alwaysNonce?: boolean;
+  } = {},
+) {
   const calls: Call[] = [];
   let apiCalls = 0;
   let sessions = 0;
@@ -67,8 +84,15 @@ function stubServer(options: { apiStatus?: (call: number) => number; nonce?: str
     apiCalls += 1;
     const status = options.apiStatus?.(apiCalls) ?? 200;
     const headers = new Headers();
-    if (status === 401 && options.nonce) {
+    if (options.nonce && (status === 401 || options.alwaysNonce)) {
       headers.set('DPoP-Nonce', options.nonce);
+    }
+    const challenge = options.challenge ?? (options.nonce ? 'nonce' : 'session');
+    if (status === 401 && challenge !== 'none') {
+      headers.set(
+        'WWW-Authenticate',
+        challenge === 'nonce' ? 'DPoP error="use_dpop_nonce"' : 'DPoP',
+      );
     }
     return new Response(JSON.stringify({ ok: status === 200, apiCalls }), { status, headers });
   });
@@ -163,6 +187,110 @@ describe('MachineClient', () => {
       ),
     ) as { nonce?: string };
     expect(claims.nonce).toBe('server-nonce-1');
+  });
+
+  it('does not replay an application 401 that merely carries a nonce', async () => {
+    // The bug this guards: the server rotates DPoP-Nonce onto *successful*
+    // authenticated responses, so a 401 from the application's own handler carries
+    // one too. Retrying on that header alone re-sent the request — and a POST whose
+    // handler had already taken effect would run twice.
+    const server = stubServer({
+      apiStatus: () => 401,
+      nonce: 'server-nonce-1',
+      alwaysNonce: true,
+      challenge: 'none',
+    });
+    const client = new MachineClient({ payload: payloadFor(), keyStore, fetch: server.fetchStub });
+
+    const response = await client.fetch('/api/transfer', { method: 'POST', body: '{"amount":1}' });
+
+    expect(response.status).toBe(401);
+    // Exactly one dispatch of the operation, and no re-authentication.
+    const apiCalls = server.calls.filter((call) => !call.url.includes('/login/'));
+    expect(apiCalls).toHaveLength(1);
+    expect(server.sessionCount()).toBe(1);
+  });
+
+  it('retries a POST once on an exact nonce challenge, dispatching it a second time', async () => {
+    // The opposite case: a genuine RFC 9449 nonce challenge is produced *before*
+    // the handler runs, so the operation never executed and retrying a POST is safe
+    // regardless of idempotency.
+    const server = stubServer({
+      apiStatus: (call) => (call === 1 ? 401 : 200),
+      nonce: 'server-nonce-1',
+      challenge: 'nonce',
+    });
+    const client = new MachineClient({ payload: payloadFor(), keyStore, fetch: server.fetchStub });
+
+    const response = await client.fetch('/api/transfer', { method: 'POST', body: '{"amount":1}' });
+    expect(response.status).toBe(200);
+    expect(server.sessionCount()).toBe(1);
+
+    const apiCalls = server.calls.filter((call) => !call.url.includes('/login/'));
+    expect(apiCalls).toHaveLength(2);
+    // A fresh proof identifier on the retry, or the server's replay cache refuses it.
+    const proofs = apiCalls.map((call) => call.headers.get('DPoP'));
+    expect(new Set(proofs).size).toBe(2);
+  });
+
+  it('stops after one retry when the server challenges again', async () => {
+    const server = stubServer({ apiStatus: () => 401, nonce: 'n', challenge: 'nonce' });
+    const client = new MachineClient({ payload: payloadFor(), keyStore, fetch: server.fetchStub });
+
+    const response = await client.fetch('/api/reports');
+    expect(response.status).toBe(401);
+    expect(server.calls.filter((call) => !call.url.includes('/login/'))).toHaveLength(2);
+  });
+
+  it('refuses to retry a one-shot stream body, and accepts a factory for one', async () => {
+    const streamBody = () =>
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"amount":1}'));
+          controller.close();
+        },
+      });
+
+    // Without a factory the first attempt has already consumed the stream, so a
+    // retry would silently transmit nothing. Fail instead.
+    const refusing = stubServer({ apiStatus: (call) => (call === 1 ? 401 : 200), nonce: 'n' });
+    const client = new MachineClient({
+      payload: payloadFor(),
+      keyStore,
+      fetch: refusing.fetchStub,
+    });
+    await expect(
+      client.fetch('/api/transfer', {
+        method: 'POST',
+        body: streamBody(),
+        duplex: 'half',
+      } as RequestInit),
+    ).rejects.toMatchObject({ code: 'body_not_replayable' });
+
+    // With a factory the retry rebuilds the body and succeeds.
+    const accepting = stubServer({ apiStatus: (call) => (call === 1 ? 401 : 200), nonce: 'n' });
+    const withFactory = new MachineClient({
+      payload: payloadFor(),
+      keyStore,
+      fetch: accepting.fetchStub,
+    });
+    const response = await withFactory.fetch('/api/transfer', {
+      method: 'POST',
+      body: streamBody(),
+      duplex: 'half',
+      bodyFactory: () => '{"amount":1}',
+    } as RequestInit & { bodyFactory: () => BodyInit });
+    expect(response.status).toBe(200);
+  });
+
+  it('resends a reusable string body unchanged on a classified retry', async () => {
+    const server = stubServer({ apiStatus: (call) => (call === 1 ? 401 : 200), nonce: 'n' });
+    const client = new MachineClient({ payload: payloadFor(), keyStore, fetch: server.fetchStub });
+    const response = await client.fetch('/api/transfer', { method: 'POST', body: '{"amount":1}' });
+    expect(response.status).toBe(200);
+    expect(
+      server.calls.filter((call) => call.method === 'POST' && !call.url.includes('/login/')),
+    ).toHaveLength(2);
   });
 
   it('reports a server error as MachineClientError', async () => {

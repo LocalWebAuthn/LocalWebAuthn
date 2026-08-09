@@ -202,6 +202,12 @@ export function requireMachineSession(
       return context.json(
         { error: 'unauthenticated', message: 'An API session is required.' },
         401,
+        {
+          // RFC 9449: a DPoP-protected resource advertises its scheme when refusing.
+          // It is also the signal a client needs to tell "authentication rejected this
+          // before the handler ran" from "the handler itself returned 401".
+          'WWW-Authenticate': 'DPoP',
+        },
       );
     }
 
@@ -233,7 +239,11 @@ export function requireMachineSession(
       // reason (wrong key, replayed, bad signature) goes to server logs only, never
       // to the caller, so a prober learns nothing from the distinctions.
       if (isLocalWebAuthnError(error) && error.status === 401) {
-        return context.json({ error: 'unauthenticated', message: 'Authentication failed.' }, 401);
+        // One generic body, plus the DPoP challenge that marks this as a
+        // pre-dispatch refusal so a client may safely re-authenticate and retry.
+        return context.json({ error: 'unauthenticated', message: 'Authentication failed.' }, 401, {
+          'WWW-Authenticate': 'DPoP',
+        });
       }
       return errorResponse(context, error);
     }

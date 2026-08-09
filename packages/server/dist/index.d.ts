@@ -152,7 +152,15 @@ type LocalWebAuthnErrorCode = 'invalid_configuration' | 'invalid_enrollment' | '
  * error="use_dpop_nonce"` and a fresh `DPoP-Nonce` header, which the client
  * echoes on its retry.
  */
- | 'dpop_nonce_required';
+ | 'dpop_nonce_required'
+/**
+ * A revocation could not be shown to have finished: credentials kept appearing
+ * as fast as they were revoked, so the operation stopped at its pass bound
+ * without reaching a quiet state. Some credentials *were* revoked. Treat this
+ * as remediation **not** complete — suspend the user's ability to register
+ * (or deactivate the user via `getUser`) and retry.
+ */
+ | 'revocation_not_converged';
 declare class LocalWebAuthnError extends Error {
     readonly code: LocalWebAuthnErrorCode;
     readonly status: number;
@@ -573,6 +581,17 @@ declare class LocalWebAuthn {
      * legal member and matches unclassified credentials.
      *
      * @param options.kinds - Revoke only credentials of these {@link Credential.kind} values.
+     * Re-enumerates until a pass revokes nothing, so a credential registered
+     * *concurrently* with this call is caught rather than surviving a stale snapshot.
+     * Unscoped, that is conclusive — every authority in the subtree is revoked, so
+     * nothing remains that could author another. **With `kinds`, it is not:** a
+     * spared credential still permitted to register can create a fresh in-scope
+     * credential just after the final enumeration. Suspend registration for the user
+     * (or deactivate them through `getUser`) while remediating a compromise.
+     *
+     * Throws `revocation_not_converged` (503) if credentials keep appearing until the
+     * pass bound — remediation is then incomplete, and some credentials were revoked.
+     *
      * @returns IDs actually revoked, root first. Already-revoked ones are skipped.
      */
     revokeCredentialTree(userId: string, credentialId: string, options?: {
@@ -613,6 +632,15 @@ declare class LocalWebAuthn {
      *   authenticates as this user, so `{ kinds: ['person'] }` does *not* stop the
      *   account being used — it stops the person's own devices being used. Suspend
      *   the user through `getUser` returning `active: false` if that is the intent.
+     *
+     * **The scoped form is administrative revocation, not complete remediation.** It
+     * revokes to a fixed point, so a credential registered concurrently is caught
+     * rather than missed — but it deliberately spares other kinds, and a spared
+     * credential that may still register can create a fresh in-scope credential just
+     * after the final enumeration. For a compromise, use the unscoped form (which
+     * leaves no authority behind) and suspend the user while you do it. Throws
+     * `revocation_not_converged` (503) if credentials keep appearing until the pass
+     * bound; no `user.authentication_revoked` event is emitted in that case.
      */
     revokeUserAuthentication(userId: string, options?: {
         kinds?: (string | null)[];

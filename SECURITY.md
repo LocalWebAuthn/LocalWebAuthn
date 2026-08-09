@@ -2,11 +2,30 @@
 
 ## The Core Property
 
-**LocalWebAuthn never possesses private key material.** There is no point in any flow where a
-private key passes through code in this repository, so no defect in this repository can leak
-one. That is not a statement about review quality — it is a consequence of where the keys
-live. The authenticator generates the key pair and keeps the private half; the relying party
-receives a public key and signatures over challenges it chose itself.
+**`@localwebauthn/server` never receives or persistently stores credential private keys.** It
+stores public credential material and one-way token digests. No flow gives the server a private
+key, so no defect in the server package can leak one — not a statement about review quality, but
+a consequence of where the keys live: the authenticator generates the key pair and keeps the
+private half, and the relying party receives a public key and signatures over challenges it
+chose itself. **Human passkeys never reach this project's code at all**; the browser performs
+the ceremony.
+
+Three properties must not be conflated, and this document keeps them apart:
+
+| Property                | Claim                                                                                                                                                   |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Server persistence      | **No private key, ever.** Public keys and digests only.                                                                                                 |
+| Transient possession    | Human passkeys: none. **Optional components: yes** — `@localwebauthn/client` imports a script's key to sign with, and the demo mint page generates one. |
+| Client keystore at rest | Operator's choice: a `chmod 0600` file, or a platform keystore (TPM, Secure Enclave, agent, KMS) that holds the key non-exportably.                     |
+
+The optional-component row is deliberate and worth stating plainly rather than glossing:
+`packages/client/src/keystore.ts` can generate an **extractable** key and export PKCS#8, and
+`importKeyStore` accepts private-key bytes — that is what a file-based CLI credential requires.
+The WebCrypto specification does not guarantee that key material is erased when application
+references are dropped ([Web Cryptography API](https://www.w3.org/TR/WebCryptoAPI/)), so this
+project does not claim zeroization, shredding, or that "exactly one copy" exists. Deployments
+wanting no exportable key material should use a platform-keystore signer, where the process
+sends bytes to sign and receives a signature but never holds the key.
 
 Three consequences follow, and they are the reason to prefer this shape:
 
@@ -22,7 +41,9 @@ Three consequences follow, and they are the reason to prefer this shape:
 The user's side of this is small, and worth telling them: create human passkeys through the
 platform's own facility (secure element, TPM, hardware key, password manager), and store a
 script's credential file the way a secret is stored — `chmod 0600`, beside the script, out of
-source control. Do those two things and no private key exists anywhere else.
+source control. Do those two things and the only durable private key material is the one file
+you chose to keep — subject to the caveat above that a value which has passed through a
+clipboard, a download or a backup has copies no library can account for.
 
 ## Reporting
 
@@ -68,17 +89,24 @@ Passkey public keys, counters, transports, backup state, labels, kinds, heritage
 timestamps are not secrets, but they are authentication data and user metadata: apply normal
 database access controls.
 
-Private keys live in exactly two places, neither of which is this package:
+Private keys come to rest in two places, neither of which is server state:
 
-- **A person's passkey** — the platform keystore. Device-bound keys are non-exportable in
-  hardware; synced platform passkeys are protected by the provider with the user's account and
-  device unlock. That provider is not an identity provider for your application, because it
-  never hands LocalWebAuthn a key. `@localwebauthn/browser` touches no key material at all.
-- **A script's Passkey** — the one file the operator provisioned, or a reference to a platform
-  keystore. `@localwebauthn/client` reads it and holds it in process memory; it never writes
-  it anywhere. The mint page displays it once, and the server keeps only the public half, so
-  there is one copy in one place. See [docs/API-AUTH.org](docs/API-AUTH.org) for the custody
-  options, including keeping the key in a TPM or Secure Enclave so the file holds no key.
+- **A person's passkey** — held by a WebAuthn authenticator. Hardware protection, local-only
+  storage and backup eligibility are properties of _that_ authenticator and of your policy, not
+  universal guarantees: WebAuthn permits hardware, software, platform, roaming and synced
+  authenticators, and a backup-eligible credential may be synchronized or recovered by its
+  provider ([WebAuthn L3](https://www.w3.org/TR/webauthn-3/),
+  [Apple Platform Security](https://support.apple.com/en-euro/guide/security/sec1c89c6f3b/web)).
+  What is universal: the provider is not an identity provider for your application, it never
+  hands LocalWebAuthn a key, and `@localwebauthn/browser` touches no key material at all. If
+  your policy depends on attestation, backup eligibility or backup state, document exactly what
+  you check and what you trust that signal to mean.
+- **A script's Passkey** — the file the operator provisioned, or a reference to a platform
+  keystore. `@localwebauthn/client` reads it and holds it in process memory to sign with; it
+  writes it nowhere. The mint page displays it once — which describes the page, not the world:
+  a value that passed through a clipboard, a Downloads folder, terminal scrollback or a backup
+  has copies this project cannot see or erase. See [docs/API-AUTH.org](docs/API-AUTH.org) for
+  custody options, including a TPM or Secure Enclave signer so no file holds a key.
 
 ## What A Disclosure Costs
 

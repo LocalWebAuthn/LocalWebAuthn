@@ -853,6 +853,17 @@ export class LocalWebAuthn {
    * legal member and matches unclassified credentials.
    *
    * @param options.kinds - Revoke only credentials of these {@link Credential.kind} values.
+   * Re-enumerates until a pass revokes nothing, so a credential registered
+   * *concurrently* with this call is caught rather than surviving a stale snapshot.
+   * Unscoped, that is conclusive — every authority in the subtree is revoked, so
+   * nothing remains that could author another. **With `kinds`, it is not:** a
+   * spared credential still permitted to register can create a fresh in-scope
+   * credential just after the final enumeration. Suspend registration for the user
+   * (or deactivate them through `getUser`) while remediating a compromise.
+   *
+   * Throws `revocation_not_converged` (503) if credentials keep appearing until the
+   * pass bound — remediation is then incomplete, and some credentials were revoked.
+   *
    * @returns IDs actually revoked, root first. Already-revoked ones are skipped.
    */
   async revokeCredentialTree(
@@ -892,12 +903,19 @@ export class LocalWebAuthn {
    * revoked node can author no further children, so the frontier shrinks and the
    * loop converges — normally in two passes: one to revoke, one to confirm.
    *
-   * Residual, recorded in SECURITY.md and docs/REVIEW-20260809.md §3: an attacker
-   * who wins the registration race in *every* pass is not fully fenced by
-   * re-enumeration alone. The complete guarantee is a registration epoch; until it
-   * exists, a host doing incident response should also stop accepting
-   * registrations. The pass bound turns that pathological case into a logged
-   * best-effort stop rather than an unbounded loop.
+   * **Two guarantees, and they differ.** When the operation revokes *every*
+   * authority in scope — an unscoped tree, where the root and all its descendants
+   * go — reaching a quiet pass is conclusive: nothing is left that could author a
+   * new credential. When the caller *spares* authorities (a `kinds` filter, or a
+   * scoped account revoke), a spared credential that is still permitted to
+   * register can create a fresh in-scope credential right after the final
+   * enumeration. Re-enumeration cannot fence that; only a registration epoch can,
+   * and it is not implemented (docs/REVIEW-20260809.md §3). SECURITY.md states the
+   * limit and tells hosts to suspend registration while remediating.
+   *
+   * Non-convergence is **not** reported as success: hitting the pass bound throws
+   * `revocation_not_converged`, so a caller cannot mistake "credentials kept
+   * appearing" for "remediation finished".
    */
   async #revokeCredentialsToFixedPoint(
     userId: string,
@@ -929,10 +947,18 @@ export class LocalWebAuthn {
         return revoked;
       }
     }
+    // Still revoking on the last allowed pass: something is registering as fast as
+    // this revokes. Fail loudly — a warning in a log is not an API contract, and a
+    // caller responding to a compromise must not read this as "done".
     this.#logger.warn('Credential revocation did not converge; registrations may be racing it.', {
       userId,
+      revoked: revoked.length,
     });
-    return revoked;
+    throw new LocalWebAuthnError(
+      'revocation_not_converged',
+      `Revocation did not converge after ${String(maxPasses)} passes; ${String(revoked.length)} credentials were revoked. Suspend registration for this user and retry.`,
+      503,
+    );
   }
 
   /** List a user's credentials; revoked ones only when `includeRevoked` is `true`. */
@@ -999,6 +1025,15 @@ export class LocalWebAuthn {
    *   authenticates as this user, so `{ kinds: ['person'] }` does *not* stop the
    *   account being used — it stops the person's own devices being used. Suspend
    *   the user through `getUser` returning `active: false` if that is the intent.
+   *
+   * **The scoped form is administrative revocation, not complete remediation.** It
+   * revokes to a fixed point, so a credential registered concurrently is caught
+   * rather than missed — but it deliberately spares other kinds, and a spared
+   * credential that may still register can create a fresh in-scope credential just
+   * after the final enumeration. For a compromise, use the unscoped form (which
+   * leaves no authority behind) and suspend the user while you do it. Throws
+   * `revocation_not_converged` (503) if credentials keep appearing until the pass
+   * bound; no `user.authentication_revoked` event is emitted in that case.
    */
   async revokeUserAuthentication(
     userId: string,

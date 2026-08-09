@@ -160,18 +160,18 @@ _________________
 2.2 The two credentials
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-   Property                Human Passkey                         API Passkey                        
+   Property                Human Passkey                         API Passkey
   --------------------------------------------------------------------------------------------------
-   Key custody             Apple Passwords, Secure Enclave       `.env' on the script host          
-   Reachable from          a browser, only                       any process that can read `.env'   
-   `kind' (/proposed/)     `person'                              `service'                          
-   `label'                 "Perry's MacBook"                     "Perry's Blah maintenance script"  
-   `deviceType'            `multiDevice'                         `singleDevice'                     
-   `backedUp'              `true'                                `false'                            
-   `signCount'             `0' forever; iCloud keeps no counter  `0' by policy                      
-   `userVerified'          `true', attested by Touch ID          `true', self-asserted by a program 
-   `origin' in clientData  written by the /browser/              written by the /script/            
-   Signs                   assertions, browser-mediated          assertions + DPoP proofs           
+   Key custody             Apple Passwords, Secure Enclave       `.env' on the script host
+   Reachable from          a browser, only                       any process that can read `.env'
+   `kind' (/proposed/)     `person'                              `service'
+   `label'                 "Perry's MacBook"                     "Perry's Blah maintenance script"
+   `deviceType'            `multiDevice'                         `singleDevice'
+   `backedUp'              `true'                                `false'
+   `signCount'             `0' forever; iCloud keeps no counter  `0' by policy
+   `userVerified'          `true', attested by Touch ID          `true', self-asserted by a program
+   `origin' in clientData  written by the /browser/              written by the /script/
+   Signs                   assertions, browser-mediated          assertions + DPoP proofs
 
   Both rows report `userVerified: true', and it means something entirely
   different on each.  That is what `kind' exists to record.
@@ -200,8 +200,8 @@ _________________
 3.3 Step 1: authenticate the human
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   Runs on  browser -> macOS -> Secure Enclave -> server                                                   
-   Code     `LocalWebAuthnBrowser.signIn()', `auth.authenticationOptions()', `auth.verifyAuthentication()' 
+   Runs on  browser -> macOS -> Secure Enclave -> server
+   Code     `LocalWebAuthnBrowser.signIn()', `auth.authenticationOptions()', `auth.verifyAuthentication()'
 
   The layer split /is/ the phishing resistance, and it is why this key
   can never serve the script:
@@ -212,12 +212,12 @@ _________________
   |    "challenge":"<echoed verbatim from options>",
   |    "origin":"https://app.example.com",     <-- the BROWSER asserts this
   |    "crossOrigin":false}
-  | 
+  |
   | AUTHENTICATOR writes authenticatorData, 37 bytes:
   |   [0..32)  SHA-256("app.example.com")
   |   [32]     0x1D = UP|UV|BE|BS
   |   [33..37) 0x00000000  signCount
-  | 
+  |
   | AUTHENTICATOR signs, inside the enclave:
   |   ES256( authenticatorData || SHA-256(clientDataJSON) )   -- ASN.1 DER
   `----
@@ -237,7 +237,7 @@ _________________
   ,----
   | const resolved = await auth.resolveSession(sessionToken);
   | if (!resolved) return unauthorized();
-  | 
+  |
   | // SECURITY.md: a fresh assertion is required for sensitive credential changes.
   | // Minting a durable API credential is exactly that.
   | if (Date.now() - resolved.session.authenticatedAt > 2 * 60_000) {
@@ -303,15 +303,15 @@ _________________
 3.7.1 `LWA_CREDENTIAL' -- the public half
 -----------------------------------------
 
-   Field           Meaning                                                   
+   Field           Meaning
   ---------------------------------------------------------------------------
-   `v'             payload format version; `1' is this schema                
-   `baseUrl'       origin the client talks to                                
-   `rpId'          hashed into `authenticatorData[0..32)'                    
-   `origin'        written verbatim into `clientDataJSON.origin'             
-   `credentialId'  base64url, 32 bytes; the server's primary key for the row 
-   `userHandle'    base64url, 32 bytes; required in `response.userHandle'    
-   `alg'           COSE algorithm: `-7' ES256, `-8' EdDSA                    
+   `v'             payload format version; `1' is this schema
+   `baseUrl'       origin the client talks to
+   `rpId'          hashed into `authenticatorData[0..32)'
+   `origin'        written verbatim into `clientDataJSON.origin'
+   `credentialId'  base64url, 32 bytes; the server's primary key for the row
+   `userHandle'    base64url, 32 bytes; required in `response.userHandle'
+   `alg'           COSE algorithm: `-7' ES256, `-8' EdDSA
 
   *Quoting rules matter here, and constrain the schema.* The value is
   wrapped in single quotes so that a plain `source .env' does not let
@@ -336,7 +336,7 @@ _________________
   ,----
   | # the key itself: base64 PKCS#8
   | LWA_CREDENTIAL_KEY=MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg...
-  | 
+  |
   | # or a reference -- .env then holds no secret at all
   | LWA_CREDENTIAL_KEY=keystore:keychain/localwebauthn/nightly-export
   `----
@@ -458,18 +458,18 @@ _________________
   `----
 
 
-   URI                                                Exportable  Signs           Notes                                                                         
+   URI                                                Exportable  Signs           Notes
   --------------------------------------------------------------------------------------------------------------------------------------------------------------
-   `keystore:file//etc/lwa/nightly.key'               yes         ES256, Ed25519  Same trust as `.env', but a separate file with its own mode and owner.        
-   `keystore:env/LWA_KEY_B64'                         yes         ES256, Ed25519  Read from another variable, for container secret injection.                   
-   `keystore:keychain/<service>/<account>'            yes         ES256, Ed25519  macOS login keychain generic-password item; ACL-gated per application.        
-   `keystore:dpapi//path/to/blob'                     no[1]       ES256, Ed25519  Windows DPAPI, machine or user scope.                                         
-   `keystore:keyring/<collection>/<item>'             yes         ES256, Ed25519  Linux Secret Service or kernel keyring.                                       
-   `keystore:secure-enclave/<tag>'                    *never*     ES256 only      P-256 only.  Key must be *generated in place*.                                
-   `keystore:tpm/0x81000001'                          *never*     ES256 only      TPM 2.0 persistent handle.  Generated in place.                               
-   `keystore:pkcs11/<module>?token=<label>&id=<hex>'  *never*     ES256 only      YubiHSM, SoftHSM, smartcards.                                                 
-   `keystore:awskms/<key-arn>'                        *never*     ES256 only      `ECDSA_SHA_256'.  Every signature is a separate IAM-authorized, audited call. 
-   `keystore:gcpkms/<resource>'                       *never*     ES256 only      `EC_SIGN_P256_SHA256'.                                                        
+   `keystore:file//etc/lwa/nightly.key'               yes         ES256, Ed25519  Same trust as `.env', but a separate file with its own mode and owner.
+   `keystore:env/LWA_KEY_B64'                         yes         ES256, Ed25519  Read from another variable, for container secret injection.
+   `keystore:keychain/<service>/<account>'            yes         ES256, Ed25519  macOS login keychain generic-password item; ACL-gated per application.
+   `keystore:dpapi//path/to/blob'                     no[1]       ES256, Ed25519  Windows DPAPI, machine or user scope.
+   `keystore:keyring/<collection>/<item>'             yes         ES256, Ed25519  Linux Secret Service or kernel keyring.
+   `keystore:secure-enclave/<tag>'                    *never*     ES256 only      P-256 only.  Key must be *generated in place*.
+   `keystore:tpm/0x81000001'                          *never*     ES256 only      TPM 2.0 persistent handle.  Generated in place.
+   `keystore:pkcs11/<module>?token=<label>&id=<hex>'  *never*     ES256 only      YubiHSM, SoftHSM, smartcards.
+   `keystore:awskms/<key-arn>'                        *never*     ES256 only      `ECDSA_SHA_256'.  Every signature is a separate IAM-authorized, audited call.
+   `keystore:gcpkms/<resource>'                       *never*     ES256 only      `EC_SIGN_P256_SHA256'.
 
 
 4.2 The client interface
@@ -545,7 +545,7 @@ _________________
   |            "iat":<unix seconds>,
   |            "ath":"<base64url(SHA-256(sessionToken))>",
   |            "nonce":"<last DPoP-Nonce seen>"}
-  | 
+  |
   | signing input = base64url(header) || "." || base64url(payload)
   | signature     = ES256 over that -- RAW r||s, NOT DER
   `----
@@ -616,21 +616,21 @@ _________________
 6.1 The rules
 ~~~~~~~~~~~~~
 
-    #  An API session must not...                      Enforced by  Mechanism                                                                                       
+    #  An API session must not...                      Enforced by  Mechanism
   ------------------------------------------------------------------------------------------------------------------------------------------------------------------
-    1  register any credential                         *package*    `registrationOptions' / `verifyRegistration' refuse a non-interactive authorizing session       
-    2  authenticate at a browser endpoint              *package*    challenge-scoped `credentialKinds'; non-interactive kinds excluded by default                   
-    3  revoke a credential other than its own          host         gate on `session.credentialKind'                                                                
-    4  revoke sessions other than its own              host         same                                                                                            
-    5  issue or exchange an enrollment grant           host         see below --- the escalation this one prevents                                                  
-    6  satisfy a step-up gate for a human operation    host         step-up checks *kind and freshness*, not freshness alone                                        
-    7  receive a session cookie                        host         machine routes never `Set-Cookie'                                                               
-    8  enumerate the user's other credentials          host         `listCredentials' is privileged                                                                 
-    9  change account settings, channels, or recovery  host         account-takeover surface                                                                        
-   10  count as the user's last credential             *package*    kind-scoped last-credential guard                                                               
-   11  present a bare Bearer token                     host         resolve machine routes through `authenticateMachineRequest', which always requires a DPoP proof 
-   12  hold a long session                             *package*    per-kind `sessionAbsoluteMs'                                                                    
-   13  authenticate without being distinguishable      *package*    `credentialKind' on `credential.authenticated' and `session.created'                            
+    1  register any credential                         *package*    `registrationOptions' / `verifyRegistration' refuse a non-interactive authorizing session
+    2  authenticate at a browser endpoint              *package*    challenge-scoped `credentialKinds'; non-interactive kinds excluded by default
+    3  revoke a credential other than its own          host         gate on `session.credentialKind'
+    4  revoke sessions other than its own              host         same
+    5  issue or exchange an enrollment grant           host         see below --- the escalation this one prevents
+    6  satisfy a step-up gate for a human operation    host         step-up checks *kind and freshness*, not freshness alone
+    7  receive a session cookie                        host         machine routes never `Set-Cookie'
+    8  enumerate the user's other credentials          host         `listCredentials' is privileged
+    9  change account settings, channels, or recovery  host         account-takeover surface
+   10  count as the user's last credential             *package*    kind-scoped last-credential guard
+   11  present a bare Bearer token                     host         resolve machine routes through `authenticateMachineRequest', which always requires a DPoP proof
+   12  hold a long session                             *package*    per-kind `sessionAbsoluteMs'
+   13  authenticate without being distinguishable      *package*    `credentialKind' on `credential.authenticated' and `session.created'
 
 
 6.2 Rule 5 is the one that actually bites
@@ -761,12 +761,12 @@ _________________
   Four independent version numbers, which is three more than anyone
   wants but they move on different clocks:
 
-   Version                         Owns                        On a bump                                          
+   Version                         Owns                        On a bump
   ----------------------------------------------------------------------------------------------------------------
-   `LWA_CREDENTIAL' `v'            the `.env' payload schema   client refuses an unknown `v' rather than guessing 
-   `/api/machine/v1/'              the endpoint contract       old path served until its clients are retired      
-   `LOCALWEBAUTHN_SCHEMA_VERSION'  the database schema         versioned migration, per /Open Items/              
-   client build version            diagnostics and EOL policy  reported in a header, optionally refused           
+   `LWA_CREDENTIAL' `v'            the `.env' payload schema   client refuses an unknown `v' rather than guessing
+   `/api/machine/v1/'              the endpoint contract       old path served until its clients are retired
+   `LOCALWEBAUTHN_SCHEMA_VERSION'  the database schema         versioned migration, per /Open Items/
+   client build version            diagnostics and EOL policy  reported in a header, optionally refused
 
   Path-versioning the machine endpoints matters more than for browser
   endpoints: a browser reloads and gets the new client, whereas a script
@@ -798,10 +798,10 @@ _________________
   The same key signs in two incompatible encodings, and getting it wrong
   produces a verification failure with no diagnostic:
 
-   Context             Standard          ECDSA signature encoding      
+   Context             Standard          ECDSA signature encoding
   ---------------------------------------------------------------------
-   WebAuthn assertion  COSE alg `-7'     ASN.1 DER `SEQUENCE { r, s }' 
-   DPoP proof (JWS)    RFC 7518 `ES256'  raw =r                           s=, 64 bytes 
+   WebAuthn assertion  COSE alg `-7'     ASN.1 DER `SEQUENCE { r, s }'
+   DPoP proof (JWS)    RFC 7518 `ES256'  raw =r                           s=, 64 bytes
 
   WebCrypto's `ECDSA' sign returns the raw form, so the WebAuthn path
   must convert to DER and the DPoP path must not.  Ed25519 (`-8' /

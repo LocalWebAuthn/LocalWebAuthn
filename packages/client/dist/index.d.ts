@@ -296,11 +296,32 @@ declare class MachineClient {
     /**
      * Call an API endpoint, authenticating first if needed.
      *
-     * Retries once on `401`, which covers both an expired session and a server that
-     * has started demanding a `DPoP-Nonce` — in the latter case the retry carries
-     * the nonce the failing response supplied.
+     * Retries a `401` **only** when the response positively identifies itself as an
+     * authentication rejection made *before* the application handler ran:
+     *
+     * - an RFC 9449 nonce challenge — `WWW-Authenticate: DPoP …
+     *   error="use_dpop_nonce"` — which the DPoP middleware emits instead of
+     *   dispatching. The retry carries the supplied nonce and a fresh proof.
+     * - a bare `WWW-Authenticate: DPoP` challenge with no nonce error, which means
+     *   the session itself was refused; the retry re-authenticates first.
+     *
+     * Any other `401` is returned as-is. That matters more than it looks: a `401`
+     * from the application's *own* handler carries no promise that the handler did
+     * no work, and this client previously retried on any `401` that happened to
+     * carry a `DPoP-Nonce` header — which authenticated responses legitimately do,
+     * since the server rotates the nonce forward on success. A `POST` that failed
+     * authorization after taking effect would have been sent twice. HTTP status is
+     * not evidence of non-execution; the challenge header is.
+     *
+     * A retried request re-sends `init` unchanged, so a one-shot body (a
+     * `ReadableStream`) cannot be replayed — pass `bodyFactory` to rebuild it, or the
+     * retry is refused rather than silently sending a consumed body. Strings, byte
+     * arrays and other reusable bodies need nothing.
      */
-    fetch(path: string, init?: RequestInit): Promise<Response>;
+    fetch(path: string, init?: RequestInit & {
+        /** Rebuilds a one-shot body for a retry. Required for stream bodies. */
+        bodyFactory?: () => BodyInit;
+    }): Promise<Response>;
 }
 
 export { CREDENTIAL_KEY_VARIABLE, CREDENTIAL_PAYLOAD_VERSION, CREDENTIAL_VARIABLE, type CoseAlgorithm, type CredentialPayload, EDDSA, ES256, MachineClient, MachineClientError, type MachineClientOptions, type MachineKeyStore, type SoftwareAssertionResponse, type SoftwareCredential, type SoftwareRegistrationResponse, concat, createAssertionResponse, createDpopProof, createRegistrationResponse, decodeBase64, decodeBase64Url, encodeBase64, encodeBase64Url, formatCredentialFile, generateKeyStore, importKeyStore, isKeystoreReference, parseCredentialFile, parseCredentialPayload, randomBytes, rawSignatureToDer, sha256, utf8 };
