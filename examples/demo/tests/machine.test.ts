@@ -389,6 +389,37 @@ describe('restrictions enforced over HTTP', () => {
     expect(verified.status).toBe(401);
   });
 
+  it('leaves no live session behind when provisioning a credential', async () => {
+    // `verifyRegistration` opens a session for the new credential — right for a
+    // person, wrong here: it belongs to the script's identity, and the script has
+    // not run. Dropping the token would leave the row live until expiry, an
+    // authenticated session nobody holds. The route revokes it.
+    const fixture = setup();
+    const person = await signedInPerson(fixture);
+
+    const liveSessions = () =>
+      (
+        fixture.database
+          .prepare(`SELECT COUNT(*) AS count FROM localwebauthn_sessions WHERE revoked_at IS NULL`)
+          .get() as { count: number }
+      ).count;
+
+    const before = liveSessions();
+    await mintApiKey(fixture, person.cookie, 'nightly export');
+
+    // The person's own session, and nothing new.
+    expect(liveSessions()).toBe(before);
+
+    // The credential is nevertheless real and usable — revoking the session did
+    // not revoke the credential.
+    const listed = (await (
+      await fixture.app.fetch(
+        new Request(`${ORIGIN}/api/api-keys`, { headers: { Cookie: person.cookie } }),
+      )
+    ).json()) as { apiKeys: { label: string }[] };
+    expect(listed.apiKeys.map((key) => key.label)).toContain('nightly export');
+  });
+
   it('rejects a machine request with no DPoP proof', async () => {
     const fixture = setup();
     const person = await signedInPerson(fixture);

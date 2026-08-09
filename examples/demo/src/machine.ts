@@ -148,9 +148,14 @@ export function mountApiKeyRoutes(
         sessionToken: gate.sessionToken,
         label: body.label,
       });
-      // verifyRegistration opens a session for the *new* credential. That session
-      // belongs to the script's identity, not to this browser, so it is dropped
-      // rather than returned or set as a cookie.
+      // `verifyRegistration` opens a session for the *new* credential — reasonable
+      // for a person, who has just proved possession and expects to be signed in.
+      // Here it is wrong twice over: the session belongs to the script's identity
+      // rather than to this browser, and the script has not run yet. Dropping the
+      // token is not enough, because the row stays live until it expires: an
+      // authenticated session nobody holds, which is exactly the sort of thing an
+      // audit should never have to explain. Revoke it.
+      await authentication.revokeSession(result.sessionToken);
       return context.json(
         {
           credentialId: result.credentialId,
