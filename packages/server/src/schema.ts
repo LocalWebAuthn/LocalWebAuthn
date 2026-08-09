@@ -472,20 +472,3 @@ export function localWebAuthnUpgradeStatements(
   });
   return [...migrationStatements(fromVersion), ...tableStatements];
 }
-
-/**
- * Full schema plus the version stamp, for engines that cannot read the stored
- * version before deciding what to run (D1's `migrateD1` batches blind).
- *
- * Safe on a v1 database only because the ALTERs are appended by
- * {@link localWebAuthnUpgradeStatements}; callers that can read the stored
- * version should prefer that function.
- */
-export function localWebAuthnMigrationStatements(now = Date.now()): string[] {
-  return [
-    ...localWebAuthnSchemaStatements(),
-    `INSERT INTO localwebauthn_migrations(version, applied_at)
-     VALUES (${String(LOCALWEBAUTHN_SCHEMA_VERSION)}, ${String(Math.trunc(now))})
-     ON CONFLICT DO NOTHING`,
-  ];
-}

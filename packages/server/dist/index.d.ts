@@ -637,6 +637,13 @@ declare class LocalWebAuthn {
     /**
      * Verify a DPoP proof (RFC 9449) for a request on an already-resolved session.
      *
+     * **Prefer {@link authenticateMachineRequest} for a machine route.** This is
+     * the lower-level primitive: it trusts the caller to have resolved `session`
+     * from `sessionToken` and to touch the session only after this succeeds. Pair a
+     * token with the wrong session, or resolve-with-touch before calling this, and
+     * the sender-constraint guarantee is lost. `authenticateMachineRequest` removes
+     * both footguns by taking only the token.
+     *
      * Derives the expected key thumbprint from the session's credential, so there
      * is no per-session key material to store, then claims the proof's `jti`
      * through the store so a captured proof cannot be replayed inside its `iat`
@@ -659,6 +666,42 @@ declare class LocalWebAuthn {
          */
         requireNonce?: boolean;
     }): Promise<void>;
+    /**
+     * Resolve a machine request's session **only if** its DPoP proof holds — one
+     * fail-closed operation for a sender-constrained (RFC 9449) route.
+     *
+     * This is the method a machine route should call. It closes two gaps that come
+     * from assembling {@link resolveSession} and {@link verifyDpop} by hand:
+     *
+     * - **The session is derived from the token, never supplied alongside it.** A
+     *   caller cannot pair a token for one session with the resolved identity of
+     *   another, because there is only one input.
+     * - **Idle activity is touched only after the proof succeeds.** Resolving first
+     *   with `touch` would let a thief holding just the bearer token keep the idle
+     *   timer alive to absolute expiry without ever producing a proof. Here a
+     *   request that cannot prove possession changes no server state.
+     *
+     * A DPoP proof is always required; there is no bearer-only path through this
+     * method. Throws `unauthenticated` (401) when the token resolves to no live
+     * session, `dpop_nonce_required` (401) when a nonce is demanded and absent
+     * (answer with {@link dpopChallenge}), and `invalid_dpop_proof` (401) on any
+     * other proof failure. On success the session's `lastSeenAt` is advanced.
+     *
+     * @returns The authenticated user and session, plus the current response nonce
+     *   (`null` when nonce issuance is not configured).
+     */
+    authenticateMachineRequest(input: {
+        sessionToken: string;
+        proof: string | undefined;
+        method: string;
+        url: string;
+        /** Demand a server-issued nonce (RFC 9449 section 8). Requires `dpopNonce`. */
+        requireNonce?: boolean;
+    }): Promise<{
+        user: AuthUser;
+        session: SessionIdentity;
+        nonce: string | null;
+    }>;
 }
 
 export { type AuthCookieKind, type AuthCookieNames, AuthUser, AuthenticationOptionsInput, AuthenticationOptionsResult, AuthenticationVerificationInput, AuthenticationVerificationResult, CleanupResult, type CookieAttributes, type CookieAttributesOptions, Credential, type DpopVerification, type DpopVerificationInput, EnrollmentExchange, EnrollmentIssue, LocalWebAuthn, LocalWebAuthnError, type LocalWebAuthnErrorCode, LocalWebAuthnOptions, type NormalizedConfig, type NormalizedCredentialKind, type PublicJwk, RegistrationOptionsInput, RegistrationOptionsResult, RegistrationVerificationInput, RegistrationVerificationResult, SELF_SERVE_SIGNUP_STEPS, SessionIdentity, type SignupFacts, type SignupNextStep, type SignupPhase, authCookieNames, cookieAttributes, coseToJwk, createEnrollmentToken, createOpaqueToken, createUserHandle, decodeBase64Url, defaultKindPolicy, describeSignupPhase, dpopChallenge, encodeBase32, encodeBase64Url, equalBytes, isExactOrigin, isHttpsPublicOrigin, isLocalWebAuthnError, jwkThumbprint, kindPolicy, nextSignupStep, parseCookieHeader, serializeClearedCookie, serializeCookie, sha256, signupPhase, verifyDpopProof };

@@ -116,14 +116,5 @@ declare function localWebAuthnPostgresSchemaStatements(): string[];
  * Returns an empty array when the database is already current.
  */
 declare function localWebAuthnUpgradeStatements(fromVersion: number, dialect?: 'sqlite' | 'postgres'): string[];
-/**
- * Full schema plus the version stamp, for engines that cannot read the stored
- * version before deciding what to run (D1's `migrateD1` batches blind).
- *
- * Safe on a v1 database only because the ALTERs are appended by
- * {@link localWebAuthnUpgradeStatements}; callers that can read the stored
- * version should prefer that function.
- */
-declare function localWebAuthnMigrationStatements(now?: number): string[];
 
-export { LOCALWEBAUTHN_MIGRATIONS, LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL, LOCALWEBAUTHN_SCHEMA_SQL, LOCALWEBAUTHN_SCHEMA_VERSION, localWebAuthnMigrationStatements, localWebAuthnMigrationsTableStatement, localWebAuthnPostgresSchemaStatements, localWebAuthnSchemaStatements, localWebAuthnUpgradeStatements };
+export { LOCALWEBAUTHN_MIGRATIONS, LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL, LOCALWEBAUTHN_SCHEMA_SQL, LOCALWEBAUTHN_SCHEMA_VERSION, localWebAuthnMigrationsTableStatement, localWebAuthnPostgresSchemaStatements, localWebAuthnSchemaStatements, localWebAuthnUpgradeStatements };

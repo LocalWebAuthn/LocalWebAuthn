@@ -3,18 +3,16 @@ import {
   LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL,
   LOCALWEBAUTHN_SCHEMA_SQL,
   LOCALWEBAUTHN_SCHEMA_VERSION,
-  localWebAuthnMigrationStatements,
   localWebAuthnMigrationsTableStatement,
   localWebAuthnPostgresSchemaStatements,
   localWebAuthnSchemaStatements,
   localWebAuthnUpgradeStatements
-} from "./chunk-6DUT7GUX.js";
+} from "./chunk-ANCBC7RI.js";
 export {
   LOCALWEBAUTHN_MIGRATIONS,
   LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL,
   LOCALWEBAUTHN_SCHEMA_SQL,
   LOCALWEBAUTHN_SCHEMA_VERSION,
-  localWebAuthnMigrationStatements,
   localWebAuthnMigrationsTableStatement,
   localWebAuthnPostgresSchemaStatements,
   localWebAuthnSchemaStatements,

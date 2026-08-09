@@ -9,8 +9,14 @@
  */
 
 import Database from 'better-sqlite3';
-import { describe, expect, it } from 'vitest';
+import { Miniflare } from 'miniflare';
+import { afterAll, describe, expect, it } from 'vitest';
 
+import {
+  type D1DatabaseLike,
+  D1LocalWebAuthnStore,
+  migrateD1,
+} from '../../packages/server/src/d1.js';
 import {
   LOCALWEBAUTHN_MIGRATIONS,
   LOCALWEBAUTHN_SCHEMA_VERSION,
@@ -307,5 +313,170 @@ describe('version 1 to version 2', () => {
     expect(pending.count).toBe(2);
 
     database.close();
+  });
+});
+
+/**
+ * The same v1→v2 upgrade on Cloudflare D1, which is the one that was broken:
+ * `migrateD1` ran the current full schema blind, so a released v1 database never
+ * got its `ALTER TABLE`s and the first index over a v2-only column failed. D1 is
+ * SQLite, so the literal released DDL above loads unchanged.
+ */
+const miniflares = new Set<Miniflare>();
+
+afterAll(async () => {
+  await Promise.all([...miniflares].map((miniflare) => miniflare.dispose()));
+  miniflares.clear();
+});
+
+async function emptyD1(): Promise<D1DatabaseLike> {
+  const miniflare = new Miniflare({
+    compatibilityDate: '2026-07-29',
+    d1Databases: ['AUTH'],
+    modules: true,
+    script: 'export default { fetch() { return new Response("ok"); } }',
+  });
+  miniflares.add(miniflare);
+  return (await miniflare.getD1Database('AUTH')) as unknown as D1DatabaseLike;
+}
+
+/** Statement list of a released v1 database, whitespace collapsed like the runners do. */
+function v1Statements(): string[] {
+  return V1_SCHEMA_SQL.split(';')
+    .map((statement) => statement.replace(/\s+/gu, ' ').trim())
+    .filter(Boolean);
+}
+
+async function d1ObjectNames(database: D1DatabaseLike, type: 'table' | 'index'): Promise<string[]> {
+  const { results } = await database
+    .prepare(`SELECT name FROM sqlite_master WHERE type = ? AND name LIKE 'localwebauthn%'`)
+    .bind(type)
+    .all<{ name: string }>();
+  return results.map((row) => row.name).sort();
+}
+
+async function d1IndexSql(database: D1DatabaseLike, name: string): Promise<string> {
+  const row = await database
+    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`)
+    .bind(name)
+    .first<{ sql: string | null }>();
+  return (row?.sql ?? '').replace(/\s+/gu, ' ').trim();
+}
+
+/** A released v1 D1 database holding a grant, a credential and a session. */
+async function v1D1Database(): Promise<D1DatabaseLike> {
+  const database = await emptyD1();
+  for (const statement of v1Statements()) {
+    await database.prepare(statement).run();
+  }
+  await database
+    .prepare('INSERT INTO localwebauthn_migrations(version, applied_at) VALUES (1, ?)')
+    .bind(now)
+    .run();
+  await database
+    .prepare(
+      `INSERT INTO localwebauthn_enrollment_grants(
+         id, user_id, token_hash, expires_at, approved_by_user_id, created_at
+       ) VALUES ('grant-1', 'user-1', ?, ?, 'admin-1', ?)`,
+    )
+    .bind(new Uint8Array(32).fill(1), now + 10_000, now)
+    .run();
+  await database
+    .prepare(
+      `INSERT INTO localwebauthn_credentials(
+         id, user_id, public_key, device_type, label, created_at
+       ) VALUES ('credential-1', 'user-1', ?, 'multiDevice', 'Old passkey', ?)`,
+    )
+    .bind(new Uint8Array(9).fill(9), now)
+    .run();
+  await database
+    .prepare(
+      `INSERT INTO localwebauthn_sessions(
+         id_hash, user_id, credential_id, authenticated_at, expires_at, last_seen_at
+       ) VALUES (?, 'user-1', 'credential-1', ?, ?, ?)`,
+    )
+    .bind(new Uint8Array(32).fill(4), now, now + 10_000, now)
+    .run();
+  return database;
+}
+
+async function d1Version(database: D1DatabaseLike): Promise<number> {
+  const row = await database
+    .prepare('SELECT MAX(version) AS version FROM localwebauthn_migrations')
+    .first<{ version: number | null }>();
+  return row?.version ?? 0;
+}
+
+describe('D1 version 1 to version 2', () => {
+  it('reaches the current version instead of failing on a v2-only index', async () => {
+    // On the previous implementation this rejected: `CREATE INDEX ... (user_id,
+    // kind, ...)` ran against a v1 table with no `kind` column.
+    const database = await v1D1Database();
+    await migrateD1(database, now);
+    expect(await d1Version(database)).toBe(LOCALWEBAUTHN_SCHEMA_VERSION);
+  });
+
+  it('ends up with the same tables and indexes as a fresh install', async () => {
+    const upgraded = await v1D1Database();
+    await migrateD1(upgraded, now);
+    const fresh = await emptyD1();
+    await migrateD1(fresh, now);
+
+    expect(await d1ObjectNames(upgraded, 'table')).toEqual(await d1ObjectNames(fresh, 'table'));
+    expect(await d1ObjectNames(upgraded, 'index')).toEqual(await d1ObjectNames(fresh, 'index'));
+    // The re-scoped grant index is the one statement that had to drop and recreate.
+    expect(await d1IndexSql(upgraded, 'localwebauthn_active_grant_user_idx')).toBe(
+      await d1IndexSql(fresh, 'localwebauthn_active_grant_user_idx'),
+    );
+    expect(await d1IndexSql(fresh, 'localwebauthn_active_grant_user_idx')).toContain(
+      "COALESCE(credential_kind, '')",
+    );
+  });
+
+  it('adds the v2 columns and preserves existing rows with them null', async () => {
+    const database = await v1D1Database();
+    await migrateD1(database, now);
+
+    // Selecting the v2 columns would throw if the ALTERs had not run.
+    const credential = await database
+      .prepare(
+        `SELECT label, kind, created_via, parent_credential_id, grant_id, approved_by_user_id
+         FROM localwebauthn_credentials WHERE id = 'credential-1'`,
+      )
+      .first();
+    expect(credential).toEqual({
+      label: 'Old passkey',
+      kind: null,
+      created_via: null,
+      parent_credential_id: null,
+      grant_id: null,
+      approved_by_user_id: null,
+    });
+
+    const grant = await database
+      .prepare(
+        `SELECT id, credential_kind FROM localwebauthn_enrollment_grants WHERE id = 'grant-1'`,
+      )
+      .first<{ id: string; credential_kind: string | null }>();
+    expect(grant).toEqual({ id: 'grant-1', credential_kind: null });
+  });
+
+  it('is idempotent', async () => {
+    const database = await v1D1Database();
+    await migrateD1(database, now);
+    await expect(migrateD1(database, now)).resolves.toBeUndefined();
+    await expect(migrateD1(database, now)).resolves.toBeUndefined();
+    expect(await d1Version(database)).toBe(LOCALWEBAUTHN_SCHEMA_VERSION);
+  });
+
+  it('leaves an upgraded database fully usable', async () => {
+    const database = await v1D1Database();
+    await migrateD1(database, now);
+    const store = new D1LocalWebAuthnStore(database);
+
+    // The features the upgrade exists for, against migrated tables.
+    expect(await store.claimDpopProof(new Uint8Array(32).fill(5), now + 60_000)).toBe(true);
+    expect(await store.claimDpopNonce(1, 'nonce-1', now + 60_000)).toBe('nonce-1');
+    await expect(store.listCredentials('user-1')).resolves.toMatchObject([{ kind: null }]);
   });
 });

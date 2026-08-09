@@ -20,18 +20,33 @@ type D1DatabaseLike = {
     exec(sql: string): Promise<unknown>;
 };
 /**
- * Create or update the `localwebauthn_*` tables. Idempotent — safe to call on
+ * Create or upgrade the `localwebauthn_*` tables. Idempotent — safe to call on
  * every deploy.
+ *
+ * Version-aware, exactly like {@link migrateSqlite} and {@link migratePostgres}:
+ * it reads the stored schema version and applies only what is missing. The
+ * previous implementation ran the current full schema blind, so on a released v1
+ * database the `CREATE TABLE IF NOT EXISTS` statements were no-ops, the v1→v2
+ * `ALTER TABLE`s never ran, and the first index over a v2-only column
+ * (`localwebauthn_credential_kind_idx`) failed against a column that did not
+ * exist — a v1 D1 deployment could not upgrade at all.
+ *
+ * A D1 `batch()` is one implicit transaction: a failing statement aborts and
+ * rolls back the whole sequence
+ * (https://developers.cloudflare.com/d1/worker-api/d1-database/). So the upgrade
+ * DDL and the version stamp that records it commit together or not at all — a
+ * half-applied schema is never observable.
  */
 declare function migrateD1(database: D1DatabaseLike, now?: number): Promise<void>;
 /**
  * {@link LocalWebAuthnStore} backed by Cloudflare D1.
  *
- * D1 has no transactions. Multi-statement operations run as a `batch()`, and
- * every step that must affect exactly one row is followed by a guard statement
- * that fails the batch otherwise. This stops an unauthorized write from
- * completing, but — unlike a transaction — it cannot roll back statements that
- * already committed. See the D1 section of `SECURITY.md`. Schedule
+ * Multi-statement operations run as a `batch()`, which D1 executes as one
+ * transaction: a failing statement aborts and rolls the whole sequence back
+ * (https://developers.cloudflare.com/d1/worker-api/d1-database/). Every step that
+ * must affect exactly one row is followed by a guard statement whose CHECK fails
+ * the batch otherwise, so an unauthorized write rolls the batch back rather than
+ * committing partially. See the D1 section of `SECURITY.md`. Schedule
  * {@link D1LocalWebAuthnStore.cleanup} to reap expired grants, challenges, and
  * sessions.
  */

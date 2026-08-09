@@ -11,7 +11,7 @@ import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnMigrationsTableStatement,
   localWebAuthnUpgradeStatements
-} from "./chunk-6DUT7GUX.js";
+} from "./chunk-ANCBC7RI.js";
 
 // src/postgres.ts
 var PG = Object.fromEntries(

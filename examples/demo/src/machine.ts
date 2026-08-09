@@ -198,27 +198,24 @@ export function requireMachineSession(
     const header = context.req.header('Authorization') ?? '';
     const match = /^(DPoP|Bearer) (?<token>[A-Za-z0-9_-]+)$/u.exec(header);
     const token = match?.groups?.token;
-    const resolved = token ? await authentication.resolveSession(token) : null;
-    if (!token || !resolved) {
+    if (!token) {
       return context.json(
         { error: 'unauthenticated', message: 'An API session is required.' },
         401,
       );
     }
-    if (resolved.session.credentialKind !== SERVICE_KIND) {
-      return context.json(
-        { error: 'forbidden', message: 'This endpoint requires an API credential.' },
-        403,
-      );
-    }
 
+    let authenticated;
     try {
-      await authentication.verifyDpop({
+      // One fail-closed call: it derives the session from the token (so no
+      // mismatched pair is possible), requires a DPoP proof, and refreshes the
+      // session's activity only after the proof holds — a bearer-only thief
+      // cannot keep the session alive.
+      authenticated = await authentication.authenticateMachineRequest({
+        sessionToken: token,
         proof: context.req.header('DPoP'),
         method: context.req.method,
         url: context.req.url,
-        sessionToken: token,
-        session: resolved.session,
         requireNonce: true,
       });
     } catch (error) {
@@ -232,18 +229,33 @@ export function requireMachineSession(
           dpopChallenge(await authentication.dpopNonce()),
         );
       }
+      // Any other DPoP failure is reported as one generic outcome. The verifier's
+      // reason (wrong key, replayed, bad signature) goes to server logs only, never
+      // to the caller, so a prober learns nothing from the distinctions.
+      if (isLocalWebAuthnError(error) && error.status === 401) {
+        return context.json({ error: 'unauthenticated', message: 'Authentication failed.' }, 401);
+      }
       return errorResponse(context, error);
+    }
+
+    // A service credential is the only kind these routes accept. A human passkey
+    // cannot produce a proof anyway (its key is not exportable), but check the
+    // server-chosen kind rather than rely on that.
+    if (authenticated.session.credentialKind !== SERVICE_KIND) {
+      return context.json(
+        { error: 'forbidden', message: 'This endpoint requires an API credential.' },
+        403,
+      );
     }
 
     // Rotate the client onto the current nonce while it is still succeeding, so a
     // slot turning over costs it nothing.
-    const nonce = await authentication.dpopNonce();
-    if (nonce) {
-      context.header('DPoP-Nonce', nonce);
+    if (authenticated.nonce) {
+      context.header('DPoP-Nonce', authenticated.nonce);
     }
 
-    context.set('authenticatedUser', resolved.user);
-    context.set('machineSession', resolved.session);
+    context.set('authenticatedUser', authenticated.user);
+    context.set('machineSession', authenticated.session);
     await next();
   };
 }

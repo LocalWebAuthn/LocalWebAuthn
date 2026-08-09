@@ -330,14 +330,6 @@ function localWebAuthnUpgradeStatements(fromVersion, dialect = "sqlite") {
   });
   return [...migrationStatements(fromVersion), ...tableStatements];
 }
-function localWebAuthnMigrationStatements(now = Date.now()) {
-  return [
-    ...localWebAuthnSchemaStatements(),
-    `INSERT INTO localwebauthn_migrations(version, applied_at)
-     VALUES (${String(LOCALWEBAUTHN_SCHEMA_VERSION)}, ${String(Math.trunc(now))})
-     ON CONFLICT DO NOTHING`
-  ];
-}
 
 export {
   LOCALWEBAUTHN_SCHEMA_VERSION,
@@ -347,6 +339,5 @@ export {
   localWebAuthnSchemaStatements,
   localWebAuthnMigrationsTableStatement,
   localWebAuthnPostgresSchemaStatements,
-  localWebAuthnUpgradeStatements,
-  localWebAuthnMigrationStatements
+  localWebAuthnUpgradeStatements
 };

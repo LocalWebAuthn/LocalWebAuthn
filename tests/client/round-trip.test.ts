@@ -981,6 +981,179 @@ describe('DPoP proofs bound to the credential key', () => {
   });
 });
 
+describe('authenticateMachineRequest is fail-closed', () => {
+  // A controllable clock so idle expiry is deterministic. Its start is the real
+  // wall clock so DPoP `iat` (which the client stamps) sits inside the acceptance
+  // window; the same clock is handed to createDpopProof so the two never drift.
+  function machineHarness(options: { rotationMs?: number } = {}) {
+    const clock = { now: Date.now() };
+    const database = new Database(':memory:');
+    migrateSqlite(database);
+    const user: AuthUser = {
+      id: 'user-1',
+      name: 'person@example.test',
+      displayName: 'A Person',
+      active: true,
+      webAuthnUserHandle: createUserHandle(),
+    };
+    const auth = new LocalWebAuthn({
+      rpName: 'Round Trip',
+      rpId: RP_ID,
+      expectedOrigins: ORIGIN,
+      store: new SqliteLocalWebAuthnStore(database),
+      users: { getUser: async (id) => (id === user.id ? user : null) },
+      credentialKinds: { service: { interactive: false, canRegister: false } },
+      ...(options.rotationMs ? { dpopNonce: { rotationMs: options.rotationMs } } : {}),
+      now: () => clock.now,
+    });
+    return { auth, user, database, clock };
+  }
+
+  /** Open a service session and return the token plus a proof factory bound to it. */
+  async function openMachineSession(fixture: ReturnType<typeof machineHarness>, url: string) {
+    const { keyStore, credentialId } = await bootstrap(fixture.auth, 'service');
+    const opened = await assertOnce(
+      fixture.auth,
+      keyStore,
+      {
+        credentialId,
+        userHandle: fixture.user.webAuthnUserHandle,
+        rpId: RP_ID,
+        origin: ORIGIN,
+      },
+      ['service'],
+    );
+    const proof = (accessToken: string, nonce?: string) =>
+      createDpopProof({
+        keyStore,
+        method: 'GET',
+        url,
+        accessToken,
+        nonce,
+        now: () => fixture.clock.now,
+      });
+    return { keyStore, credentialId, sessionToken: opened.sessionToken, proof };
+  }
+
+  const URL = `${ORIGIN}/api/machine/v1/whoami`;
+
+  it('accepts a valid proof, returns the derived identity, and issues a nonce', async () => {
+    const fixture = machineHarness({ rotationMs: 60_000 });
+    const session = await openMachineSession(fixture, URL);
+
+    // First proof carries no nonce: the server must demand one rather than accept it.
+    await expect(
+      fixture.auth.authenticateMachineRequest({
+        sessionToken: session.sessionToken,
+        proof: await session.proof(session.sessionToken),
+        method: 'GET',
+        url: URL,
+        requireNonce: true,
+      }),
+    ).rejects.toMatchObject({ code: 'dpop_nonce_required' });
+
+    const nonce = await fixture.auth.dpopNonce();
+    const result = await fixture.auth.authenticateMachineRequest({
+      sessionToken: session.sessionToken,
+      proof: await session.proof(session.sessionToken, nonce ?? undefined),
+      method: 'GET',
+      url: URL,
+      requireNonce: true,
+    });
+    expect(result.session.credentialKind).toBe('service');
+    expect(result.session.credentialId).toBe(encodeBase64Url(session.credentialId));
+    expect(result.nonce).toBeTruthy();
+  });
+
+  it('refuses a bearer-only request and does not refresh idle activity', async () => {
+    // The core of the blocker: a thief holding only the token, with no key to
+    // sign a proof, must not be able to keep the session alive. Without a proof
+    // the request is refused *and* leaves `lastSeenAt` untouched, so the session
+    // idles out on schedule.
+    const fixture = machineHarness();
+    const session = await openMachineSession(fixture, URL);
+    const idle = fixture.auth.config.durations.sessionIdleMs;
+
+    // Just under the idle window: still live, but a token-only request is refused
+    // for want of a proof — and must not touch the session.
+    fixture.clock.now += idle - 1_000;
+    await expect(
+      fixture.auth.authenticateMachineRequest({
+        sessionToken: session.sessionToken,
+        proof: undefined,
+        method: 'GET',
+        url: URL,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_dpop_proof' });
+
+    // Another near-idle step. If the previous request had refreshed activity this
+    // would still resolve and fail as `invalid_dpop_proof`; because it did not, the
+    // session has now idled out and the token no longer resolves at all.
+    fixture.clock.now += idle - 1_000;
+    await expect(
+      fixture.auth.authenticateMachineRequest({
+        sessionToken: session.sessionToken,
+        proof: undefined,
+        method: 'GET',
+        url: URL,
+      }),
+    ).rejects.toMatchObject({ code: 'unauthenticated' });
+  });
+
+  it('refreshes idle activity when the proof holds', async () => {
+    // The legitimate counterpart: a proof-carrying request keeps the session
+    // alive across what would otherwise be the idle horizon.
+    const fixture = machineHarness({ rotationMs: 60_000 });
+    const session = await openMachineSession(fixture, URL);
+    const idle = fixture.auth.config.durations.sessionIdleMs;
+
+    const authenticate = async () => {
+      const nonce = await fixture.auth.dpopNonce();
+      return fixture.auth.authenticateMachineRequest({
+        sessionToken: session.sessionToken,
+        proof: await session.proof(session.sessionToken, nonce ?? undefined),
+        method: 'GET',
+        url: URL,
+        requireNonce: true,
+      });
+    };
+
+    fixture.clock.now += idle - 1_000;
+    await expect(authenticate()).resolves.toMatchObject({ session: { credentialKind: 'service' } });
+    fixture.clock.now += idle - 1_000; // total elapsed now exceeds one idle window
+    await expect(authenticate()).resolves.toMatchObject({ session: { credentialKind: 'service' } });
+  });
+
+  it('cannot be tricked into pairing one token with another session', async () => {
+    // The method takes only the token, so there is no session argument to mismatch.
+    // A proof minted for one session's token is rejected against a different token,
+    // and each token authenticates strictly as its own session.
+    const fixture = machineHarness();
+    const a = await openMachineSession(fixture, URL);
+    const b = await openMachineSession(fixture, URL);
+    expect(a.sessionToken).not.toBe(b.sessionToken);
+
+    // A's proof (ath bound to A's token) presented with B's token is refused.
+    await expect(
+      fixture.auth.authenticateMachineRequest({
+        sessionToken: b.sessionToken,
+        proof: await a.proof(a.sessionToken),
+        method: 'GET',
+        url: URL,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_dpop_proof' });
+
+    // Each token resolves to its own credential, never the other's.
+    const resolvedA = await fixture.auth.authenticateMachineRequest({
+      sessionToken: a.sessionToken,
+      proof: await a.proof(a.sessionToken),
+      method: 'GET',
+      url: URL,
+    });
+    expect(resolvedA.session.credentialId).toBe(encodeBase64Url(a.credentialId));
+  });
+});
+
 describe('the two-line credential file', () => {
   it('round-trips through format and parse', async () => {
     const { keyStore, exportPrivateKey } = await generateKeyStore(ES256);
@@ -1025,5 +1198,95 @@ describe('the two-line credential file', () => {
 
   it('refuses a payload version it does not understand', () => {
     expect(() => parseCredentialPayload(JSON.stringify({ v: 99 }))).toThrow(/Unsupported/u);
+  });
+});
+
+describe('compromise revocation and the registration race', () => {
+  // A credential registered *during* remediation — after the descendant snapshot
+  // is read but before the revoke completes — must not survive. This drives that
+  // exact interleaving deterministically: a store proxy commits a fresh child the
+  // first time revokeCredentialTree enumerates descendants, so the child is absent
+  // from that snapshot. Re-enumeration to a fixed point is what catches it.
+  it('revokes a credential registered concurrently with the subtree revoke', async () => {
+    const database = new Database(':memory:');
+    migrateSqlite(database);
+    const realStore = new SqliteLocalWebAuthnStore(database);
+    const user: AuthUser = {
+      id: 'user-1',
+      name: 'person@example.test',
+      displayName: 'A Person',
+      active: true,
+      webAuthnUserHandle: createUserHandle(),
+    };
+
+    // Runs once, injected between the first snapshot and the first revoke.
+    let pending: (() => Promise<void>) | null = null;
+    const store = new Proxy(realStore, {
+      get(target, property, receiver) {
+        if (property === 'credentialDescendants') {
+          return async (...args: Parameters<typeof target.credentialDescendants>) => {
+            const snapshot = await target.credentialDescendants(...args);
+            if (pending) {
+              const run = pending;
+              pending = null;
+              await run();
+            }
+            return snapshot;
+          };
+        }
+        const value: unknown = Reflect.get(target, property, receiver);
+        return typeof value === 'function'
+          ? (value as (...a: unknown[]) => unknown).bind(target)
+          : value;
+      },
+    }) as unknown as typeof realStore;
+
+    const auth = new LocalWebAuthn({
+      rpName: 'Round Trip',
+      rpId: RP_ID,
+      expectedOrigins: ORIGIN,
+      store,
+      users: { getUser: async (id) => (id === user.id ? user : null) },
+    });
+
+    // root -> A, both created before remediation begins.
+    const root = await bootstrap(auth, undefined, 'root');
+    const childA = await enroll(auth, root.verified.sessionToken, undefined, undefined, 'A');
+
+    // Pre-stage child B (parent = root), authorized but not yet committed.
+    const keyStoreB = (await generateKeyStore(ES256)).keyStore;
+    const optionsB = await auth.registrationOptions({ sessionToken: root.verified.sessionToken });
+    const responseB = await createRegistrationResponse({
+      keyStore: keyStoreB,
+      challenge: optionsB.options.challenge,
+      rpId: RP_ID,
+      origin: ORIGIN,
+    });
+    let childBId = '';
+    pending = async () => {
+      const verified = await auth.verifyRegistration({
+        response: responseB.response as unknown as RegistrationResponseJSON,
+        challengeToken: optionsB.challengeToken,
+        sessionToken: root.verified.sessionToken,
+        label: 'B',
+      });
+      childBId = verified.credentialId;
+    };
+
+    const revoked = await auth.revokeCredentialTree('user-1', root.verified.credentialId);
+
+    // B was committed after the snapshot, so it was never in the first pass; the
+    // fixed-point re-read must still have revoked it.
+    expect(childBId).not.toBe('');
+    expect(revoked).toContain(childBId);
+
+    const all = await auth.listCredentials('user-1', true);
+    const active = all.filter((credential) => credential.revokedAt === null);
+    expect(active).toEqual([]);
+    for (const id of [root.verified.credentialId, childA.verified.credentialId, childBId]) {
+      expect(all.find((credential) => credential.id === id)?.revokedAt).not.toBeNull();
+    }
+
+    database.close();
   });
 });

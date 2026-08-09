@@ -404,7 +404,10 @@ describe('restrictions enforced over HTTP', () => {
     });
     const response = await client.fetch('/api/machine/v1/whoami');
     expect(response.status).toBe(401);
-    expect(await response.json()).toMatchObject({ error: 'invalid_dpop_proof' });
+    // The route returns one generic outcome for every DPoP failure. The specific
+    // reason (missing proof, wrong key, replayed) is a server-log detail, never
+    // surfaced to the caller, so a prober cannot tell the cases apart.
+    expect(await response.json()).toMatchObject({ error: 'unauthenticated' });
   });
 
   it('challenges a nonce-less proof and accepts the retry', async () => {
@@ -521,7 +524,8 @@ describe('restrictions enforced over HTTP', () => {
       new Request(`${ORIGIN}/api/machine/v1/whoami`, { headers }),
     );
     expect(replaySecond.status).toBe(401);
-    expect(await replaySecond.json()).toMatchObject({ error: 'invalid_dpop_proof' });
+    // Generic outcome again: "replayed" is not disclosed to the caller.
+    expect(await replaySecond.json()).toMatchObject({ error: 'unauthenticated' });
   });
 
   it('stops a service session from minting another credential', async () => {

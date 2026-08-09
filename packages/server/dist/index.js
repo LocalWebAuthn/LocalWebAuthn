@@ -1234,26 +1234,66 @@ var LocalWebAuthn = class {
   async revokeCredentialTree(userId, credentialId, options = {}) {
     const now = this.#now();
     const kinds = options.kinds ? new Set(options.kinds) : null;
-    const subtree = await this.#store.credentialDescendants(userId, credentialId);
+    return this.#revokeCredentialsToFixedPoint(
+      userId,
+      now,
+      () => this.#store.credentialDescendants(userId, credentialId),
+      (credential) => !kinds || kinds.has(credential.kind),
+      (credential) => this.#emit({
+        type: "credential.revoked",
+        at: now,
+        userId,
+        credentialId: credential.id,
+        credentialKind: credential.kind
+      })
+    );
+  }
+  /**
+   * Revoke every credential a re-read of `enumerate` yields that `select`
+   * accepts, repeating until a pass revokes nothing.
+   *
+   * Re-enumeration, not a single snapshot, is what closes the remediation race. A
+   * credential registered *after* the list is first read — by a live session
+   * racing the revoke — would not be in that snapshot and would survive it.
+   * Reading again after each pass catches it, and the store's conditional insert
+   * (which requires the authorizing credential's `revoked_at IS NULL`) means a
+   * revoked node can author no further children, so the frontier shrinks and the
+   * loop converges — normally in two passes: one to revoke, one to confirm.
+   *
+   * Residual, recorded in SECURITY.md and docs/REVIEW-20260809.md §3: an attacker
+   * who wins the registration race in *every* pass is not fully fenced by
+   * re-enumeration alone. The complete guarantee is a registration epoch; until it
+   * exists, a host doing incident response should also stop accepting
+   * registrations. The pass bound turns that pathological case into a logged
+   * best-effort stop rather than an unbounded loop.
+   */
+  async #revokeCredentialsToFixedPoint(userId, now, enumerate, select, onRevoked) {
     const revoked = [];
-    for (const credential of subtree) {
-      if (credential.revokedAt !== null || kinds && !kinds.has(credential.kind)) {
-        continue;
-      }
-      const result = await this.#store.revokeCredential(userId, credential.id, now, {
-        allowLastCredential: true
-      });
-      if (result === "revoked") {
-        revoked.push(credential.id);
-        await this.#emit({
-          type: "credential.revoked",
-          at: now,
-          userId,
-          credentialId: credential.id,
-          credentialKind: credential.kind
+    const seen = /* @__PURE__ */ new Set();
+    const maxPasses = 64;
+    for (let pass = 0; pass < maxPasses; pass += 1) {
+      let progressed = false;
+      for (const credential of await enumerate()) {
+        if (credential.revokedAt !== null || seen.has(credential.id) || !select(credential)) {
+          continue;
+        }
+        const result = await this.#store.revokeCredential(userId, credential.id, now, {
+          allowLastCredential: true
         });
+        if (result === "revoked") {
+          progressed = true;
+          seen.add(credential.id);
+          revoked.push(credential.id);
+          await onRevoked?.(credential);
+        }
+      }
+      if (!progressed) {
+        return revoked;
       }
     }
+    this.#logger.warn("Credential revocation did not converge; registrations may be racing it.", {
+      userId
+    });
     return revoked;
   }
   /** List a user's credentials; revoked ones only when `includeRevoked` is `true`. */
@@ -1316,20 +1356,17 @@ var LocalWebAuthn = class {
     const now = this.#now();
     if (options.kinds) {
       const kinds = new Set(options.kinds);
-      const credentials = await this.#store.listCredentials(userId, true);
-      for (const credential of credentials) {
-        if (credential.revokedAt !== null || !kinds.has(credential.kind)) {
-          continue;
-        }
-        await this.#store.revokeCredential(userId, credential.id, now, {
-          allowLastCredential: true
-        });
-      }
       for (const kind of kinds) {
         for (const grantId of await this.#store.revokePendingEnrollmentGrants(userId, now, kind)) {
           await this.#emit({ type: "enrollment.revoked", at: now, userId, grantId });
         }
       }
+      await this.#revokeCredentialsToFixedPoint(
+        userId,
+        now,
+        () => this.#store.listCredentials(userId, true),
+        (credential) => kinds.has(credential.kind)
+      );
     } else {
       await this.#store.revokeUserAuthentication(userId, now);
     }
@@ -1486,6 +1523,13 @@ var LocalWebAuthn = class {
   /**
    * Verify a DPoP proof (RFC 9449) for a request on an already-resolved session.
    *
+   * **Prefer {@link authenticateMachineRequest} for a machine route.** This is
+   * the lower-level primitive: it trusts the caller to have resolved `session`
+   * from `sessionToken` and to touch the session only after this succeeds. Pair a
+   * token with the wrong session, or resolve-with-touch before calling this, and
+   * the sender-constraint guarantee is lost. `authenticateMachineRequest` removes
+   * both footguns by taking only the token.
+   *
    * Derives the expected key thumbprint from the session's credential, so there
    * is no per-session key material to store, then claims the proof's `jti`
    * through the store so a captured proof cannot be replayed inside its `iat`
@@ -1535,6 +1579,53 @@ var LocalWebAuthn = class {
         401
       );
     }
+  }
+  /**
+   * Resolve a machine request's session **only if** its DPoP proof holds — one
+   * fail-closed operation for a sender-constrained (RFC 9449) route.
+   *
+   * This is the method a machine route should call. It closes two gaps that come
+   * from assembling {@link resolveSession} and {@link verifyDpop} by hand:
+   *
+   * - **The session is derived from the token, never supplied alongside it.** A
+   *   caller cannot pair a token for one session with the resolved identity of
+   *   another, because there is only one input.
+   * - **Idle activity is touched only after the proof succeeds.** Resolving first
+   *   with `touch` would let a thief holding just the bearer token keep the idle
+   *   timer alive to absolute expiry without ever producing a proof. Here a
+   *   request that cannot prove possession changes no server state.
+   *
+   * A DPoP proof is always required; there is no bearer-only path through this
+   * method. Throws `unauthenticated` (401) when the token resolves to no live
+   * session, `dpop_nonce_required` (401) when a nonce is demanded and absent
+   * (answer with {@link dpopChallenge}), and `invalid_dpop_proof` (401) on any
+   * other proof failure. On success the session's `lastSeenAt` is advanced.
+   *
+   * @returns The authenticated user and session, plus the current response nonce
+   *   (`null` when nonce issuance is not configured).
+   */
+  async authenticateMachineRequest(input) {
+    const resolved = await this.resolveSession(input.sessionToken, false);
+    if (!resolved) {
+      throw new LocalWebAuthnError("unauthenticated", "An API session is required.", 401);
+    }
+    await this.verifyDpop({
+      proof: input.proof,
+      method: input.method,
+      url: input.url,
+      sessionToken: input.sessionToken,
+      session: resolved.session,
+      requireNonce: input.requireNonce
+    });
+    const now = this.#now();
+    if (!await this.#store.touchSession(await sha256(input.sessionToken), now)) {
+      throw new LocalWebAuthnError("unauthenticated", "An API session is required.", 401);
+    }
+    return {
+      user: resolved.user,
+      session: { ...resolved.session, lastSeenAt: now },
+      nonce: await this.dpopNonce()
+    };
   }
   async #verifyRegistrationAuthorization(challenge, input) {
     if (challenge.grantId && input.enrollmentSessionToken) {

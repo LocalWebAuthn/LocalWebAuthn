@@ -8,15 +8,33 @@ import {
 } from "./chunk-CSU6OHVF.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
-  localWebAuthnSchemaStatements
-} from "./chunk-6DUT7GUX.js";
+  localWebAuthnMigrationsTableStatement,
+  localWebAuthnUpgradeStatements
+} from "./chunk-ANCBC7RI.js";
 
 // src/d1.ts
 async function migrateD1(database, now = Date.now()) {
-  await database.batch([
-    ...localWebAuthnSchemaStatements().map((statement) => database.prepare(statement)),
-    database.prepare(SQL.insertMigration).bind(LOCALWEBAUTHN_SCHEMA_VERSION, now)
-  ]);
+  await database.prepare(localWebAuthnMigrationsTableStatement()).run();
+  const from = await installedD1Version(database);
+  if (from >= LOCALWEBAUTHN_SCHEMA_VERSION) {
+    return;
+  }
+  const upgrade = localWebAuthnUpgradeStatements(from, "sqlite");
+  try {
+    await database.batch([
+      ...upgrade.map((statement) => database.prepare(statement)),
+      database.prepare(SQL.insertMigration).bind(LOCALWEBAUTHN_SCHEMA_VERSION, now)
+    ]);
+  } catch (error) {
+    if (await installedD1Version(database) >= LOCALWEBAUTHN_SCHEMA_VERSION) {
+      return;
+    }
+    throw error;
+  }
+}
+async function installedD1Version(database) {
+  const row = await database.prepare(SQL.selectSchemaVersion).first();
+  return row?.version ?? 0;
 }
 function guardTripped(error) {
   if (String(error).includes("CHECK constraint failed")) {
