@@ -1,6 +1,6 @@
 {
   "name": "@localwebauthn/client",
-  "version": "2.2.0",
+  "version": "3.0.0-rc.1",
   "description": "Software WebAuthn authenticator and DPoP client for headless API access",
   "type": "module",
   "license": "MIT",

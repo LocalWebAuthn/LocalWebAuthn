@@ -56,6 +56,17 @@ jobs:
           test "$SERVER_VERSION" = "$CLIENT_VERSION"
           test "$GITHUB_REF_NAME" = "v$SERVER_VERSION"
       - run: npm run check
-      - run: npm publish --workspace @localwebauthn/server
-      - run: npm publish --workspace @localwebauthn/browser
-      - run: npm publish --workspace @localwebauthn/client
+      # A prerelease must not become `latest`, or `npm install @localwebauthn/server`
+      # starts handing everyone an rc. Derive the dist-tag from the version: anything
+      # with a hyphen (3.0.0-rc.1) publishes under `next`, a final version under
+      # `latest`. Plain `npm publish` would tag every version `latest`.
+      - name: Choose the npm dist-tag
+        run: |
+          VERSION="$(node -p "require('./packages/server/package.json').version")"
+          case "$VERSION" in
+            *-*) echo "NPM_TAG=next" >> "$GITHUB_ENV" ;;
+            *)   echo "NPM_TAG=latest" >> "$GITHUB_ENV" ;;
+          esac
+      - run: npm publish --workspace @localwebauthn/server --tag "$NPM_TAG"
+      - run: npm publish --workspace @localwebauthn/browser --tag "$NPM_TAG"
+      - run: npm publish --workspace @localwebauthn/client --tag "$NPM_TAG"

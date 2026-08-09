@@ -62,45 +62,53 @@ npm pack --workspace @localwebauthn/client   # inspect the real tarball, not a d
 tar -tzf localwebauthn-client-*.tgz          # expect LICENSE, README.md, package.json, dist/
 ```
 
-Then publish, with provenance, as a public scoped package:
+Then publish it as a prerelease, so the bootstrap cannot become anyone's default install:
 
 ```console
-npm publish --workspace @localwebauthn/client --access public --provenance
+npm publish --workspace @localwebauthn/client --tag next
 ```
 
-Notes on each flag and the likely failures:
+Notes on the flags and the likely failures:
 
-- **`--access public`** is required for the _first_ publish of a scoped package. Without it npm
-  attempts a private publish and fails with `402 Payment Required` on a free account. Later
-  versions inherit the setting.
-- **`--provenance`** from a local machine needs a supported CI OIDC context; if it errors, drop
-  the flag for the bootstrap and let the workflow attest subsequent releases. Provenance on the
-  bootstrap version is nice, not required.
-- **2FA**: with publishing 2FA enabled, npm prompts for an OTP. `npm publish --otp=NNNNNN` avoids
-  an interactive prompt in a non-TTY shell.
-- **`E403` / name unavailable**: confirm the scope exists and your account is a member with
-  publish rights (`npm org ls localwebauthn`).
-- The version you bootstrap becomes permanent. If you intend `3.0.0` to be the first public
-  client release, bootstrap exactly `3.0.0` — do not bootstrap `2.2.0` as a placeholder, because
-  npm keeps it forever and the version set would no longer be uniform. Alternatively bootstrap a
-  prerelease (`3.0.0-rc.1`, published with `--tag next` so it does not become `latest`) to prove
-  the pipeline, then let the workflow publish `3.0.0`.
+- **`--tag next` matters more than it looks.** Without a `--tag`, npm marks the version `latest`,
+  which is what a bare `npm install @localwebauthn/client` resolves. Bootstrapping under `next`
+  keeps the record honest: nothing is `latest` until a final version ships.
+- **`--access public` is not needed here**: `packages/client/package.json` already sets
+  `publishConfig.access: "public"`. (A scoped package without that would need the flag, or npm
+  attempts a private publish and fails with `402` on a free account.)
+- **Do not pass `--provenance` from a laptop.** Provenance needs a supported CI OIDC context and
+  errors outside one. The workflow attests every subsequent release; the bootstrap version simply
+  will not have provenance, which is acceptable for an rc.
+- **2FA**: with publishing 2FA enabled npm prompts for an OTP; `--otp=NNNNNN` avoids the prompt
+  in a non-TTY shell.
+- **`E403` / name unavailable**: confirm the scope exists and your account may publish to it
+  (`npm org ls localwebauthn`).
+- **Every version you publish is permanent.** `npm unpublish` is not an undo — it burns the
+  number. Bootstrap a prerelease (`3.0.0-rc.1`), not a placeholder like `2.2.0`, and let the
+  final `3.0.0` come from the workflow.
 
 Immediately after the bootstrap publish, configure the client's Trusted Publisher exactly as
 for the other two (GitHub Actions · `LocalWebAuthn` · `LocalWebAuthn` · `publish.yml` ·
 environment `npm`), then verify:
 
 ```console
-npm view @localwebauthn/client version
-npm view @localwebauthn/client dist.tarball
+npm dist-tag ls @localwebauthn/client         # expect `next`, and NO `latest`
+npm view @localwebauthn/client@next version
+
 mkdir /tmp/lwa-consumer && cd /tmp/lwa-consumer && npm init -y
-npm install @localwebauthn/client            # a clean consumer, no workspace
+npm install @localwebauthn/client@next       # @next is required while no latest exists
 node --input-type=module -e "import { ES256 } from '@localwebauthn/client'; console.log(ES256)"
 ```
 
-That last check matters: it proves the _published artifact_ resolves and imports, which a
-workspace test cannot — the workspace resolves `dist/` through a symlink regardless of whether
-the tarball contained it.
+Install `@next` explicitly: with no `latest` dist-tag, a bare `npm install @localwebauthn/client`
+resolves `@latest` and fails. That is the intended state for a prerelease-only package — and the
+reason to confirm it with `npm dist-tag ls` rather than assume. If a `latest` did get set by
+accident, `npm dist-tag add @localwebauthn/client@3.0.0 latest` on the real release fixes the
+default, but the stray version stays published forever.
+
+That consumer check is the one a workspace cannot make: inside the workspace, `dist/` resolves
+through a symlink whether or not the tarball contained it. Installing the tarball is what proves
+the published artifact resolves, imports and runs.
 
 ## Regular Release
 
