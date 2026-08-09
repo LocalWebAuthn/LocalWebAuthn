@@ -3,6 +3,7 @@ import {
   createUserHandle,
   describeSignupPhase,
   isLocalWebAuthnError,
+  provisioningPageHeaders,
   signupPhase,
 } from '@localwebauthn/server';
 import { serveStatic } from '@hono/node-server/serve-static';
@@ -703,11 +704,33 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
   );
 
   if (options.staticRoot) {
+    // The single-page app displays a freshly minted API credential's private key,
+    // so the document that carries it gets the show-once hardening: a CSP with no
+    // inline script, no framing, no caching, no referrer. One injected script tag
+    // on this page could read the key straight out of the DOM, and headers are the
+    // only thing standing between "our bundle" and "any bundle".
+    //
+    // This app is one origin for both the admin UI and the mint panel, which is a
+    // demo simplification: in production, serve a provisioning page from its own
+    // minimal origin so its attack surface is not the whole application's.
+    app.use('/assets/*', async (context, next) => {
+      await next();
+      for (const [header, value] of Object.entries(provisioningPageHeaders())) {
+        context.header(header, value);
+      }
+    });
     app.use('/assets/*', serveStatic({ root: options.staticRoot }));
+
     const index = serveStatic({ root: options.staticRoot, path: 'index.html' });
-    app.get('/', index);
-    app.get('/enroll', index);
-    app.get('/signup', index);
+    const hardenedIndex: MiddlewareHandler<DemoEnvironment> = async (context, next) => {
+      for (const [header, value] of Object.entries(provisioningPageHeaders())) {
+        context.header(header, value);
+      }
+      return index(context, next);
+    };
+    app.get('/', hardenedIndex);
+    app.get('/enroll', hardenedIndex);
+    app.get('/signup', hardenedIndex);
   }
 
   app.notFound((context) =>

@@ -401,6 +401,34 @@ function cookieAttributes(options) {
   }
   return attributes;
 }
+function provisioningPageHeaders(options = {}) {
+  const script = options.scriptNonce ? `'self' 'nonce-${options.scriptNonce}'` : `'self'`;
+  const connect = ["'self'", ...options.connectSrc ?? []].join(" ");
+  return {
+    "Content-Security-Policy": [
+      `default-src 'self'`,
+      `script-src ${script}`,
+      `style-src 'self'`,
+      `img-src 'self' data:`,
+      `connect-src ${connect}`,
+      `font-src 'self'`,
+      `object-src 'none'`,
+      `base-uri 'none'`,
+      `form-action 'none'`,
+      `frame-ancestors 'none'`
+    ].join("; "),
+    "Cache-Control": "no-store, no-cache, must-revalidate, private",
+    Pragma: "no-cache",
+    Expires: "0",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Embedder-Policy": "require-corp",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY"
+  };
+}
 function dpopChallenge(nonce) {
   const headers = { "WWW-Authenticate": 'DPoP error="use_dpop_nonce"' };
   if (nonce) {
@@ -1758,6 +1786,7 @@ export {
   kindPolicy,
   nextSignupStep,
   parseCookieHeader,
+  provisioningPageHeaders,
   serializeClearedCookie,
   serializeCookie,
   sha256,

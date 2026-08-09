@@ -566,6 +566,13 @@ function issuedApiKeyCallout(): string {
             it cannot be shown again. Save it as <code>.env</code> beside your script,
             then <code>chmod 0600</code> it.
           </p>
+          <p class="section-help">
+            &ldquo;Cannot be shown again&rdquo; is about this page, not about your
+            machine: copying or downloading leaves copies in clipboard history, your
+            Downloads folder and any backup of either. Revoke this credential and mint
+            a fresh one if you are unsure where it ended up &mdash; that is cheap, and
+            it is why the button below exists.
+          </p>
         </div>
       </div>
       <pre class="enrollment-url" id="api-key-env">${escapeHtml(issued.env)}</pre>

@@ -228,6 +228,44 @@ declare function authCookieNames(publicOrigin: string, namespace?: string): Auth
  */
 declare function cookieAttributes(options: CookieAttributesOptions): CookieAttributes;
 /**
+ * Response headers for a page that displays credential material once — the
+ * "here is your API key, copy it now" page.
+ *
+ * This is the same hardening every service with a show-once token page needs, and
+ * it is deliberately a function for the same reason {@link cookieAttributes} is: a
+ * checklist in prose gets three of six items right. What it sets, and why each one
+ * is on the list:
+ *
+ * - `Content-Security-Policy` — `default-src 'self'` with no `unsafe-inline`, so a
+ *   single injected or third-party script cannot read the key out of the DOM. This
+ *   is the one that matters most; everything else is depth.
+ * - `frame-ancestors 'none'` (and `X-Frame-Options: DENY` for older agents) — the
+ *   page cannot be framed, so it cannot be clickjacked into revealing anything.
+ * - `Cache-Control: no-store` plus `Pragma`/`Expires` — no shared cache, no disk
+ *   cache, and no back-button redisplay of a secret.
+ * - `Referrer-Policy: no-referrer` — nothing about this URL travels onward.
+ * - `Permissions-Policy` — the page needs no camera, microphone or geolocation, so
+ *   it asks for none.
+ * - `Cross-Origin-Opener-Policy`/`-Embedder-Policy`/`-Resource-Policy` — isolate the
+ *   browsing context so another origin cannot get a handle to this window.
+ * - `X-Content-Type-Options: nosniff`.
+ *
+ * **Headers are necessary, not sufficient.** They cannot help if the page loads
+ * third-party JavaScript, registers a service worker, or the value reaches a
+ * clipboard, a download, an SSR payload or an error reporter — all of which outlive
+ * the page. See the "provisioning pages" guidance in README-DETAIL.org, and prefer
+ * generating a script's key *on the machine that will use it*, which removes this
+ * page from the design entirely.
+ *
+ * @param options.scriptNonce - Per-response nonce for a `<script nonce>` tag, when
+ *   the page cannot use only external scripts. Omit for a fully external bundle.
+ * @param options.connectSelf - Origins the page may call, beyond `'self'`.
+ */
+declare function provisioningPageHeaders(options?: {
+    scriptNonce?: string;
+    connectSrc?: string[];
+}): Record<string, string>;
+/**
  * Response headers that ask a DPoP client to retry with a server-issued nonce
  * (RFC 9449 section 8).
  *
@@ -732,4 +770,4 @@ declare class LocalWebAuthn {
     }>;
 }
 
-export { type AuthCookieKind, type AuthCookieNames, AuthUser, AuthenticationOptionsInput, AuthenticationOptionsResult, AuthenticationVerificationInput, AuthenticationVerificationResult, CleanupResult, type CookieAttributes, type CookieAttributesOptions, Credential, type DpopVerification, type DpopVerificationInput, EnrollmentExchange, EnrollmentIssue, LocalWebAuthn, LocalWebAuthnError, type LocalWebAuthnErrorCode, LocalWebAuthnOptions, type NormalizedConfig, type NormalizedCredentialKind, type PublicJwk, RegistrationOptionsInput, RegistrationOptionsResult, RegistrationVerificationInput, RegistrationVerificationResult, SELF_SERVE_SIGNUP_STEPS, SessionIdentity, type SignupFacts, type SignupNextStep, type SignupPhase, authCookieNames, cookieAttributes, coseToJwk, createEnrollmentToken, createOpaqueToken, createUserHandle, decodeBase64Url, defaultKindPolicy, describeSignupPhase, dpopChallenge, encodeBase32, encodeBase64Url, equalBytes, isExactOrigin, isHttpsPublicOrigin, isLocalWebAuthnError, jwkThumbprint, kindPolicy, nextSignupStep, parseCookieHeader, serializeClearedCookie, serializeCookie, sha256, signupPhase, verifyDpopProof };
+export { type AuthCookieKind, type AuthCookieNames, AuthUser, AuthenticationOptionsInput, AuthenticationOptionsResult, AuthenticationVerificationInput, AuthenticationVerificationResult, CleanupResult, type CookieAttributes, type CookieAttributesOptions, Credential, type DpopVerification, type DpopVerificationInput, EnrollmentExchange, EnrollmentIssue, LocalWebAuthn, LocalWebAuthnError, type LocalWebAuthnErrorCode, LocalWebAuthnOptions, type NormalizedConfig, type NormalizedCredentialKind, type PublicJwk, RegistrationOptionsInput, RegistrationOptionsResult, RegistrationVerificationInput, RegistrationVerificationResult, SELF_SERVE_SIGNUP_STEPS, SessionIdentity, type SignupFacts, type SignupNextStep, type SignupPhase, authCookieNames, cookieAttributes, coseToJwk, createEnrollmentToken, createOpaqueToken, createUserHandle, decodeBase64Url, defaultKindPolicy, describeSignupPhase, dpopChallenge, encodeBase32, encodeBase64Url, equalBytes, isExactOrigin, isHttpsPublicOrigin, isLocalWebAuthnError, jwkThumbprint, kindPolicy, nextSignupStep, parseCookieHeader, provisioningPageHeaders, serializeClearedCookie, serializeCookie, sha256, signupPhase, verifyDpopProof };

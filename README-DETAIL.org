@@ -474,6 +474,53 @@ separate =LocalWebAuthnDpopStore= contract, and the service checks for them wher
 them, throwing =invalid_configuration= naming the missing ones.  Every official adapter
 implements both.
 
+* Provisioning pages: showing a secret once
+
+If a page in your application displays credential material --- a minted API
+credential's private key, or any show-once token --- it needs hardening, and this is
+the same hardening every service with a "copy your API key now" page needs.  It is
+well-trodden, not exotic: about six headers, plus one rule about what else the page is
+allowed to load.
+
+#+begin_src ts
+import { provisioningPageHeaders } from '@localwebauthn/server';
+
+// On the response that carries the document (and its assets):
+for (const [header, value] of Object.entries(provisioningPageHeaders())) {
+  response.headers.set(header, value);
+}
+#+end_src
+
+It sets a CSP with no =unsafe-inline= (the one that matters --- one injected or
+third-party script can read the key out of the DOM), =frame-ancestors 'none'=,
+=Cache-Control: no-store=, =Referrer-Policy: no-referrer=, a permissions policy that
+asks for nothing, and cross-origin isolation.  Pass =scriptNonce= if the page cannot
+be built from external scripts alone, and =connectSrc= for extra API origins.
+
+*Headers are necessary, not sufficient.*  The things they cannot reach:
+
+- *Third-party JavaScript.* Analytics, tag managers, session replay, a chat widget:
+  any of them can read the DOM.  Serve a provisioning page from a *minimal, dedicated
+  origin* with only your own bundle, so its blast radius is not your whole app's.
+- *Service workers*, which can intercept and cache responses.  Register none there.
+- *Copies that outlive the page.*  Clipboard history, the Downloads folder, backups of
+  either, terminal scrollback, an SSR payload, an error reporter or a session-replay
+  tool that serialises application state.  Keep the value out of anything that
+  persists or transmits state, and say so in the UI --- the demo does.
+- *Erasure.*  Clearing a buffer is hygiene, not a guarantee: WebCrypto does not
+  promise that key material is destroyed when a reference is dropped.  Never tell a
+  user a value is "gone".
+
+Two design choices reduce the risk more than any header:
+
+1. *Make the credential cheap to replace.*  Revocation is one call, heritage records
+   what each credential created, and minting another costs seconds.  A secret you can
+   discard on suspicion is worth far less to an attacker than one you cannot.
+2. *Do not put the key in a browser at all.*  Generate a script's key **on the machine
+   that will run the script**, so the only copy is born where it lives and no
+   clipboard, download or page is ever involved.  Browser minting is a
+   *compatibility* path; see [[./docs/API-AUTH.org][docs/API-AUTH.org]].
+
 * Credential heritage
 
 Every credential this package creates was authorized either by an enrollment grant or by an

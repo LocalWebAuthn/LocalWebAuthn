@@ -30,6 +30,7 @@ export {
   isExactOrigin,
   isHttpsPublicOrigin,
   parseCookieHeader,
+  provisioningPageHeaders,
   serializeClearedCookie,
   serializeCookie,
   type AuthCookieKind,

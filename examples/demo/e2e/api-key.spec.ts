@@ -89,7 +89,17 @@ async function enrollmentUrl(): Promise<{ url: string; email: string }> {
 test('a person mints an API credential, and the CLI script uses it', async ({ page }) => {
   await addVirtualPasskey(page.context(), page);
   const person = await enrollmentUrl();
-  await page.goto(person.url);
+  const document = await page.goto(person.url);
+
+  // The page about to hold a private key must arrive hardened. Asserted on the
+  // real response rather than on the helper, because the value of a header is
+  // whether it reaches the browser.
+  const csp = document?.headers()['content-security-policy'] ?? '';
+  expect(csp).toContain("default-src 'self'");
+  expect(csp).not.toContain('unsafe-inline');
+  expect(csp).toContain("frame-ancestors 'none'");
+  expect(document?.headers()['cache-control']).toContain('no-store');
+
   await page.getByRole('button', { name: 'Create passkey' }).click();
   await expect(page.getByRole('heading', { name: 'Manage access' })).toBeVisible();
 
