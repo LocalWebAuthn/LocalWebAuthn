@@ -15,7 +15,7 @@ import type { BrowserContext, Page } from '@playwright/test';
 
 import { expect, test } from '@playwright/test';
 import { execFile } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -42,6 +42,17 @@ async function addVirtualPasskey(context: BrowserContext, page: Page) {
       automaticPresenceSimulation: true,
     },
   });
+}
+
+/** Screenshot for the README, only when a capture directory is set. */
+async function capture(page: Page, name: string): Promise<void> {
+  const screenshotDirectory = process.env.DEMO_SCREENSHOT_DIR;
+  if (!screenshotDirectory) {
+    return;
+  }
+  const directory = resolve(screenshotDirectory);
+  mkdirSync(directory, { recursive: true });
+  await page.screenshot({ path: resolve(directory, name), fullPage: true });
 }
 
 /**
@@ -103,6 +114,12 @@ test('a person mints an API credential, and the CLI script uses it', async ({ pa
   // It is listed as an API credential, separately from the person's passkey.
   await expect(page.getByRole('heading', { name: 'API credentials' })).toBeVisible();
   await expect(page.getByText('service · Last used')).toBeVisible();
+
+  // Capture for the README only after dismissing the one-time panel: that panel
+  // holds a real private key, and a committed screenshot must not.
+  await page.getByRole('button', { name: 'Done' }).click();
+  await expect(env).toBeHidden();
+  await capture(page, 'demo-api-credential.png');
 
   // Hand the file to the real CLI, pointed at the running demo server.
   const directory = mkdtempSync(join(tmpdir(), 'lwa-e2e-'));

@@ -28,10 +28,15 @@ The command resets its isolated database and replaces:
 - `docs/images/demo-passkeys-mobile.png`
 - `docs/images/demo-signup-inbox.png`
 - `docs/images/demo-recovery-pending.png`
+- `docs/images/demo-api-credential.png`
 
 The signup screenshots contain proof-link OTPs from the throwaway e2e database; by the
 end of the capturing run that signup's enrollment is claimed and exchanged and the
 recovery is canceled, so no captured link is live.
+
+The API-credential screenshot is taken **after** the one-time panel is dismissed. That
+panel holds a real private key — the only copy — so it is deliberately not captured; the
+`.env` shape is shown as text in the README instead.
 
 Enrollment fragments are consumed before Playwright captures a page. The administration
 screenshot is taken after the issued link is dismissed and the client has enrolled, so

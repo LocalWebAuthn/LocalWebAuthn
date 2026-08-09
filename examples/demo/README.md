@@ -62,6 +62,19 @@ http://localhost:4173/enroll#token=...
    again. Use these when a session, not a credential, is the problem.
 7. **Re-enroll** revokes their passkeys and issues a recovery link (the
    documented recovery order).
+8. **Create API credential** mints a Passkey for a script. The page generates
+   the key pair itself, so the private half never reaches the server and is
+   shown exactly once as a two-line `.env`. Save it, then:
+
+   ```console
+   npm run api-demo --workspace @localwebauthn/demo -- ./nightly-export.env
+   npm run api-demo --workspace @localwebauthn/demo -- ./nightly-export.env --dry-run
+   ```
+
+   No browser, no human, no biometric — `--dry-run` prints the constructed
+   `clientDataJSON`, `authenticatorData`, signature and DPoP proof. Revoking the
+   credential stops the script on its next ceremony; the person's own passkeys
+   are untouched.
 
 `make demo-reset` removes only `examples/demo/.data/localwebauthn-demo.db`.
 
@@ -75,8 +88,10 @@ Visiting `/` without a passkey shows sign-in help pointing at the enrollment URL
 | `src/database.ts`       | App-owned `demo_clients` + package SQLite migration           |
 | `src/auth.ts`           | Complete Hono adapter: origin check, cookies, six auth routes |
 | `src/application.ts`    | Bootstrap, invite, re-enroll, revoke, session sign-out        |
+| `src/machine.ts`        | `/api/api-keys/*` (browser) and `/api/machine/v1/*` (script)  |
 | `src/client.ts`         | UI via `LocalWebAuthnBrowser` (no raw WebAuthn calls)         |
-| `e2e/lifecycle.spec.ts` | Playwright + Chromium virtual passkeys                        |
+| `scripts/api-client.ts` | The headless client; `--dry-run` prints every byte            |
+| `e2e/*.spec.ts`         | Playwright + Chromium virtual passkeys                        |
 
 ## Test
 

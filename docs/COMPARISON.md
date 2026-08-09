@@ -46,7 +46,7 @@ bcrypt out of phishing and credential stuffing, so the front door genuinely
 improves. Recovery, though, becomes identity proofing plus re-enrollment rather
 than "email me a new secret." An organization that cannot operate that bar
 should choose a multi-method framework or IdP instead — see
-[Designing Recovery](../README.md#designing-recovery).
+[Designing Recovery](../README-DETAIL.org).
 
 **"Anyone who wants passkeys" is too broad, but the limit is not "self-serve".**
 The fit is populations you enroll deliberately, on passkey-capable clients.
@@ -66,7 +66,7 @@ not fit is treating a mailbox as a standing credential.
   in a vendor's user directory.
 - Teams willing to design **enrollment delivery** and **recovery proofing** as
   first-class policy (see
-  [Designing Recovery](../README.md#designing-recovery)).
+  [Designing Recovery](../README-DETAIL.org)).
 - Operators who care that the authentication path is **small enough to read**
   (~4,000 lines of lifecycle code on top of SimpleWebAuthn).
 
@@ -126,7 +126,7 @@ The caveats are about your proofing, not about the package:
   standing one, and worth stating plainly to yourself when you claim "no third
   parties."
 
-[Designing Recovery](../README.md#designing-recovery) covers the same two-channel
+[Designing Recovery](../README-DETAIL.org) covers the same two-channel
 pattern in more depth, including why the proofing bar has to be high.
 
 ### What "up" means for availability
@@ -387,7 +387,7 @@ policy.
 2. **Passkey-only without a password or magic-link safety net baked in.**
    Frameworks usually keep fallbacks; LocalWebAuthn forces the recovery
    conversation into the open (see
-   [Designing Recovery](../README.md#designing-recovery)).
+   [Designing Recovery](../README-DETAIL.org)).
 3. **Lifecycle + multi-engine store contract** (SQLite / Postgres / D1) with
    shared SQL and conformance tests — not only ceremony helpers, not a remote
    IdP.
