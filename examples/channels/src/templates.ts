@@ -123,3 +123,64 @@ export function signupProofEmail(params: SignupProofParams): EmailContent {
 export function signupProofSms(params: SignupProofParams): string {
   return `${params.appName}: confirm this phone: ${params.url} - after all confirmations the same link sets up your passkey (ignore if not you)`;
 }
+
+export type PasskeyCreatedParams = {
+  appName: string;
+  /** How the person should describe the credential, e.g. its label. */
+  label: string;
+  /** Where to go if they did not do this. */
+  supportContact: string;
+};
+
+/**
+ * Sent to **every** channel bound to a person the moment a passkey is created for
+ * their account.
+ *
+ * This is the one notice that does not depend on anybody noticing anything. Every
+ * other signal in this system is *pulled*: it reaches the person only if they come
+ * back and try something that fails. An attacker who obtains an enrollment link and
+ * uses it leaves an account that looks entirely normal — so if the rightful person
+ * never returns, nothing tells them. Announcing the credential itself closes that,
+ * because the state everyone actually cares about is "a passkey now exists".
+ *
+ * It fires on legitimate enrollments too, which is the point rather than a cost. A
+ * person who just created a passkey reads it and moves on; a person who did not
+ * reads it and acts. Only the second one needed to be reached, and there is no way
+ * to know in advance which they are.
+ *
+ * The remedy is spelled out in order, because the order matters: cancel the
+ * authorization first, then re-secure the channels, then re-enroll. Re-enrolling
+ * into a still-compromised mailbox just repeats the problem.
+ */
+export function passkeyCreatedEmail(params: PasskeyCreatedParams): EmailContent {
+  const subject = `A passkey was created for your ${params.appName} account`;
+  const text = [
+    `A passkey ("${params.label}") was just created for your ${params.appName} account.`,
+    '',
+    'If that was you, nothing more is needed — you can sign in with it from now on.',
+    '',
+    'If it was NOT you, someone else has used your enrollment link, which means they',
+    'may control your email or your phone. Act in this order:',
+    '',
+    `  1. Contact ${params.supportContact} and ask them to lock the account and`,
+    '     cancel the passkey that was just created.',
+    '  2. Re-secure your email and phone before anything else.',
+    '  3. Ask for a new enrollment invitation once both are back under your control.',
+  ].join('\n');
+  const html = [
+    `<p>A passkey (<strong>${escapeHtml(params.label)}</strong>) was just created for your <strong>${escapeHtml(params.appName)}</strong> account.</p>`,
+    `<p>If that was you, nothing more is needed — you can sign in with it from now on.</p>`,
+    `<p>If it was <strong>not</strong> you, someone else has used your enrollment link, which means they may control your email or your phone. Act in this order:</p>`,
+    '<ol>',
+    `<li>Contact ${escapeHtml(params.supportContact)} and ask them to lock the account and cancel the passkey that was just created.</li>`,
+    '<li>Re-secure your email and phone before anything else.</li>',
+    '<li>Ask for a new enrollment invitation once both are back under your control.</li>',
+    '</ol>',
+  ].join('\n');
+  return { subject, text, html };
+}
+
+/** SMS form of {@link passkeyCreatedEmail}. */
+export function passkeyCreatedSms(params: PasskeyCreatedParams): string {
+  return `${params.appName}: a passkey ("${params.label}") was just created for your account. Not you? Contact ${params.supportContact} to lock it, then re-secure your email and phone.`;
+}

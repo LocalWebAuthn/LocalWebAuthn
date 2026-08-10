@@ -83,7 +83,15 @@ After plain signup completes, any valid channel OTP may claim the same single-us
 enrollment until the signup expires. The person can therefore finish on a second
 device without a second message. That is deliberate.
 
-Four consequences an operator should know, all of them still open in
+The window this opens cannot be closed by shortening it. Confirming on a phone, then
+a laptop, then going back to the phone is exactly the behaviour claim-on-reopen exists
+to allow, so a short post-completion window breaks the feature it is meant to protect.
+What closes it is making the outcome visible: `passkeyCreatedEmail` and
+`passkeyCreatedSms` go to every bound channel the moment a credential exists, whoever
+created it. A person who did not create it finds out without having to come back and
+discover a failure.
+
+Consequences an operator should still know, tracked in
 [issue #10](https://github.com/LocalWebAuthn/LocalWebAuthn/issues/10):
 
 - **The window is the rest of the proofing TTL.** `completeSignup` sets

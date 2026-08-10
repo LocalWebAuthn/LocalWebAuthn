@@ -11,6 +11,8 @@ import {
   sendEmailResend,
   sendSms,
   type DeliveryResult,
+  passkeyCreatedEmail,
+  passkeyCreatedSms,
 } from '../src/index.js';
 
 const url =
@@ -25,6 +27,40 @@ describe('templates', () => {
     expect(email.html).toContain(`href="${url}"`);
     expect(enrollmentSms({ appName: 'Example', url })).toContain(url);
     expect(otpSms({ appName: 'Example', code: '123456' })).toContain('123456');
+  });
+
+  /**
+   * The passkey-created notice is the only push signal in the system: every other
+   * one reaches the person only if they come back and hit a failure. So it has to
+   * carry a remedy, not just an alert — and in order, because re-enrolling into a
+   * mailbox that is still compromised simply repeats the problem.
+   */
+  it('renders a passkey-created notice carrying the remedy in order', () => {
+    const params = {
+      appName: 'Example <App>',
+      label: 'Work laptop',
+      supportContact: 'security@example.com',
+    };
+    const email = passkeyCreatedEmail(params);
+    expect(email.subject).toBe('A passkey was created for your Example <App> account');
+    expect(email.text).toContain('Work laptop');
+    expect(email.html).toContain('Example &lt;App&gt;');
+
+    // Lock the account, then re-secure the channels, then re-enroll.
+    const lock = email.text.indexOf('lock the account');
+    const resecure = email.text.indexOf('Re-secure your email and phone');
+    const reenroll = email.text.indexOf('new enrollment invitation');
+    expect(lock).toBeGreaterThan(-1);
+    expect(lock).toBeLessThan(resecure);
+    expect(resecure).toBeLessThan(reenroll);
+
+    // It has to state the benign reading too, or a routine enrollment reads as an
+    // incident every time.
+    expect(email.text).toContain('If that was you');
+
+    const sms = passkeyCreatedSms(params);
+    expect(sms).toContain('Work laptop');
+    expect(sms).toContain('security@example.com');
   });
 });
 

@@ -4,6 +4,23 @@
 
 ### Added
 
+- **Notify every channel when a passkey is created** — `passkeyCreatedEmail` and
+  `passkeyCreatedSms` in `@localwebauthn/channels-core`, sent from the demo's
+  `credential.registered` handler.
+
+  This is the only signal in the system that does not wait for somebody to notice
+  something. Every other one is _pulled_: it reaches the person only if they come back
+  and try something that fails. An attacker who obtains an enrollment link and uses it
+  leaves an account that looks entirely normal, so a person who never returns is never
+  told. Announcing the credential closes that, because "a passkey now exists" is the
+  state anyone would actually want to know about.
+
+  It fires for legitimate enrollments too, which is the design rather than a cost:
+  whoever just made a passkey reads it and moves on, and whoever did not reads it and
+  acts. The copy states the benign reading first, then the remedy in order — lock the
+  account, re-secure the channels, _then_ re-enroll, because re-enrolling into a
+  mailbox that is still compromised only repeats the problem.
+
 - **A refused enrollment link now says why.** `exchangeEnrollment` answered one
   `invalid_enrollment` for five different situations, so a host could not tell "this
   link was already used" from "this link never existed" — and those call for opposite

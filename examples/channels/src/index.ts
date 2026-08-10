@@ -3,10 +3,13 @@ export {
   enrollmentSms,
   otpEmail,
   otpSms,
+  passkeyCreatedEmail,
+  passkeyCreatedSms,
   signupProofEmail,
   signupProofSms,
   type EnrollmentParams,
   type OtpParams,
+  type PasskeyCreatedParams,
   type SignupProofParams,
 } from './templates.js';
 export {
