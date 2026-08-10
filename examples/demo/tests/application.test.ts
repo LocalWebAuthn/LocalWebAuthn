@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
+import type { SignupEvent } from '@localwebauthn/channels-core';
+
 import type { DemoDatabase, DemoRole } from '../src/database';
 
 import { createOpaqueToken, createUserHandle, sha256 } from '@localwebauthn/server';
@@ -11,7 +13,13 @@ import { cancelActiveRecoveries, openDemoDatabase, reapSignups } from '../src/da
 const publicOrigin = 'http://localhost:4173';
 const databases: DemoDatabase[] = [];
 
-function setup(options: { recoveryDelayMs?: number; recoveryClaimWindowMs?: number } = {}) {
+function setup(
+  options: {
+    recoveryDelayMs?: number;
+    recoveryClaimWindowMs?: number;
+    onSignupEvent?: (event: SignupEvent) => void;
+  } = {},
+) {
   const database = openDemoDatabase(':memory:');
   databases.push(database);
   const application = createDemoApplication(database, {
@@ -441,6 +449,98 @@ describe('LocalWebAuthn demo application', () => {
     // And the refusal minted nothing: no fresh invitation was handed to whoever
     // presented that OTP.
     expect(grantCount()).toBe(before);
+  });
+
+  /**
+   * The proofing machine is host-owned, so `@localwebauthn/server`'s `onEvent` never
+   * sees it — the core's first sight of a self-serve flow is `enrollment.issued`, at
+   * completion. Without these events, starting a signup, proving a channel,
+   * presenting a wrong OTP and vetoing are all invisible; and since expired rows are
+   * reaped, afterwards there is no record they happened at all.
+   */
+  it('reports the signup lifecycle, including the rejected proofs', async () => {
+    const events: SignupEvent[] = [];
+    const { app } = setup({
+      onSignupEvent: (event) => {
+        events.push(event);
+      },
+    });
+    const headers = { Origin: publicOrigin, 'Content-Type': 'application/json' };
+    const { signupId, otps } = await startSignup(app, {
+      displayName: 'Ida Logged',
+      email: 'ida@example.test',
+      phone: '+15551230011',
+    });
+    const prove = (channel: string, otp: string) =>
+      app.request('/api/signup/prove', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ signupId, channel, otp }),
+      });
+
+    await prove('email', 'wrong-otp');
+    await prove('email', otps.email);
+    await prove('phone', otps.phone);
+    // Claim-on-reopen: the second claim is the one that was previously unobservable.
+    await prove('email', otps.email);
+
+    expect(events.map((event) => event.type)).toEqual([
+      'signup.started',
+      'signup.proof', // invalid
+      'signup.proof', // proved
+      'signup.proof', // proved
+      'signup.completed',
+      'signup.claimed',
+      'signup.proof', // completed
+      'signup.claimed',
+    ]);
+    expect(events[0]).toMatchObject({
+      type: 'signup.started',
+      kind: 'signup',
+      channels: ['email', 'phone'],
+    });
+    // A guessed OTP is reported, which is the point: a run of these against one
+    // signup is somebody guessing, and nothing else would show it.
+    expect(events[1]).toMatchObject({ type: 'signup.proof', outcome: 'invalid' });
+    // The claim counter distinguishes the person finishing from a later claim.
+    const claims = events.filter((event) => event.type === 'signup.claimed');
+    expect(claims.map((event) => event.claimCount)).toEqual([1, 2]);
+
+    // Nothing in this stream may carry a secret or a destination: it goes to logs.
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain(otps.email);
+    expect(serialized).not.toContain(otps.phone);
+    expect(serialized).not.toContain('ida@example.test');
+    expect(serialized).not.toContain('+15551230011');
+    expect(serialized).not.toMatch(/[a-z2-7]{52}/u);
+  });
+
+  it('reports each signup it reaps, before the row is gone', () => {
+    const { database } = setup();
+    const events: SignupEvent[] = [];
+    database
+      .prepare(
+        `INSERT INTO demo_signups(
+           id, email, phone, display_name, otp_email_hash, otp_phone_hash,
+           email_proved_at, expires_at, created_at
+         ) VALUES ('abandoned', 'gone@example.test', '+15551230000', 'Gone',
+                   X'00', X'01', 500, 1000, 400)`,
+      )
+      .run();
+
+    expect(reapSignups(database, 2_000, (event) => events.push(event))).toBe(1);
+    expect(events).toEqual([
+      {
+        type: 'signup.reaped',
+        at: 2_000,
+        signupId: 'abandoned',
+        kind: 'signup',
+        proved: ['email'],
+        completed: false,
+      },
+    ]);
+    // The row is gone, so this line is the only remaining record of it.
+    expect(database.prepare(`SELECT COUNT(*) AS n FROM demo_signups`).get()).toEqual({ n: 0 });
   });
 
   it('reaps signup rows once their window closes, and spares live ones', () => {
