@@ -18,6 +18,8 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 
 import type { DemoDatabase } from './database';
 
+import { passkeyCreatedEmail, passkeyCreatedSms } from '@localwebauthn/channels-core';
+
 import { cancelActiveRecoveries, clientById } from './database';
 
 export type DemoAuthConfig = {
@@ -130,8 +132,56 @@ export function createDemoAuthentication(
             `not just do this, contact your administrator.`,
         );
       }
+      // A passkey now exists on this account. Tell every channel bound to the
+      // person, always.
+      //
+      // This is the only notice here that does not wait for somebody to notice
+      // something. Every other signal is pulled: it reaches the person only if they
+      // come back and try something that fails. An attacker who obtains an
+      // enrollment link and uses it leaves an account that looks perfectly normal,
+      // so a person who never returns is never told. Announcing the credential
+      // itself closes that hole, because "a passkey exists" is the state that
+      // actually matters.
+      //
+      // It fires for legitimate enrollments too. That is the design, not a cost:
+      // whoever just made a passkey reads it and moves on, and whoever did not reads
+      // it and acts. There is no way to know in advance which one is reading.
+      if (event.type === 'credential.registered') {
+        notifyPasskeyCreated(database, config, event.userId, event.credentialKind ?? null);
+      }
     },
   });
+}
+
+/**
+ * Simulated delivery of {@link passkeyCreatedEmail} / {@link passkeyCreatedSms} to
+ * every channel this person has.
+ *
+ * A real deployment sends these through `channels-node` or `channels-cf` and returns
+ * nothing to any caller. The demo prints, exactly as it does for the signup proof
+ * messages, so the flow is visible in one terminal.
+ */
+function notifyPasskeyCreated(
+  database: DemoDatabase,
+  config: DemoAuthConfig,
+  userId: string,
+  credentialKind: string | null,
+): void {
+  const client = clientById(database, userId);
+  if (!client) {
+    return;
+  }
+  const params = {
+    appName: config.rpName,
+    // An API credential is worth naming differently: the person minted it from a
+    // page they were already signed into, so "passkey" would read as a sign-in
+    // credential when it is not one.
+    label: credentialKind === null ? 'passkey' : `${credentialKind} credential`,
+    supportContact: 'your administrator',
+  };
+  const email = passkeyCreatedEmail(params);
+  console.log(`[simulated notice] email to ${client.email}: ${email.subject}\n${email.text}`);
+  console.log(`[simulated notice] sms to ${client.email}: ${passkeyCreatedSms(params)}`);
 }
 
 function setOpaqueCookie(
