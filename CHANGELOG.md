@@ -4,6 +4,19 @@
 
 ### Added
 
+- **The examples schedule `cleanup()`.** It is documented as something a host runs
+  periodically, and no example ran it — so a long-lived deployment accumulated expired
+  grants, challenges, sessions and DPoP records for the life of the database. Both the
+  demo and the Hono starter now sweep every five minutes, with the interval `unref`'d
+  so it never holds the process open, and one pass at startup to clear whatever
+  expired while the process was down.
+
+- **`reapSignups()` in the demo**, swept alongside `cleanup()`. Nothing reaped
+  `demo_signups`, so every row kept an email address, a phone number, two OTP hashes
+  and a spent enrollment token indefinitely. Deleting at expiry is safe with no grace
+  period: `verifySignupProof` checks expiry before anything else, so an expired row can
+  neither be proved nor claimed.
+
 - **Notify every channel when a passkey is created** — `passkeyCreatedEmail` and
   `passkeyCreatedSms` in `@localwebauthn/channels-core`, sent from the demo's
   `credential.registered` handler.
@@ -62,6 +75,22 @@
   hash, never a token.
 
 ### Fixed
+
+- **Revocation is no longer reachable by accident.** The demo's claim handler serves
+  both plain signup and recovery, because `verifySignupProof` reports `'completed'` for
+  both. It told them apart only by whether an enrollment token happened to be stored —
+  plain signup stores one at completion, recovery does not until its first mature claim
+  — so an empty column sent a _plain signup_ claim into the recovery branch, which
+  calls `revokeUserAuthentication`. A person re-opening their own link after enrolling
+  would have had their passkey revoked and been handed a new invitation, silently.
+
+  The kind is now checked explicitly, a missing token on a plain signup is refused with
+  `signup_incomplete` rather than improvised around, and `claimRecovery` is renamed
+  `claimEnrollment` for what it actually does. Revoking remains exactly where it
+  belongs: the recovery claim, behind the delay, the veto and cancel-on-sign-in.
+
+  Nothing in `@localwebauthn/server` was involved. Exchanging an enrollment link never
+  revoked anything.
 
 - **D1 no longer reports a database fault as an expired enrollment link.** The D1
   adapter mapped _any_ `CHECK constraint failed` to "the row-count guard tripped",

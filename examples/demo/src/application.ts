@@ -172,35 +172,50 @@ function mountSignupRoutes(
    * store the token so every channel's link claims the same one. (Demo-grade
    * concurrency: better-sqlite3 serializes statements in-process.)
    */
-  async function claimRecovery(signupId: string): Promise<Response | string> {
+  async function claimEnrollment(signupId: string): Promise<Response | string> {
     const signup = signupById(database, signupId);
     if (!signup) {
       return 'missing';
     }
+    // Either kind: a stored token means this signup's claim already happened, so
+    // hand back the same one. Keeping it identical is what lets a spent link report
+    // `used` rather than the reassuring `superseded`.
     if (signup.enrollmentToken) {
       return signup.enrollmentToken;
+    }
+    // Below this line the account gets restructured, so the kind is checked
+    // explicitly rather than inferred.
+    //
+    // This function serves both kinds, because `verifySignupProof` reports
+    // `'completed'` for both. It used to tell them apart only by whether a token
+    // happened to be stored — plain signup stores one at completion, recovery does
+    // not until its first mature claim — which made an account-wide revoke
+    // reachable by accident. Any change that left the column empty on a plain
+    // signup would have revoked a person's passkeys because they re-opened their
+    // own link. Revocation is not something to arrive at implicitly.
+    if (signup.kind !== 'recovery') {
+      // A completed plain signup always stores its token in the same statement
+      // that marks it consumed, so this is a bug rather than a state to recover
+      // from. Say so instead of issuing anything.
+      return 'incomplete';
     }
     const existing = clientByEmail(database, signup.email);
     if (existing?.role === 'administrator') {
       return 'administrator';
     }
-    let clientId: string;
-    if (existing) {
-      await authentication.revokeUserAuthentication(existing.id);
-      clientId = existing.id;
-    } else {
-      clientId = randomUUID();
-      database
-        .prepare(
-          `INSERT INTO demo_clients(
-             id, email, display_name, role, webauthn_user_handle, created_at
-           ) VALUES (?, ?, ?, 'client', ?, ?)`,
-        )
-        .run(clientId, signup.email, signup.displayName, createUserHandle(), Date.now());
+    if (!existing) {
+      // Recovery presupposes an account — `kind` is only `'recovery'` when one
+      // existed at signup start. Creating one here would turn a recovery into a
+      // silent signup for whatever address the row happens to hold.
+      return 'incomplete';
     }
-    const enrollment = await authentication.issueEnrollment(clientId);
+    // The one revoke in this flow, and the only place it belongs: recovery means
+    // "replace my credentials". It is gated by the delay, the veto from any
+    // channel, and cancel-on-passkey-sign-in, all applied before this runs.
+    await authentication.revokeUserAuthentication(existing.id);
+    const enrollment = await authentication.issueEnrollment(existing.id);
     storeSignupClaim(database, signup.id, {
-      clientId,
+      clientId: existing.id,
       enrollmentToken: enrollment.enrollmentToken,
     });
     return signupById(database, signup.id)?.enrollmentToken ?? enrollment.enrollmentToken;
@@ -342,7 +357,7 @@ function mountSignupRoutes(
     if (outcome === 'completed') {
       // Claim-on-reopen: any proved channel's link opens enrollment. For a
       // matured recovery, the first claim performs revoke-then-issue here.
-      const claimed = await claimRecovery(signup.id);
+      const claimed = await claimEnrollment(signup.id);
       if (claimed === 'administrator') {
         return context.json(
           { error: 'not_self_serve', message: 'This account cannot use self-serve signup.' },
@@ -353,6 +368,17 @@ function mountSignupRoutes(
         return context.json(
           { error: 'invalid_proof', message: 'This confirmation link is not valid.' },
           403,
+        );
+      }
+      if (claimed === 'incomplete') {
+        // A state that should not arise. Refusing loudly beats improvising: the
+        // improvisation on offer here would be to revoke somebody's credentials.
+        return context.json(
+          {
+            error: 'signup_incomplete',
+            message: 'This signup did not finish correctly. Ask for a new invitation.',
+          },
+          409,
         );
       }
       return context.json({ complete: true, enrollmentToken: claimed, user: identity });
