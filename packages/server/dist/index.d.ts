@@ -1,5 +1,5 @@
-import { j as LocalWebAuthnOptions, k as EnrollmentIssue, l as EnrollmentExchange, m as RegistrationOptionsInput, n as RegistrationOptionsResult, o as RegistrationVerificationInput, p as RegistrationVerificationResult, A as AuthenticationOptionsInput, q as AuthenticationOptionsResult, r as AuthenticationVerificationInput, s as AuthenticationVerificationResult, t as AuthUser, S as SessionIdentity, e as Credential, i as CleanupResult } from './types-DKx5wADO.js';
-export { u as CeremonyProvider, c as ChallengeKind, C as ChallengeRecord, g as CompleteAuthenticationInput, f as CompleteRegistrationInput, d as ConsumedChallenge, v as CredentialKindPolicy, w as CredentialProvenance, E as EnrollmentGrantRecord, b as EnrollmentSession, a as LocalWebAuthnDpopStore, x as LocalWebAuthnDurations, y as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, z as NewSession, h as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-DKx5wADO.js';
+import { k as EnrollmentGrantState, l as LocalWebAuthnOptions, m as EnrollmentIssue, n as EnrollmentExchange, o as RegistrationOptionsInput, p as RegistrationOptionsResult, q as RegistrationVerificationInput, r as RegistrationVerificationResult, A as AuthenticationOptionsInput, s as AuthenticationOptionsResult, t as AuthenticationVerificationInput, u as AuthenticationVerificationResult, v as AuthUser, S as SessionIdentity, f as Credential, j as CleanupResult } from './types-B4vQbaQI.js';
+export { w as CeremonyProvider, d as ChallengeKind, C as ChallengeRecord, h as CompleteAuthenticationInput, g as CompleteRegistrationInput, e as ConsumedChallenge, x as CredentialKindPolicy, y as CredentialProvenance, E as EnrollmentGrantRecord, c as EnrollmentGrantRejection, b as EnrollmentSession, a as LocalWebAuthnDpopStore, z as LocalWebAuthnDurations, B as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, D as NewSession, i as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-B4vQbaQI.js';
 export { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 declare function defaultRandomBytes(length: number): Uint8Array;
@@ -164,7 +164,20 @@ type LocalWebAuthnErrorCode = 'invalid_configuration' | 'invalid_enrollment' | '
 declare class LocalWebAuthnError extends Error {
     readonly code: LocalWebAuthnErrorCode;
     readonly status: number;
-    constructor(code: LocalWebAuthnErrorCode, message: string, status: number);
+    /**
+     * Why an enrollment token was refused, on an `invalid_enrollment` thrown by
+     * `exchangeEnrollment`. Absent everywhere else, and absent when the store does
+     * not implement `enrollmentGrantState`.
+     *
+     * The `code` stays `invalid_enrollment` whatever this says, so a host that
+     * ignores it behaves exactly as before. Read it to choose the message: only
+     * `'used'` is worth telling somebody about, because an enrollment link is
+     * single-use and they may not be the one who used it.
+     */
+    readonly enrollmentState?: EnrollmentGrantState;
+    constructor(code: LocalWebAuthnErrorCode, message: string, status: number, details?: {
+        enrollmentState?: EnrollmentGrantState;
+    });
 }
 declare function isLocalWebAuthnError(value: unknown): value is LocalWebAuthnError;
 
@@ -770,4 +783,4 @@ declare class LocalWebAuthn {
     }>;
 }
 
-export { type AuthCookieKind, type AuthCookieNames, AuthUser, AuthenticationOptionsInput, AuthenticationOptionsResult, AuthenticationVerificationInput, AuthenticationVerificationResult, CleanupResult, type CookieAttributes, type CookieAttributesOptions, Credential, type DpopVerification, type DpopVerificationInput, EnrollmentExchange, EnrollmentIssue, LocalWebAuthn, LocalWebAuthnError, type LocalWebAuthnErrorCode, LocalWebAuthnOptions, type NormalizedConfig, type NormalizedCredentialKind, type PublicJwk, RegistrationOptionsInput, RegistrationOptionsResult, RegistrationVerificationInput, RegistrationVerificationResult, SELF_SERVE_SIGNUP_STEPS, SessionIdentity, type SignupFacts, type SignupNextStep, type SignupPhase, authCookieNames, cookieAttributes, coseToJwk, createEnrollmentToken, createOpaqueToken, createUserHandle, decodeBase64Url, defaultKindPolicy, describeSignupPhase, dpopChallenge, encodeBase32, encodeBase64Url, equalBytes, isExactOrigin, isHttpsPublicOrigin, isLocalWebAuthnError, jwkThumbprint, kindPolicy, nextSignupStep, parseCookieHeader, provisioningPageHeaders, serializeClearedCookie, serializeCookie, sha256, signupPhase, verifyDpopProof };
+export { type AuthCookieKind, type AuthCookieNames, AuthUser, AuthenticationOptionsInput, AuthenticationOptionsResult, AuthenticationVerificationInput, AuthenticationVerificationResult, CleanupResult, type CookieAttributes, type CookieAttributesOptions, Credential, type DpopVerification, type DpopVerificationInput, EnrollmentExchange, EnrollmentGrantState, EnrollmentIssue, LocalWebAuthn, LocalWebAuthnError, type LocalWebAuthnErrorCode, LocalWebAuthnOptions, type NormalizedConfig, type NormalizedCredentialKind, type PublicJwk, RegistrationOptionsInput, RegistrationOptionsResult, RegistrationVerificationInput, RegistrationVerificationResult, SELF_SERVE_SIGNUP_STEPS, SessionIdentity, type SignupFacts, type SignupNextStep, type SignupPhase, authCookieNames, cookieAttributes, coseToJwk, createEnrollmentToken, createOpaqueToken, createUserHandle, decodeBase64Url, defaultKindPolicy, describeSignupPhase, dpopChallenge, encodeBase32, encodeBase64Url, equalBytes, isExactOrigin, isHttpsPublicOrigin, isLocalWebAuthnError, jwkThumbprint, kindPolicy, nextSignupStep, parseCookieHeader, provisioningPageHeaders, serializeClearedCookie, serializeCookie, sha256, signupPhase, verifyDpopProof };

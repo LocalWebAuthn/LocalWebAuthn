@@ -7,6 +7,7 @@ import type {
   ConsumedChallenge,
   Credential,
   EnrollmentGrantRecord,
+  EnrollmentGrantRejection,
   EnrollmentSession,
   LocalWebAuthnDpopStore,
   LocalWebAuthnStore,
@@ -22,6 +23,8 @@ import {
   challengeFromRow,
   type CredentialRow,
   credentialFromRow,
+  type EnrollmentGrantStateRow,
+  enrollmentGrantStateFromRow,
   type EnrollmentSessionRow,
   enrollmentSessionFromRow,
   type SessionRow,
@@ -150,6 +153,15 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAut
       .prepare(SQL.exchangeEnrollment)
       .get(now, sessionHash, sessionExpiresAt, tokenHash, now) as EnrollmentSessionRow | undefined;
     return row ? enrollmentSessionFromRow(row) : null;
+  }
+
+  async enrollmentGrantState(
+    tokenHash: Uint8Array,
+    now: number,
+  ): Promise<EnrollmentGrantRejection> {
+    const row = this.#database.prepare(SQL.selectEnrollmentGrantState).get(tokenHash) as
+      EnrollmentGrantStateRow | undefined;
+    return row ? enrollmentGrantStateFromRow(row, now) : { state: 'unknown', userId: null };
   }
 
   async resolveEnrollmentSession(

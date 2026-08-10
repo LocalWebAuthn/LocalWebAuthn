@@ -71,11 +71,25 @@ function createOpaqueToken(randomBytes = defaultRandomBytes) {
 var LocalWebAuthnError = class extends Error {
   code;
   status;
-  constructor(code, message, status) {
+  /**
+   * Why an enrollment token was refused, on an `invalid_enrollment` thrown by
+   * `exchangeEnrollment`. Absent everywhere else, and absent when the store does
+   * not implement `enrollmentGrantState`.
+   *
+   * The `code` stays `invalid_enrollment` whatever this says, so a host that
+   * ignores it behaves exactly as before. Read it to choose the message: only
+   * `'used'` is worth telling somebody about, because an enrollment link is
+   * single-use and they may not be the one who used it.
+   */
+  enrollmentState;
+  constructor(code, message, status, details = {}) {
     super(message);
     this.name = "LocalWebAuthnError";
     this.code = code;
     this.status = status;
+    if (details.enrollmentState) {
+      this.enrollmentState = details.enrollmentState;
+    }
   }
 };
 function isLocalWebAuthnError(value) {
@@ -695,14 +709,18 @@ var LocalWebAuthn = class {
     const now = this.#now();
     const enrollmentSessionToken = createOpaqueToken(this.#randomBytes);
     const sessionHash = await sha256(enrollmentSessionToken);
+    const tokenHash = await sha256(token);
     const session = await this.#store.exchangeEnrollment(
-      await sha256(token),
+      tokenHash,
       sessionHash,
       now + this.config.durations.enrollmentSessionMs,
       now
     );
-    const user = session ? await this.#activeUser(session.userId) : null;
-    if (!session || !user) {
+    if (!session) {
+      throw await this.#refusedEnrollment(tokenHash, now);
+    }
+    const user = await this.#activeUser(session.userId);
+    if (!user) {
       throw new LocalWebAuthnError(
         "invalid_enrollment",
         "The enrollment link is invalid or expired.",
@@ -720,6 +738,43 @@ var LocalWebAuthn = class {
       expiresAt: session.sessionExpiresAt,
       user: this.#publicUser(user)
     };
+  }
+  /**
+   * The error for an enrollment token the store would not consume, diagnosed as
+   * far as the store allows.
+   *
+   * `exchangeEnrollment` answers `null` for five different situations, which is
+   * correct for deciding and useless for explaining. This asks the store which one
+   * it was, so a host can distinguish "somebody already used this link" — the one
+   * case worth raising with the person holding it — from the ordinary "ask for a
+   * new one".
+   *
+   * The status and code do not vary. A refused token is a refused token, and every
+   * host that already handles `invalid_enrollment` keeps working unchanged; the
+   * state rides along for hosts that want to say more.
+   *
+   * Emits `enrollment.rejected` so a host can act without touching the error at
+   * all — notify every bound channel, raise a support signal, rate-limit a source.
+   * A store with no `enrollmentGrantState` yields state `unknown` and still emits,
+   * because "a token was refused" is worth recording even undiagnosed.
+   */
+  async #refusedEnrollment(tokenHash, now) {
+    const rejection = await this.#store.enrollmentGrantState?.(tokenHash, now) ?? {
+      state: "unknown",
+      userId: null
+    };
+    await this.#emit({
+      type: "enrollment.rejected",
+      at: now,
+      state: rejection.state,
+      userId: rejection.userId
+    });
+    return new LocalWebAuthnError(
+      "invalid_enrollment",
+      rejection.state === "used" ? "This enrollment link has already been used." : "The enrollment link is invalid or expired.",
+      403,
+      { enrollmentState: rejection.state }
+    );
   }
   /**
    * Create passkey-creation options bound to a registration authorization.

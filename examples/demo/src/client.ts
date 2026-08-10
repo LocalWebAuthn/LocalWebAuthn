@@ -1,4 +1,8 @@
-import { consumeEnrollmentToken, LocalWebAuthnBrowser } from '@localwebauthn/browser';
+import {
+  consumeEnrollmentToken,
+  LocalWebAuthnBrowser,
+  LocalWebAuthnBrowserError,
+} from '@localwebauthn/browser';
 // The same software authenticator the script uses, running in the page: it is
 // what lets this browser mint a credential whose private key can be exported.
 import { createRegistrationResponse, encodeBase64Url, ES256 } from '@localwebauthn/client';
@@ -132,6 +136,42 @@ const state: {
   error: '',
   notice: '',
 };
+
+/**
+ * What to tell somebody whose enrollment link did not work.
+ *
+ * The server distinguishes four refusals, and only one of them deserves a warning.
+ * An enrollment link is single-use, so a link that has *already been used* was
+ * spent by someone — and if the person reading this did not spend it, somebody else
+ * enrolled with their invitation. That is worth saying plainly, with a specific
+ * remedy, because they are the only one who can tell the two apart.
+ *
+ * The other three are ordinary and get an ordinary answer. `superseded` especially:
+ * it means a newer invitation was issued, which happens whenever an administrator
+ * re-sends one, and treating that as a possible compromise would cry wolf.
+ *
+ * The likely explanation leads. Most people meeting this message clicked an old
+ * bookmark or the back button, and opening with an accusation would alarm them for
+ * nothing.
+ */
+function enrollmentRefusalMessage(error: unknown): string {
+  const state = error instanceof LocalWebAuthnBrowserError ? error.enrollmentState : undefined;
+  if (state === 'used') {
+    return (
+      'This enrollment link has already been used. If you have already created your ' +
+      'passkey, you can simply sign in. If you have NOT yet enrolled, somebody else ' +
+      'may have used your link: contact your administrator so they can cancel that ' +
+      'authorization, confirm control of your email and phone, and invite you again.'
+    );
+  }
+  if (state === 'superseded') {
+    return 'A newer enrollment link was issued for you. Please use the most recent one.';
+  }
+  if (state === 'expired') {
+    return 'This enrollment link has expired. Ask your administrator for a new one.';
+  }
+  return error instanceof Error ? error.message : 'The enrollment link is invalid.';
+}
 
 function escapeHtml(value: string): string {
   return value
@@ -966,10 +1006,8 @@ function bindEvents(): void {
       try {
         state.enrollment = await auth.exchangeEnrollment(token);
         state.proof = undefined;
-      } catch {
-        throw new Error(
-          'This setup link was already used or has expired. If that was not you, contact your administrator.',
-        );
+      } catch (error) {
+        throw new Error(enrollmentRefusalMessage(error), { cause: error });
       }
     });
   });
@@ -1218,7 +1256,7 @@ async function initialize(): Promise<void> {
     try {
       state.enrollment = await auth.exchangeEnrollment(enrollmentToken);
     } catch (error) {
-      state.error = error instanceof Error ? error.message : 'The enrollment link is invalid.';
+      state.error = enrollmentRefusalMessage(error);
     }
   } else {
     try {

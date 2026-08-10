@@ -7,6 +7,7 @@ import type {
   ConsumedChallenge,
   Credential,
   EnrollmentGrantRecord,
+  EnrollmentGrantRejection,
   EnrollmentSession,
   LocalWebAuthnDpopStore,
   LocalWebAuthnStore,
@@ -23,6 +24,8 @@ import {
   challengeFromRow,
   type CredentialRow,
   credentialFromRow,
+  type EnrollmentGrantStateRow,
+  enrollmentGrantStateFromRow,
   type EnrollmentSessionRow,
   enrollmentSessionFromRow,
   type SessionRow,
@@ -245,6 +248,17 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAuthnDp
         .bind(now, sessionHash, sessionExpiresAt, tokenHash, now),
     );
     return row ? enrollmentSessionFromRow(row) : null;
+  }
+
+  async enrollmentGrantState(
+    tokenHash: Uint8Array,
+    now: number,
+  ): Promise<EnrollmentGrantRejection> {
+    const row = await this.#database
+      .prepare(SQL.selectEnrollmentGrantState)
+      .bind(tokenHash)
+      .first<EnrollmentGrantStateRow>();
+    return row ? enrollmentGrantStateFromRow(row, now) : { state: 'unknown', userId: null };
   }
 
   async resolveEnrollmentSession(

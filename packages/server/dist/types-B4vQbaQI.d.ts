@@ -182,6 +182,43 @@ type EnrollmentSession = {
     /** From the grant, copied onto the credential so it outlives the grant row. */
     approvedByUserId: string | null;
 };
+/**
+ * Why an enrollment token was refused, for the host's message only.
+ *
+ * The distinction that matters is `used` against everything else. An enrollment
+ * link is single-use by design, so a *valid* token that has already been spent
+ * means somebody completed that exchange — and if the person holding the link did
+ * not, someone else did. Every other state has an ordinary explanation and an
+ * ordinary answer ("ask for a new link").
+ *
+ * Reporting `used` to whoever presents the token gives nothing away. The token is
+ * 52 base32 characters, so anybody who can present it already had it; confirming
+ * that it was spent tells them nothing they did not bring with them.
+ *
+ * - `used` — the token was exchanged, whether or not registration then finished.
+ *   The only state that can indicate someone else got there first.
+ * - `superseded` — revoked, which includes being replaced by a newer invitation for
+ *   the same user and kind. Common and benign: the person kept an older link. Do
+ *   **not** raise an alarm for this one.
+ * - `expired` — the grant's window closed with the token unspent.
+ * - `unknown` — no grant carries that token: a typo, a mangled URL, or a link so
+ *   old its row has been reaped. Indistinguishable from a guess, and treated as one.
+ */
+type EnrollmentGrantState = 'used' | 'superseded' | 'expired' | 'unknown';
+/**
+ * A refused enrollment token, diagnosed.
+ *
+ * `userId` is here and deliberately **not** on the thrown error. The state answers
+ * "what do I tell whoever is holding this link", and a host may well serialize that
+ * into a response. The user id answers "whose channels do I notify", which is the
+ * operator's business and travels by event instead, where it cannot leak into a
+ * reply to an unauthenticated caller.
+ */
+type EnrollmentGrantRejection = {
+    state: EnrollmentGrantState;
+    /** The grant's user, or `null` when no grant carries that token. */
+    userId: string | null;
+};
 type ChallengeKind = 'registration' | 'authentication';
 /**
  * How a credential was authorized into existence.
@@ -324,6 +361,25 @@ type LocalWebAuthnStore = {
      * consumed, or the grant was revoked.
      */
     exchangeEnrollment(tokenHash: Uint8Array, sessionHash: Uint8Array, sessionExpiresAt: number, now: number): Promise<EnrollmentSession | null>;
+    /**
+     * Why {@link exchangeEnrollment} refused a token — diagnosis only, never
+     * authorization.
+     *
+     * `exchangeEnrollment` deliberately answers `null` for five different
+     * situations, because one atomic statement cannot both consume a token and
+     * report on it. That is right for the *decision*, and useless for the *message*:
+     * "this link was already used" and "this link never existed" call for opposite
+     * responses from a host. The first is worth telling the person about, because if
+     * they know they did not use it, someone else did.
+     *
+     * **Optional.** A store that omits it keeps the current behaviour — a single
+     * `invalid_enrollment` with no state attached — so an existing custom store
+     * needs no change.
+     *
+     * Implementations must read only; the row is left exactly as it was. Called
+     * solely on the failure path, so its cost never lands on a working exchange.
+     */
+    enrollmentGrantState?(tokenHash: Uint8Array, now: number): Promise<EnrollmentGrantRejection>;
     /** Look up an enrollment session by its hashed token. */
     resolveEnrollmentSession(sessionHash: Uint8Array, now: number): Promise<EnrollmentSession | null>;
     /**
@@ -551,6 +607,28 @@ type LocalWebAuthnEvent = {
     userId: string;
     /** Credential kinds the revoke was scoped to, when it was scoped. */
     kinds?: (string | null)[];
+} | {
+    /**
+     * An enrollment token was presented and refused.
+     *
+     * Its own shape rather than a member of the `enrollment.*` group above,
+     * because those all carry a `grantId` and a `userId` that this one cannot
+     * promise: a refused token may match no grant at all.
+     *
+     * `state: 'used'` is the one an operator should act on. The link was valid and
+     * has been spent, so either the holder is repeating themselves — a bookmark, a
+     * back button, a second device — or somebody else enrolled with it. The host
+     * cannot tell those apart, and the person holding the link can. Notifying
+     * every channel bound to `userId` is what lets them.
+     *
+     * Not every refusal is interesting: `unknown` is what a mangled URL or a
+     * probe produces, and a host that alerts on it will alert constantly.
+     */
+    type: 'enrollment.rejected';
+    at: number;
+    state: EnrollmentGrantState;
+    /** The grant's user, or `null` when the token matched no grant. */
+    userId: string | null;
 };
 type LocalWebAuthnDurations = {
     enrollmentGrantMs?: number;
@@ -799,4 +877,4 @@ type AuthenticationVerificationInput = {
     challengeToken: string;
 };
 
-export type { AuthenticationOptionsInput as A, ChallengeRecord as C, EnrollmentGrantRecord as E, LocalWebAuthnStore as L, NewCredential as N, RevokedSession as R, SessionIdentity as S, UserProvider as U, LocalWebAuthnDpopStore as a, EnrollmentSession as b, ChallengeKind as c, ConsumedChallenge as d, Credential as e, CompleteRegistrationInput as f, CompleteAuthenticationInput as g, RevokeCredentialResult as h, CleanupResult as i, LocalWebAuthnOptions as j, EnrollmentIssue as k, EnrollmentExchange as l, RegistrationOptionsInput as m, RegistrationOptionsResult as n, RegistrationVerificationInput as o, RegistrationVerificationResult as p, AuthenticationOptionsResult as q, AuthenticationVerificationInput as r, AuthenticationVerificationResult as s, AuthUser as t, CeremonyProvider as u, CredentialKindPolicy as v, CredentialProvenance as w, LocalWebAuthnDurations as x, LocalWebAuthnEvent as y, NewSession as z };
+export type { AuthenticationOptionsInput as A, LocalWebAuthnEvent as B, ChallengeRecord as C, NewSession as D, EnrollmentGrantRecord as E, LocalWebAuthnStore as L, NewCredential as N, RevokedSession as R, SessionIdentity as S, UserProvider as U, LocalWebAuthnDpopStore as a, EnrollmentSession as b, EnrollmentGrantRejection as c, ChallengeKind as d, ConsumedChallenge as e, Credential as f, CompleteRegistrationInput as g, CompleteAuthenticationInput as h, RevokeCredentialResult as i, CleanupResult as j, EnrollmentGrantState as k, LocalWebAuthnOptions as l, EnrollmentIssue as m, EnrollmentExchange as n, RegistrationOptionsInput as o, RegistrationOptionsResult as p, RegistrationVerificationInput as q, RegistrationVerificationResult as r, AuthenticationOptionsResult as s, AuthenticationVerificationInput as t, AuthenticationVerificationResult as u, AuthUser as v, CeremonyProvider as w, CredentialKindPolicy as x, CredentialProvenance as y, LocalWebAuthnDurations as z };

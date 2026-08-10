@@ -1,3 +1,5 @@
+import type { EnrollmentGrantState } from './types.js';
+
 export type LocalWebAuthnErrorCode =
   | 'invalid_configuration'
   | 'invalid_enrollment'
@@ -35,12 +37,31 @@ export type LocalWebAuthnErrorCode =
 export class LocalWebAuthnError extends Error {
   readonly code: LocalWebAuthnErrorCode;
   readonly status: number;
+  /**
+   * Why an enrollment token was refused, on an `invalid_enrollment` thrown by
+   * `exchangeEnrollment`. Absent everywhere else, and absent when the store does
+   * not implement `enrollmentGrantState`.
+   *
+   * The `code` stays `invalid_enrollment` whatever this says, so a host that
+   * ignores it behaves exactly as before. Read it to choose the message: only
+   * `'used'` is worth telling somebody about, because an enrollment link is
+   * single-use and they may not be the one who used it.
+   */
+  readonly enrollmentState?: EnrollmentGrantState;
 
-  constructor(code: LocalWebAuthnErrorCode, message: string, status: number) {
+  constructor(
+    code: LocalWebAuthnErrorCode,
+    message: string,
+    status: number,
+    details: { enrollmentState?: EnrollmentGrantState } = {},
+  ) {
     super(message);
     this.name = 'LocalWebAuthnError';
     this.code = code;
     this.status = status;
+    if (details.enrollmentState) {
+      this.enrollmentState = details.enrollmentState;
+    }
   }
 }
 

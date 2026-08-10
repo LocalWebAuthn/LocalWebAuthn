@@ -33,22 +33,50 @@ export type LocalWebAuthnBrowserOptions = {
   };
 };
 
+/**
+ * Why an enrollment token was refused, as reported by the server.
+ *
+ * Mirrors `EnrollmentGrantState` in `@localwebauthn/server`, redeclared rather than
+ * imported so the browser package keeps no dependency on the server package. Only
+ * `'used'` is worth a distinct message: an enrollment link is single-use, so if the
+ * person holding it did not spend it, somebody else did.
+ */
+export type EnrollmentRefusal = 'used' | 'superseded' | 'expired' | 'unknown';
+
 export class LocalWebAuthnBrowserError extends Error {
   readonly code: string;
   readonly status: number;
+  /**
+   * Present when the server explained a refused enrollment token. Absent on every
+   * other failure, and absent when the host does not forward it.
+   */
+  readonly enrollmentState?: EnrollmentRefusal;
 
-  constructor(code: string, message: string, status: number) {
+  constructor(code: string, message: string, status: number, enrollmentState?: EnrollmentRefusal) {
     super(message);
     this.name = 'LocalWebAuthnBrowserError';
     this.code = code;
     this.status = status;
+    if (enrollmentState) {
+      this.enrollmentState = enrollmentState;
+    }
   }
 }
 
 type ErrorBody = {
   error?: string;
   message?: string;
+  enrollmentState?: EnrollmentRefusal;
 };
+
+const ENROLLMENT_REFUSALS = new Set<string>(['used', 'superseded', 'expired', 'unknown']);
+
+/** Accept only the four known values, so a stray body cannot invent a state. */
+function enrollmentRefusal(value: unknown): EnrollmentRefusal | undefined {
+  return typeof value === 'string' && ENROLLMENT_REFUSALS.has(value)
+    ? (value as EnrollmentRefusal)
+    : undefined;
+}
 
 const defaultEndpoints: LocalWebAuthnBrowserEndpoints = {
   exchangeEnrollment: '/enrollment/exchange',
@@ -140,6 +168,7 @@ export class LocalWebAuthnBrowser {
         error.error ?? 'authentication_failed',
         error.message ?? 'Authentication failed.',
         response.status,
+        enrollmentRefusal(error.enrollmentState),
       );
     }
     return payload as Result;

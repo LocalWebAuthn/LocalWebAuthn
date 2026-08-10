@@ -7,6 +7,7 @@ import type {
   ConsumedChallenge,
   Credential,
   EnrollmentGrantRecord,
+  EnrollmentGrantRejection,
   EnrollmentSession,
   LocalWebAuthnDpopStore,
   LocalWebAuthnStore,
@@ -22,6 +23,8 @@ import {
   challengeFromRow,
   type CredentialRow,
   credentialFromRow,
+  type EnrollmentGrantStateRow,
+  enrollmentGrantStateFromRow,
   type EnrollmentSessionRow,
   enrollmentSessionFromRow,
   type SessionRow,
@@ -173,6 +176,17 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore, LocalWebA
     ]);
     const row = result.rows.at(0);
     return row ? enrollmentSessionFromRow(row) : null;
+  }
+
+  async enrollmentGrantState(
+    tokenHash: Uint8Array,
+    now: number,
+  ): Promise<EnrollmentGrantRejection> {
+    const result = await this.#pool.query<EnrollmentGrantStateRow>(PG.selectEnrollmentGrantState, [
+      tokenHash,
+    ]);
+    const row = result.rows.at(0);
+    return row ? enrollmentGrantStateFromRow(row, now) : { state: 'unknown', userId: null };
   }
 
   async resolveEnrollmentSession(

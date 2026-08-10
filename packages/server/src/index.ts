@@ -67,6 +67,8 @@ export type {
   CredentialProvenance,
   EnrollmentExchange,
   EnrollmentGrantRecord,
+  EnrollmentGrantRejection,
+  EnrollmentGrantState,
   EnrollmentIssue,
   EnrollmentSession,
   LocalWebAuthnDpopStore,

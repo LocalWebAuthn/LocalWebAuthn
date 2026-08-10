@@ -227,6 +227,123 @@ describe('LocalWebAuthn lifecycle', () => {
     database.close();
   });
 
+  /**
+   * A refused enrollment link is one error with four meanings, and the host has to
+   * pick a message. Only `used` is worth raising with the person holding it: the
+   * link is single-use, so if they did not spend it, somebody else did.
+   */
+  it('says why an enrollment link was refused, and only alarms for a spent one', async () => {
+    const issue = await auth.issueEnrollment(user.id);
+    await auth.exchangeEnrollment(issue.enrollmentToken);
+
+    // Spent. This is the one that earns the warning, and the message says so.
+    await expect(auth.exchangeEnrollment(issue.enrollmentToken)).rejects.toEqual(
+      expect.objectContaining<Partial<LocalWebAuthnError>>({
+        code: 'invalid_enrollment',
+        status: 403,
+        enrollmentState: 'used',
+        message: 'This enrollment link has already been used.',
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'enrollment.rejected', state: 'used', userId: user.id }),
+    );
+
+    // Superseded: a newer invitation revoked this one. Ordinary, and must not be
+    // reported as a possible compromise.
+    const replaced = await auth.issueEnrollment(user.id);
+    await auth.issueEnrollment(user.id);
+    await expect(auth.exchangeEnrollment(replaced.enrollmentToken)).rejects.toEqual(
+      expect.objectContaining<Partial<LocalWebAuthnError>>({
+        enrollmentState: 'superseded',
+        message: 'The enrollment link is invalid or expired.',
+      }),
+    );
+
+    // Expired, unspent.
+    const stale = await auth.issueEnrollment(user.id);
+    now += 31 * 60_000;
+    await expect(auth.exchangeEnrollment(stale.enrollmentToken)).rejects.toEqual(
+      expect.objectContaining<Partial<LocalWebAuthnError>>({ enrollmentState: 'expired' }),
+    );
+
+    // A syntactically valid token no grant carries — a probe, or a mangled URL.
+    await expect(auth.exchangeEnrollment('a'.repeat(52))).rejects.toEqual(
+      expect.objectContaining<Partial<LocalWebAuthnError>>({ enrollmentState: 'unknown' }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'enrollment.rejected', state: 'unknown', userId: null }),
+    );
+    database.close();
+  });
+
+  it('leaves the state off when the store cannot diagnose', async () => {
+    const store = new SqliteLocalWebAuthnStore(database);
+    // A custom store predating this method: the exchange still refuses, the host
+    // still gets its error, and nothing pretends to know why.
+    // Methods are bound to the target: called through the proxy, `this` would be
+    // the proxy, and the adapter's `#database` private field would be unreachable.
+    const undiagnosing = new Proxy(store, {
+      get(target, property) {
+        if (property === 'enrollmentGrantState') {
+          return undefined;
+        }
+        const value: unknown = Reflect.get(target, property, target);
+        return typeof value === 'function' ? (value.bind(target) as unknown) : value;
+      },
+    });
+    const plain = new LocalWebAuthn({
+      rpName: 'LocalWebAuthn Test',
+      rpId: 'localhost',
+      expectedOrigins: 'http://localhost:5173',
+      store: undiagnosing,
+      users: { getUser: async (userId) => (userId === user.id ? user : null) },
+      ceremonies,
+      now: () => now,
+      randomBytes: (length) => new Uint8Array(length).fill(randomValue++),
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+
+    const issue = await plain.issueEnrollment(user.id);
+    await plain.exchangeEnrollment(issue.enrollmentToken);
+    const error = await plain
+      .exchangeEnrollment(issue.enrollmentToken)
+      .catch((cause: unknown) => cause);
+    expect(error).toEqual(
+      expect.objectContaining<Partial<LocalWebAuthnError>>({
+        code: 'invalid_enrollment',
+        enrollmentState: 'unknown',
+      }),
+    );
+    database.close();
+  });
+
+  /**
+   * The exchange *succeeded* here — the token was spent by this very call — so its
+   * state is `used`. Reporting that would tell the rightful holder somebody had
+   * beaten them to their own link, when the truth is only that the account is
+   * deactivated. So this path is deliberately left undiagnosed.
+   */
+  it('does not accuse the rightful holder when the user is deactivated', async () => {
+    const issue = await auth.issueEnrollment(user.id);
+    user.active = false;
+
+    const error = await auth
+      .exchangeEnrollment(issue.enrollmentToken)
+      .catch((cause: unknown) => cause);
+    expect(error).toEqual(
+      expect.objectContaining<Partial<LocalWebAuthnError>>({
+        code: 'invalid_enrollment',
+        status: 403,
+      }),
+    );
+    expect((error as LocalWebAuthnError).enrollmentState).toBeUndefined();
+    expect(events).not.toContainEqual(expect.objectContaining({ type: 'enrollment.rejected' }));
+    database.close();
+  });
+
   it('refuses enrollment exchange and registration for a user deactivated mid-flow', async () => {
     const issue = await auth.issueEnrollment(user.id);
     user.active = false;

@@ -1,6 +1,13 @@
 import type { AuthenticatorTransportFuture } from '@simplewebauthn/server';
 
-import type { ConsumedChallenge, Credential, EnrollmentSession, SessionIdentity } from './types.js';
+import type {
+  ConsumedChallenge,
+  Credential,
+  EnrollmentGrantRejection,
+  EnrollmentGrantState,
+  EnrollmentSession,
+  SessionIdentity,
+} from './types.js';
 
 /**
  * Numeric columns arrive as a JavaScript `number` from SQLite and D1, but as a
@@ -50,6 +57,14 @@ export type EnrollmentSessionRow = {
   session_expires_at: NumericColumn;
   credential_kind: string | null;
   approved_by_user_id: string | null;
+};
+
+export type EnrollmentGrantStateRow = {
+  user_id: string;
+  token_consumed_at: NumericColumn | null;
+  completed_at: NumericColumn | null;
+  revoked_at: NumericColumn | null;
+  expires_at: NumericColumn;
 };
 
 export type SessionRow = {
@@ -171,6 +186,42 @@ export function enrollmentSessionFromRow(row: EnrollmentSessionRow): EnrollmentS
     credentialKind: row.credential_kind,
     approvedByUserId: row.approved_by_user_id,
   };
+}
+
+/**
+ * Classify a refused enrollment token from its grant row.
+ *
+ * Order is the whole content of this function. A row can be several of these at
+ * once — a token consumed at 10:00 whose grant expired at 10:30 is both used and
+ * expired — and the host's message must key on the most informative fact, not the
+ * most recent one. "Used" wins over everything, because it is the only state that
+ * can mean somebody else got there first. Revocation outranks expiry for the
+ * opposite reason: it is the benign explanation and must not be reported as an
+ * alarm.
+ *
+ * Absent rows are the caller's business; this is only reached with a row in hand.
+ */
+export function enrollmentGrantStateFromRow(
+  row: EnrollmentGrantStateRow,
+  now: number,
+): EnrollmentGrantRejection {
+  return { state: grantState(row, now), userId: row.user_id };
+}
+
+function grantState(row: EnrollmentGrantStateRow, now: number): EnrollmentGrantState {
+  if (row.token_consumed_at !== null || row.completed_at !== null) {
+    return 'used';
+  }
+  if (row.revoked_at !== null) {
+    return 'superseded';
+  }
+  if (toNumber(row.expires_at) <= now) {
+    return 'expired';
+  }
+  // A live, unspent, unrevoked grant that `exchangeEnrollment` still refused. The
+  // only way here is a race — another request consumed it between the two
+  // statements — so it was used, just not yet when this row was read.
+  return 'used';
 }
 
 export function sessionFromRow(row: SessionRow): SessionIdentity {

@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+### Added
+
+- **A refused enrollment link now says why.** `exchangeEnrollment` answered one
+  `invalid_enrollment` for five different situations, so a host could not tell "this
+  link was already used" from "this link never existed" — and those call for opposite
+  responses. An enrollment link is single-use, so a _spent_ one means somebody
+  completed that exchange; if the person holding it did not, someone else enrolled
+  with their invitation. That is the one case worth telling them about, and it was
+  unreachable.
+
+  The thrown `LocalWebAuthnError` now carries `enrollmentState`: `'used'`,
+  `'superseded'` (revoked, which includes being replaced by a newer invitation),
+  `'expired'`, or `'unknown'`. The `code` is still `invalid_enrollment` and the status
+  is still 403, so a host that ignores the new field behaves exactly as before.
+  `@localwebauthn/browser` forwards it on `LocalWebAuthnBrowserError`.
+
+  Only `'used'` should raise an alarm. `'superseded'` is what an administrator
+  re-sending an invitation produces, and reporting that as a possible compromise
+  would cry wolf.
+
+- **`enrollment.rejected` event**, carrying the state and the grant's `userId` — the
+  hook for notifying every channel bound to that person. The `userId` is on the event
+  and deliberately **not** on the error: the error may be serialized into a reply to
+  an unauthenticated caller, and the notification is the operator's business.
+
+- **`enrollmentGrantState` on the store contract, optional.** A store that omits it
+  keeps the current behaviour, so no custom store needs changing. All three official
+  adapters implement it. It is read-only and runs only on the failure path, so a
+  working exchange costs nothing.
+
+### Changed
+
+- **Cleanup keeps a grant until its window closes.** It used to delete a grant as
+  soon as it was completed or revoked, which erased the evidence within minutes and
+  left the new diagnosis answering `unknown` — telling somebody who came back to ask
+  "did I already use this?" that their link never existed. A grant now lives out its
+  original `expires_at` whatever happens to it. This cannot resurrect authority: the
+  exchange requires the grant to be unconsumed, uncompleted and unrevoked, and the
+  partial unique index over pending grants excludes completed and revoked rows, so a
+  retained row is unusable and blocks no new invitation. What persists is a token
+  hash, never a token.
+
 ### Fixed
 
 - **D1 no longer reports a database fault as an expired enrollment link.** The D1
@@ -27,8 +69,8 @@
 
 - `examples/channels/README.md` regains the integration map and the signup/recovery
   sequence diagrams, and states plainly what claim-on-reopen costs — the claim
-  window, the two independent clocks, why a second claim is silent, and the token
-  held at rest. See #10.
+  window, the two independent clocks, what is still silent at claim time, and the
+  token held at rest. See #10.
 
 ## 3.0.0 - 2026-08-09
 

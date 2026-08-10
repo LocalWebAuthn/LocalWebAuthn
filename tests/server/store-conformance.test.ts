@@ -386,6 +386,131 @@ function storeConformance(
       }
     });
 
+    /**
+     * Why a refused token was refused. `exchangeEnrollment` answers `null` for all
+     * of these, which is right for the decision and useless for the message: only
+     * `used` can mean somebody else reached the link first, and `superseded` — a
+     * person holding an older invitation — must never be reported that way.
+     */
+    it('diagnoses every way an enrollment token can be refused', async () => {
+      const fixture = await createFixture();
+      const state = async (tokenByte: number): Promise<unknown> =>
+        fixture.store.enrollmentGrantState?.(bytes(tokenByte), now);
+      try {
+        // No grant carries this token.
+        await expect(state(42)).resolves.toEqual({ state: 'unknown', userId: null });
+
+        // Spent: exchanged once, so a second presentation is somebody repeating
+        // themselves or somebody else who got there first.
+        await exchangedGrant(fixture.store, 'grant-1', 1, 2);
+        await expect(state(1)).resolves.toEqual({ state: 'used', userId: 'user-1' });
+
+        // Superseded: issuing a new invitation revokes the pending one, so the old
+        // link is dead for an entirely ordinary reason.
+        await fixture.store.replaceEnrollmentGrant({
+          id: 'grant-2',
+          userId: 'user-1',
+          tokenHash: bytes(3),
+          expiresAt: now + 10_000,
+          approvedByUserId: 'admin-1',
+          credentialKind: null,
+          createdAt: now,
+        });
+        await fixture.store.replaceEnrollmentGrant({
+          id: 'grant-3',
+          userId: 'user-1',
+          tokenHash: bytes(4),
+          expiresAt: now + 10_000,
+          approvedByUserId: 'admin-1',
+          credentialKind: null,
+          createdAt: now,
+        });
+        await expect(state(3)).resolves.toEqual({ state: 'superseded', userId: 'user-1' });
+
+        // Expired: never spent, window closed. Judged against the caller's clock.
+        await expect(fixture.store.enrollmentGrantState?.(bytes(4), now + 20_000)).resolves.toEqual(
+          { state: 'expired', userId: 'user-1' },
+        );
+
+        // A spent grant stays `used` even once its window has closed: which fact
+        // matters is not a question of which happened last.
+        await expect(fixture.store.enrollmentGrantState?.(bytes(1), now + 20_000)).resolves.toEqual(
+          { state: 'used', userId: 'user-1' },
+        );
+
+        // Spent *and* superseded, which is reachable: revoking a pending grant does
+        // not require it to be unexchanged, so exchanging a link and then issuing a
+        // new invitation leaves both marks on one row. `used` must still win — that
+        // somebody spent the link is the fact worth reporting, and "you have an
+        // older invitation" would bury it.
+        await exchangedGrant(fixture.store, 'grant-4', 5, 6);
+        await fixture.store.replaceEnrollmentGrant({
+          id: 'grant-5',
+          userId: 'user-1',
+          tokenHash: bytes(7),
+          expiresAt: now + 10_000,
+          approvedByUserId: 'admin-1',
+          credentialKind: null,
+          createdAt: now,
+        });
+        await expect(state(5)).resolves.toEqual({ state: 'used', userId: 'user-1' });
+      } finally {
+        await fixture.close();
+      }
+    });
+
+    /**
+     * Cleanup used to delete a grant as soon as it was completed or revoked, which
+     * left the diagnosis above answering `unknown` within minutes of a link being
+     * used — telling the person who came back to ask "did I already use this?" that
+     * their link never existed. A grant now lives out its `expires_at`.
+     */
+    it('keeps a spent grant until its window closes, then reaps it', async () => {
+      const fixture = await createFixture();
+      const state = async (tokenByte: number, at: number): Promise<unknown> =>
+        fixture.store.enrollmentGrantState?.(bytes(tokenByte), at);
+      try {
+        // Completed — registration finished. This is one of the two states the old
+        // cleanup deleted on its very next pass, so it must be the one tested; a
+        // merely exchanged grant was never eagerly deleted and proves nothing here.
+        await exchangedGrant(fixture.store);
+        expect(await fixture.store.completeRegistration(registrationInput('grant-1'))).toBe(true);
+
+        // Superseded — replaced by a newer invitation. The other eagerly deleted
+        // state, and the one whose loss would turn a benign "you have an older
+        // link" into an unexplained "this link never existed".
+        for (const [id, tokenByte] of [
+          ['grant-2', 3],
+          ['grant-3', 4],
+        ] as const) {
+          await fixture.store.replaceEnrollmentGrant({
+            id,
+            userId: 'user-1',
+            tokenHash: bytes(tokenByte),
+            expiresAt: now + 10_000,
+            approvedByUserId: 'admin-1',
+            credentialKind: null,
+            createdAt: now,
+          });
+        }
+
+        await fixture.store.cleanup(now + 1_000);
+        await expect(state(1, now + 1_000)).resolves.toEqual({ state: 'used', userId: 'user-1' });
+        await expect(state(3, now + 1_000)).resolves.toEqual({
+          state: 'superseded',
+          userId: 'user-1',
+        });
+
+        // Past expiry both are reaped, and an unknown token is all that is left.
+        // That is honest: the evidence is gone, so no claim is made about it.
+        await fixture.store.cleanup(now + 60_000);
+        await expect(state(1, now + 60_000)).resolves.toEqual({ state: 'unknown', userId: null });
+        await expect(state(3, now + 60_000)).resolves.toEqual({ state: 'unknown', userId: null });
+      } finally {
+        await fixture.close();
+      }
+    });
+
     it('reports a duplicate challenge id instead of overwriting one', async () => {
       const fixture = await createFixture();
       try {

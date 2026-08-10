@@ -4,9 +4,10 @@ import {
   SQL,
   challengeFromRow,
   credentialFromRow,
+  enrollmentGrantStateFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-SUHXT3LG.js";
+} from "./chunk-OVMYNLID.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnMigrationsTableStatement,
@@ -92,6 +93,10 @@ var D1LocalWebAuthnStore = class {
       this.#database.prepare(SQL.exchangeEnrollment).bind(now, sessionHash, sessionExpiresAt, tokenHash, now)
     );
     return row ? enrollmentSessionFromRow(row) : null;
+  }
+  async enrollmentGrantState(tokenHash, now) {
+    const row = await this.#database.prepare(SQL.selectEnrollmentGrantState).bind(tokenHash).first();
+    return row ? enrollmentGrantStateFromRow(row, now) : { state: "unknown", userId: null };
   }
   async resolveEnrollmentSession(sessionHash, now) {
     const row = await this.#database.prepare(SQL.selectEnrollmentSession).bind(sessionHash, now).first();

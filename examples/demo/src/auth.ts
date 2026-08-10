@@ -18,7 +18,7 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 
 import type { DemoDatabase } from './database';
 
-import { cancelActiveRecoveries } from './database';
+import { cancelActiveRecoveries, clientById } from './database';
 
 export type DemoAuthConfig = {
   publicOrigin: string;
@@ -110,6 +110,26 @@ export function createDemoAuthentication(
       if (event.type === 'credential.authenticated') {
         cancelActiveRecoveries(database, event.userId, Date.now());
       }
+      // A spent enrollment link was presented again. Either the holder is
+      // repeating themselves — bookmark, back button, second device — or somebody
+      // else enrolled with it. The server cannot tell those apart; the person can.
+      //
+      // This is the notify-every-bound-channel step, and it has to happen here
+      // rather than in the route: `enrollment.rejected` carries the `userId`, and
+      // the thrown error deliberately does not, so that a host cannot leak it into
+      // a reply to an unauthenticated caller. A real deployment would send to every
+      // channel it has for this person; the demo simulates delivery, so it prints.
+      //
+      // Only `used` earns a message. `unknown` is what a mangled URL or a probe
+      // produces, and notifying on that would notify constantly.
+      if (event.type === 'enrollment.rejected' && event.state === 'used' && event.userId) {
+        const client = clientById(database, event.userId);
+        console.log(
+          `[simulated notice] to ${client?.email ?? event.userId}: an enrollment link for ` +
+            `your account was presented again after it had already been used. If you did ` +
+            `not just do this, contact your administrator.`,
+        );
+      }
     },
   });
 }
@@ -145,6 +165,10 @@ function authenticationError(context: Context<DemoEnvironment>, error: unknown):
     {
       error: error.code,
       message: error.message,
+      // Why an enrollment link was refused, when the service could say. Present
+      // only on `invalid_enrollment`; the browser uses it to choose between "ask
+      // for a new link" and the stronger "somebody has already used this one".
+      ...(error.enrollmentState ? { enrollmentState: error.enrollmentState } : {}),
     },
     error.status as ContentfulStatusCode,
   );
