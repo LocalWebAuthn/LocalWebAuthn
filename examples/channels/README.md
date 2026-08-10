@@ -18,6 +18,91 @@ Because content is template-only, the blast radius of a leaked credential or a
 buggy caller is "our own enrollment/OTP copy, at our rate" — a cost problem,
 never an arbitrary-content phishing relay from your domain or number.
 
+## Integration map
+
+| Need                                              | Use                                                                          |
+| ------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Passkey lifecycle (grants, sessions, credentials) | `@localwebauthn/server` + `@localwebauthn/browser`                           |
+| Cookie names / attributes / exact origin          | `authCookieNames`, `cookieAttributes`, `isExactOrigin` on the server package |
+| Issue a grant and deliver the enrollment URL      | `inviteAndDeliver` + `channels-node` or `channels-cf` delivery               |
+| Dual-channel proof before any grant exists        | `signup.ts` helpers + your signup table (see demo)                           |
+| Full UI reference                                 | `examples/demo`                                                              |
+
+Server `signupPhase` (credential and grant facts for admin tables) is **not** the
+same as channels `signup.ts` (multi-channel OTP proofing). The first answers "does
+this user have a passkey yet?". The second answers "have they proved email and
+phone?".
+
+## Signup and recovery, in sequence
+
+### Plain self-serve signup
+
+```text
+Visitor                    Your app                         Channels / LocalWebAuthn
+   |                           |                                      |
+   |-- submit email+phone ---->|                                      |
+   |                           |-- createSignupChallenge() ---------->|
+   |                           |-- store otpHashes, send proof links ->| (email+SMS)
+   |<- open email proof link --|                                      |
+   |-- confirm OTP ----------->|-- verifySignupProof -> proved        |
+   |<- open SMS proof link ----|                                      |
+   |-- confirm OTP ----------->|-- last channel: issueEnrollment() -->|
+   |                           |-- completeSignup(store token)        |
+   |<- enrollmentToken --------|                                      |
+   |-- registerPasskey ------->|-- exchange + verifyRegistration ---->|
+```
+
+No enrollment grant exists until every required channel is proved. The proof links
+are therefore capability-free while they ride email and SMS.
+
+### Recovery of an account that already has passkeys
+
+```text
+Requester                  Your app                         Existing owner
+   |                           |                                  |
+   |-- start recovery -------->|-- proof links to bound channels  |
+   |                           |                                  |
+   |-- confirm channels ------>|-- mark pending; claimableAt=now+D|
+   |                           |-- notify all channels ----------->|
+   |                           |   (account still unchanged)      |
+   |  [waiting period]         |                                  |
+   |                           |<-- "this wasn't me" cancel OTP ---|  (veto)
+   |                           |   OR passkey sign-in cancels     |
+   |                           |                                  |
+   |-- claim after claimableAt |-- revokeUserAuthentication       |
+   |                           |-- issueEnrollment                |
+   |<- enrollmentToken --------|                                  |
+```
+
+Confirming is weak authority. **Canceling is strong.** The delay before a claim
+gives the owner time to veto. Production `D` is hours, not the demo's few seconds.
+
+### Claim-on-reopen, and what it costs
+
+After plain signup completes, any valid channel OTP may claim the same single-use
+enrollment until the signup expires. The person can therefore finish on a second
+device without a second message. That is deliberate.
+
+Four consequences an operator should know, all of them still open in
+[issue #10](https://github.com/LocalWebAuthn/LocalWebAuthn/issues/10):
+
+- **The window is the rest of the proofing TTL.** `completeSignup` sets
+  `consumed_at` but does not shorten `expires_at`, so a person who confirms both
+  channels quickly leaves nearly the full 15 minutes claimable. Recovery already
+  does the opposite — `markSignupPending` resets `expires_at` — so there is a
+  precedent to copy.
+- **Two clocks, not one.** The signup row's `expires_at` bounds the _claim_.
+  `enrollmentGrantMs` (30 minutes by default) bounds the _exchange_ by whoever
+  holds the token. Shortening one does not shorten the other.
+- **A second claim is silent.** A grant is spent at exchange, not at claim, and the
+  demo re-serves the stored token to every valid OTP. So an attacker's claim leaves
+  no trace, and it is the legitimate person who meets `invalid_enrollment` — at the
+  moment they try to create a passkey, where it reads as a broken link.
+- **The token sits at rest.** Re-serving one token means storing it:
+  `demo_signups.enrollment_token` holds a live capability until the row is reaped.
+  Minting a fresh grant per claim would avoid that, and `supersededGrantIds` would
+  then be the detection signal — at the cost of making the last claimant win.
+
 ## The two runtimes
 
 |                | [`channels-node`](../channels-node) (traditional server) | [`channels-cf`](../channels-cf) (fully Cloudflare) |

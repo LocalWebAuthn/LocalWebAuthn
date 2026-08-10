@@ -1,11 +1,12 @@
 import {
+  D1_GUARD_COLUMN,
   D1_SQL,
   SQL,
   challengeFromRow,
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-IBOQAKS5.js";
+} from "./chunk-SUHXT3LG.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnMigrationsTableStatement,
@@ -36,8 +37,23 @@ async function installedD1Version(database) {
   const row = await database.prepare(SQL.selectSchemaVersion).first();
   return row?.version ?? 0;
 }
+function errorText(error) {
+  if (typeof error === "string") {
+    return error;
+  }
+  if (!(error instanceof Error)) {
+    return "";
+  }
+  const cause = error.cause;
+  const causeText = cause instanceof Error ? cause.message : typeof cause === "string" ? cause : "";
+  return causeText ? `${error.message}
+${causeText}` : error.message;
+}
+function isD1TransactionGuardFailure(error) {
+  return errorText(error).includes(`NOT NULL constraint failed: ${D1_GUARD_COLUMN}`);
+}
 function guardTripped(error) {
-  if (String(error).includes("CHECK constraint failed")) {
+  if (isD1TransactionGuardFailure(error)) {
     return false;
   }
   throw error;
@@ -305,5 +321,6 @@ var D1LocalWebAuthnStore = class {
 };
 export {
   D1LocalWebAuthnStore,
+  isD1TransactionGuardFailure,
   migrateD1
 };

@@ -259,12 +259,38 @@ returned for that specific statement, and it aborts or rolls back the entire seq
 So `completeRegistration` on D1 commits the credential, the grant completion and the initial
 session together, or not at all — the same all-or-nothing outcome the SQLite and PostgreSQL
 adapters get from an explicit transaction. The row-count guard the D1 adapter carries
-(the `localwebauthn_transaction_guard` CHECK) is a compare-and-swap check, not a substitute
+(the `localwebauthn_transaction_guard` row) is a compare-and-swap check, not a substitute
 for atomicity: a guard that trips fails its statement and rolls the whole batch back.
 
 (Earlier releases of this document described D1 batches as non-atomic and warned of an
 "orphan credential without a session." That was based on outdated behaviour; current D1
 rolls the batch back, so that outcome does not occur.)
+
+### Telling a lost race from a broken database
+
+A tripped guard and a failed database look the same to a `catch`: D1 exposes no error
+codes, only a message string. The distinction matters because `completeRegistration` and
+`completeAuthentication` return `false` for a lost race, and a host renders that to the
+person as "your enrollment link expired". Classifying a storage fault as a lost race
+therefore hides a database problem behind a misleading message.
+
+So the guard is made to fail in a way that names something this package owns. It inserts
+`NULL` into `localwebauthn_transaction_guard.value`, and D1 reports:
+
+```text
+NOT NULL constraint failed: localwebauthn_transaction_guard.value
+```
+
+Nothing else writes that table, and a `NOT NULL` failure anywhere else names its own
+column, so the match cannot be confused. The obvious alternative — matching
+`CHECK constraint failed` — is unsafe: the schema declares about a dozen other `CHECK`s
+(`counter >= 0`, `device_type IN (...)`, `expires_at > authenticated_at`), and any of them
+firing would be reported as an expired link.
+
+Unrecognised errors are rethrown, so the failure mode is a loud storage fault rather than
+a silent wrong answer. `tests/server/d1-guard.test.ts` pins the real message against
+Miniflare, and drives every other constraint the schema can violate through the classifier
+to confirm each one propagates.
 
 ## Enrollment Invariant
 

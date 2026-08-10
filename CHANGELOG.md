@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **D1 no longer reports a database fault as an expired enrollment link.** The D1
+  adapter mapped _any_ `CHECK constraint failed` to "the row-count guard tripped",
+  so `completeRegistration` and `completeAuthentication` returned `false` — which a
+  host shows as an expired link — for unrelated constraint failures such as
+  `counter >= 0`, `device_type IN (...)` and `expires_at > authenticated_at`. This
+  is the remaining half of #6, one layer down, and 3.0.0 widened it by adding the
+  registration fence as another guarded step.
+
+  D1 exposes no error codes, only a message, so the guard now fails in a way that
+  names a column this package owns: it inserts `NULL` into
+  `localwebauthn_transaction_guard.value`, and only
+  `NOT NULL constraint failed: localwebauthn_transaction_guard.value` counts as a
+  guard trip. Everything else is rethrown. `isD1TransactionGuardFailure` is exported
+  from `@localwebauthn/server/d1` for hosts that want to log the distinction.
+
+  No schema change and no migration: the guard table is unchanged, so a database at
+  any version works with this build, and builds either side of it stay
+  self-consistent.
+
+### Documentation
+
+- `examples/channels/README.md` regains the integration map and the signup/recovery
+  sequence diagrams, and states plainly what claim-on-reopen costs — the claim
+  window, the two independent clocks, why a second claim is silent, and the token
+  held at rest. See #10.
+
 ## 3.0.0 - 2026-08-09
 
 Machine credentials: a Passkey a script can hold, plus the credential-class and
