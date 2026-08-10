@@ -4,6 +4,32 @@
 
 ### Added
 
+- **`SignupEvent` and `SignupEventSink`** in `@localwebauthn/channels-core`, emitted by
+  the demo at every applied transition: started, each judged proof (including the
+  rejected ones), completed, the recovery delay opening, each claim, the veto, and each
+  row about to be reaped.
+
+  None of this was observable, and it could not be: `@localwebauthn/server` has no
+  concept of a signup, and its first sight of a self-serve flow is `enrollment.issued`
+  at completion. Everything earlier is host state. Reaping expired rows made this
+  urgent rather than merely untidy — keeping them forever was an accidental audit
+  trail, and deleting them leaves none unless one is emitted. `signup.reaped` therefore
+  fires _before_ each delete, so the trail outlives the data.
+
+  `signup.proof` carries the outcome rather than splitting into per-outcome types, so
+  an `invalid` is as visible as a `proved`: a run of them against one signup is
+  somebody guessing, and nothing else would show it.
+
+  **No secrets and no destinations.** No OTP, no enrollment token, no email address or
+  phone number — these go to logs, so the `signupId` is the correlator and a host that
+  wants the destination reads the row while it lives. A test asserts the absence.
+
+- **A claim counter on the demo's signups.** The first claim is the person finishing; a
+  second is claim-on-reopen, which is either the same person on another device or
+  somebody else holding one of their channels. Until now only the _outcome_ of an extra
+  claim was observable, and only if somebody later lost a race — closing the last
+  detection gap in #10.
+
 - **The examples schedule `cleanup()`.** It is documented as something a host runs
   periodically, and no example ran it — so a long-lived deployment accumulated expired
   grants, challenges, sessions and DPoP records for the life of the database. Both the

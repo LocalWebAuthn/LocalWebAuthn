@@ -24,6 +24,8 @@ import {
   signupProofUrl,
   signupSatisfied,
   verifySignupProof,
+  type SignupEvent,
+  type SignupEventSink,
   type SignupProofState,
 } from '@localwebauthn/channels-core';
 
@@ -39,6 +41,7 @@ import {
   clientByEmail,
   clientById,
   completeSignup,
+  countSignupClaim,
   insertSignup,
   listClients,
   markSignupPending,
@@ -59,7 +62,32 @@ export type DemoApplicationOptions = {
   recoveryDelayMs?: number;
   /** How long a matured recovery claim stays available. */
   recoveryClaimWindowMs?: number;
+  /**
+   * Where signup lifecycle events go.
+   *
+   * The proofing machine is entirely host-owned, so `@localwebauthn/server`'s
+   * `onEvent` never sees any of it — its first sight of a self-serve flow is
+   * `enrollment.issued`, at completion. Without a sink here, starting a signup,
+   * proving a channel, presenting a wrong OTP and vetoing are all invisible, and
+   * since expired rows are now reaped there is afterwards no record they happened.
+   *
+   * Defaults to `console.log`, so the demo shows the trail in the same terminal as
+   * the simulated messages.
+   */
+  onSignupEvent?: SignupEventSink;
 };
+
+/**
+ * Where signup events go when the host names no sink.
+ *
+ * A real deployment sends these to whatever it uses for audit — structured logs, an
+ * events table, a SIEM. Printing is the demo's equivalent, and it deliberately prints
+ * the whole event: none of these carry an OTP, an enrollment token, an email address
+ * or a phone number, so a log is a safe destination for all of them.
+ */
+function defaultSignupEventSink(event: SignupEvent): void {
+  console.log(`[signup] ${JSON.stringify(event)}`);
+}
 
 type ClientPayload = DemoClient & {
   passkeyCount: number;
@@ -165,6 +193,7 @@ function mountSignupRoutes(
   authentication: DemoAuthentication,
   config: DemoAuthConfig,
   delays: { recoveryDelayMs: number; recoveryClaimWindowMs: number },
+  emit: SignupEventSink,
 ): void {
   /**
    * First mature claim of a completed recovery: only here — after the waiting
@@ -181,6 +210,14 @@ function mountSignupRoutes(
     // hand back the same one. Keeping it identical is what lets a spent link report
     // `used` rather than the reassuring `superseded`.
     if (signup.enrollmentToken) {
+      // Counting here, not at completion: this is the branch every reopen takes, so
+      // it is the only place an extra claim can be seen.
+      emit({
+        type: 'signup.claimed',
+        at: Date.now(),
+        signupId: signup.id,
+        claimCount: countSignupClaim(database, signup.id),
+      });
       return signup.enrollmentToken;
     }
     // Below this line the account gets restructured, so the kind is checked
@@ -217,6 +254,12 @@ function mountSignupRoutes(
     storeSignupClaim(database, signup.id, {
       clientId: existing.id,
       enrollmentToken: enrollment.enrollmentToken,
+    });
+    emit({
+      type: 'signup.claimed',
+      at: Date.now(),
+      signupId: signup.id,
+      claimCount: countSignupClaim(database, signup.id),
     });
     return signupById(database, signup.id)?.enrollmentToken ?? enrollment.enrollmentToken;
   }
@@ -267,6 +310,14 @@ function mountSignupRoutes(
       otpEmailHash: challenge.otpHashes.email,
       otpPhoneHash: challenge.otpHashes.phone,
       expiresAt: challenge.expiresAt,
+    });
+
+    emit({
+      type: 'signup.started',
+      at: Date.now(),
+      signupId: challenge.signupId,
+      kind,
+      channels: [...SIGNUP_CHANNELS],
     });
 
     const appName = config.rpName;
@@ -329,6 +380,10 @@ function mountSignupRoutes(
     const now = Date.now();
     const state = signupProofState(signup);
     const outcome = await verifySignupProof(state, { channel, otp }, now);
+    // Reported before any branch below, so a rejected proof is as visible as an
+    // accepted one. A run of `invalid` against one signup is somebody guessing, and
+    // that is the single most useful thing in this stream.
+    emit({ type: 'signup.proof', at: now, signupId: signup.id, channel, outcome });
     const identity = { name: signup.email, displayName: signup.displayName };
 
     if (outcome === 'invalid') {
@@ -409,6 +464,14 @@ function mountSignupRoutes(
         expiresAt: claimableAt + delays.recoveryClaimWindowMs,
         now,
       });
+      emit({
+        type: 'signup.completed',
+        at: now,
+        signupId: signup.id,
+        kind: signup.kind,
+        userId: null,
+      });
+      emit({ type: 'signup.pending', at: now, signupId: signup.id, claimableAt });
       return context.json({ complete: false, pending: true, claimableAt, kind: signup.kind });
     }
 
@@ -427,6 +490,22 @@ function mountSignupRoutes(
       clientId,
       enrollmentToken: enrollment.enrollmentToken,
       now,
+    });
+    emit({
+      type: 'signup.completed',
+      at: now,
+      signupId: signup.id,
+      kind: signup.kind,
+      userId: clientId,
+    });
+    // The completing browser is handed the token directly, so this is a claim too —
+    // the first one. Counting it here keeps `claimCount` honest: a later reopen
+    // reports 2, which is what makes an extra claim distinguishable.
+    emit({
+      type: 'signup.claimed',
+      at: now,
+      signupId: signup.id,
+      claimCount: countSignupClaim(database, signup.id),
     });
     return context.json({
       complete: true,
@@ -462,7 +541,9 @@ function mountSignupRoutes(
         outcome === 'expired' ? 410 : 403,
       );
     }
-    cancelSignup(database, signup.id, Date.now());
+    const canceledAt = Date.now();
+    cancelSignup(database, signup.id, canceledAt);
+    emit({ type: 'signup.canceled', at: canceledAt, signupId: signup.id });
     return context.json({ canceled: true });
   });
 }
@@ -479,10 +560,17 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
   mountAuthenticationRoutes(app, authentication, options.auth);
   mountApiKeyRoutes(app, authentication, options.auth);
   mountMachineRoutes(app, database, authentication);
-  mountSignupRoutes(app, database, authentication, options.auth, {
-    recoveryDelayMs: options.recoveryDelayMs ?? 10_000,
-    recoveryClaimWindowMs: options.recoveryClaimWindowMs ?? 15 * 60_000,
-  });
+  mountSignupRoutes(
+    app,
+    database,
+    authentication,
+    options.auth,
+    {
+      recoveryDelayMs: options.recoveryDelayMs ?? 10_000,
+      recoveryClaimWindowMs: options.recoveryClaimWindowMs ?? 15 * 60_000,
+    },
+    options.onSignupEvent ?? defaultSignupEventSink,
+  );
 
   const authenticated = requireAuthentication(authentication, options.auth);
   const administrator: MiddlewareHandler<DemoEnvironment> = async (context, next) => {

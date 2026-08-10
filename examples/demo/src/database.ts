@@ -2,6 +2,8 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
+import type { SignupEventSink, SignupKind } from '@localwebauthn/channels-core';
+
 import { migrateSqlite } from '@localwebauthn/server/sqlite';
 
 export type DemoDatabase = Database.Database;
@@ -74,7 +76,8 @@ export function openDemoDatabase(path = demoDatabasePath()): DemoDatabase {
       created_at INTEGER NOT NULL,
       kind TEXT NOT NULL DEFAULT 'signup' CHECK (kind IN ('signup', 'recovery')),
       canceled_at INTEGER,
-      claimable_at INTEGER
+      claimable_at INTEGER,
+      claim_count INTEGER NOT NULL DEFAULT 0
     ) STRICT
   `);
   // Idempotent column adds for databases created before the recovery controls.
@@ -82,6 +85,12 @@ export function openDemoDatabase(path = demoDatabasePath()): DemoDatabase {
     "kind TEXT NOT NULL DEFAULT 'signup'",
     'canceled_at INTEGER',
     'claimable_at INTEGER',
+    // How many times this signup has handed out its enrollment. The first is the
+    // person finishing; a second is claim-on-reopen, which is either the same person
+    // on another device or somebody else holding one of their channels. Counting is
+    // what makes the extra claim visible at all — without it, only the *outcome* of
+    // a second claim is ever observable.
+    'claim_count INTEGER NOT NULL DEFAULT 0',
   ]) {
     try {
       database.exec(`ALTER TABLE demo_signups ADD COLUMN ${column}`);
@@ -105,6 +114,7 @@ export type DemoSignup = {
   consumedAt: number | null;
   canceledAt: number | null;
   claimableAt: number | null;
+  claimCount: number;
   clientId: string | null;
   enrollmentToken: string | null;
   expiresAt: number;
@@ -123,6 +133,7 @@ type SignupRow = {
   consumed_at: number | null;
   canceled_at: number | null;
   claimable_at: number | null;
+  claim_count: number;
   client_id: string | null;
   enrollment_token: string | null;
   expires_at: number;
@@ -137,6 +148,7 @@ export function insertSignup(
     | 'consumedAt'
     | 'canceledAt'
     | 'claimableAt'
+    | 'claimCount'
     | 'clientId'
     | 'enrollmentToken'
   >,
@@ -180,6 +192,7 @@ export function signupById(database: DemoDatabase, id: string): DemoSignup | nul
     consumedAt: row.consumed_at,
     canceledAt: row.canceled_at,
     claimableAt: row.claimable_at,
+    claimCount: row.claim_count,
     clientId: row.client_id,
     enrollmentToken: row.enrollment_token,
     expiresAt: row.expires_at,
@@ -257,6 +270,25 @@ export function storeSignupClaim(
 }
 
 /**
+ * Count one claim against a signup, returning the new total.
+ *
+ * The first claim is the person finishing. A second is claim-on-reopen — the same
+ * person on another device, or somebody else holding one of their channels. The host
+ * cannot tell those apart, and until this counter existed it could not even see that
+ * a second one had happened: only the *outcome* of an extra claim was ever
+ * observable, and only if somebody later lost a race.
+ */
+export function countSignupClaim(database: DemoDatabase, id: string): number {
+  database.prepare(`UPDATE demo_signups SET claim_count = claim_count + 1 WHERE id = ?`).run(id);
+  return (
+    (
+      database.prepare(`SELECT claim_count FROM demo_signups WHERE id = ?`).get(id) as
+        { claim_count: number } | undefined
+    )?.claim_count ?? 0
+  );
+}
+
+/**
  * Delete signup rows whose window has closed.
  *
  * Nothing reaped these before, so they accumulated for the life of the database —
@@ -270,9 +302,41 @@ export function storeSignupClaim(
  * exchanging it against `@localwebauthn/server` until the *grant* expires, which is
  * a separate clock and unaffected by this.
  *
+ * Emits `signup.reaped` for each row *before* deleting it, which is the whole reason
+ * the sink is here: the audit trail has to outlive the data it describes. Reaping
+ * without reporting would replace "personal data kept forever" with "no record that
+ * the signup ever existed".
+ *
  * @returns The number of rows removed, for the caller to log.
  */
-export function reapSignups(database: DemoDatabase, now: number): number {
+export function reapSignups(database: DemoDatabase, now: number, emit?: SignupEventSink): number {
+  if (emit) {
+    const doomed = database
+      .prepare(
+        `SELECT id, kind, email_proved_at, phone_proved_at, consumed_at
+         FROM demo_signups WHERE expires_at <= ?`,
+      )
+      .all(now) as {
+      id: string;
+      kind: SignupKind;
+      email_proved_at: number | null;
+      phone_proved_at: number | null;
+      consumed_at: number | null;
+    }[];
+    for (const row of doomed) {
+      emit({
+        type: 'signup.reaped',
+        at: now,
+        signupId: row.id,
+        kind: row.kind,
+        proved: [
+          ...(row.email_proved_at === null ? [] : ['email']),
+          ...(row.phone_proved_at === null ? [] : ['phone']),
+        ],
+        completed: row.consumed_at !== null,
+      });
+    }
+  }
   return database.prepare(`DELETE FROM demo_signups WHERE expires_at <= ?`).run(now).changes;
 }
 

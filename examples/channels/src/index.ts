@@ -23,6 +23,9 @@ export {
   type ProofOutcome,
   type SignupChallenge,
   type SignupChannel,
+  type SignupEvent,
+  type SignupEventSink,
+  type SignupKind,
   type SignupProofState,
 } from './signup.js';
 export { assertE164, assertEmailAddress, parseAllowedPrefixes } from './validate.js';

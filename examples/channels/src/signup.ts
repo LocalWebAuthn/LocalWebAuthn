@@ -178,6 +178,102 @@ export function parseSignupFragment(
 export type ProofOutcome =
   'proved' | 'already_proved' | 'invalid' | 'expired' | 'completed' | 'pending' | 'canceled';
 
+/** Whether a signup creates an account or replaces the credentials of one. */
+export type SignupKind = 'signup' | 'recovery';
+
+/**
+ * An applied transition of the signup machine, for the host to log.
+ *
+ * None of this is visible to `@localwebauthn/server`, and it cannot be: that package
+ * has no concept of a signup, and the first thing it hears about a self-serve flow is
+ * `enrollment.issued` at completion. Everything earlier — who started what, which
+ * channels were proved, which OTPs were wrong, who vetoed — is host state, so the
+ * host is the only party that can report it.
+ *
+ * This matters more now that expired rows are reaped. Keeping them forever was an
+ * accidental audit trail; deleting them means a deliberate one is needed, or there
+ * is none.
+ *
+ * **Carries no secrets.** No OTP, no enrollment token, and no email address or phone
+ * number. These events are written to logs, which is exactly the place personal data
+ * should not accumulate — the `signupId` is the correlator, and a host that wants the
+ * destination can read the row while it lives.
+ *
+ * Emit on the transition the host *applied*, not on the outcome it observed, except
+ * for `signup.proof`: a rejected proof changes no state and is the most interesting
+ * event of the set, because a run of `invalid` against one signup is somebody
+ * guessing.
+ */
+export type SignupEvent =
+  | {
+      type: 'signup.started';
+      at: number;
+      signupId: string;
+      kind: SignupKind;
+      /** Channel names, e.g. `['email', 'phone']` — never the destinations. */
+      channels: SignupChannel[];
+    }
+  | {
+      /**
+       * One presented OTP was judged. Includes the failures: `invalid` is how
+       * guessing looks, and `expired` is how a stale link looks.
+       */
+      type: 'signup.proof';
+      at: number;
+      signupId: string;
+      channel: SignupChannel;
+      outcome: ProofOutcome;
+    }
+  | {
+      /** Every required channel is proved. For `recovery`, nothing has changed yet. */
+      type: 'signup.completed';
+      at: number;
+      signupId: string;
+      kind: SignupKind;
+      /** The account this resolved to, when one exists by now. */
+      userId: string | null;
+    }
+  | {
+      /** Recovery only: the delay window opened, and the veto is still available. */
+      type: 'signup.pending';
+      at: number;
+      signupId: string;
+      claimableAt: number;
+    }
+  | {
+      /**
+       * An enrollment was handed out. The first one is the person finishing; a later
+       * one is claim-on-reopen, which is either the same person on another device or
+       * somebody else holding a channel.
+       */
+      type: 'signup.claimed';
+      at: number;
+      signupId: string;
+      /** How many claims this signup has served, including this one. */
+      claimCount: number;
+    }
+  | {
+      /** Terminal veto, from a channel OTP or from a passkey sign-in. */
+      type: 'signup.canceled';
+      at: number;
+      signupId: string;
+    }
+  | {
+      /**
+       * The row is about to be deleted. Last chance to record what it held, which is
+       * the point: the trail has to outlive the data.
+       */
+      type: 'signup.reaped';
+      at: number;
+      signupId: string;
+      kind: SignupKind;
+      proved: SignupChannel[];
+      completed: boolean;
+    };
+
+/** Where a host sends {@link SignupEvent}s. Never throws into the caller. */
+export type SignupEventSink = (event: SignupEvent) => void;
+
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   let difference = left.length === right.length ? 0 : 1;
   for (const [index, byte] of left.entries()) {
