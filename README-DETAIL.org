@@ -347,7 +347,7 @@ Three failure modes to design against:
 If the user still has one working passkey, this is not recovery at all:
 
 #+begin_src ts
-await auth.registerPasskey('Backup security key');
+await passkeys.registerPasskey('Backup security key'); // the @localwebauthn/browser client
 #+end_src
 
 Prompt for a second passkey during initial enrollment --- a hardware key in a drawer, or a
@@ -382,12 +382,12 @@ const step = nextSignupStep(phase); // { action, reason }
 wrong: verify two independent channels *before* creating durable access, and deliver to a
 bound address rather than one supplied in the request.
 
-The worked implementation --- capability-free proof links, claim-on-reopen so the person
-finishes on whichever device they prefer, and for accounts that already have passkeys a
-waiting period with "this wasn't me" vetoes from any channel plus cancellation on any
-successful passkey sign-in --- is
-[[./examples/channels/src/signup.ts][examples/channels/src/signup.ts]].  The demo exercises
-all of it with simulated delivery; the channels examples supply real senders.
+The worked implementation is
+[[./examples/channels/src/signup.ts][examples/channels/src/signup.ts]].  It gives you
+capability-free proof links, and claim-on-reopen so the person finishes on whichever device
+they prefer.  For an account that already has passkeys it adds a waiting period, "this wasn't
+me" vetoes from any channel, and cancellation on any successful passkey sign-in.  The demo
+exercises all of it with simulated delivery; the channels examples supply real senders.
 
 * Credential kinds
 :PROPERTIES:
@@ -470,8 +470,8 @@ no per-session key material: the expected thumbprint is *derived* from =credenti
 so the per-request check reduces to "signed by the same key that opened this session".  The
 only new state is a =jti= replay cache.
 
-Server-issued nonces are opt-in, because they cost the client something real --- it must
-retain the latest =DPoP-Nonce= and retry once when challenged:
+Server-issued nonces are opt-in, because they cost the client something real.  It must retain
+the latest =DPoP-Nonce=, and retry once when challenged:
 
 #+begin_src ts
 dpopNonce: { rotationMs: 60_000 }
@@ -655,11 +655,11 @@ Schema upgrades are versioned and applied in place: =migrateSqlite=, =migratePos
 =migrateD1= read the stored version and run only what is missing.  A database at version 1
 --- the only version ever published --- upgrades on the next start.
 
-Two traps if you extend the schema yourself: =LOCALWEBAUTHN_SCHEMA_SQL= must contain no
-=--= comments (the statement splitter collapses whitespace and would comment out the
-following statement), and a new *table* needs only its name in that version's =newTables=,
-because the upgrade path lifts its =CREATE TABLE IF NOT EXISTS= and indexes from the full
-schema in the right dialect.
+Two traps if you extend the schema yourself.  First, =LOCALWEBAUTHN_SCHEMA_SQL= must contain
+no =--= comments: the statement splitter collapses whitespace, so a comment would comment out
+the statement after it.  Second, a new *table* needs only its name in that version's
+=newTables=.  The upgrade path then lifts its =CREATE TABLE IF NOT EXISTS= and its indexes
+from the full schema, in the right dialect.
 
 * Reading the code
 

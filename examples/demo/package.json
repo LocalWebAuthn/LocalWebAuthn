@@ -1,6 +1,6 @@
 {
   "name": "@localwebauthn/demo",
-  "version": "3.0.0-rc.1",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,10 +11,10 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.0.12",
-    "@localwebauthn/browser": "3.0.0-rc.1",
-    "@localwebauthn/channels-core": "3.0.0-rc.1",
-    "@localwebauthn/client": "3.0.0-rc.1",
-    "@localwebauthn/server": "3.0.0-rc.1",
+    "@localwebauthn/browser": "3.0.0",
+    "@localwebauthn/channels-core": "3.0.0",
+    "@localwebauthn/client": "3.0.0",
+    "@localwebauthn/server": "3.0.0",
     "better-sqlite3": "^12.11.1",
     "hono": "^4.12.32",
     "lucide": "^1.28.0"

@@ -10,6 +10,7 @@
 
 [[https://www.npmjs.com/package/@localwebauthn/server][https://img.shields.io/npm/v/@localwebauthn/server.png?label=server]]
 [[https://www.npmjs.com/package/@localwebauthn/browser][https://img.shields.io/npm/v/@localwebauthn/browser.png?label=browser]]
+[[https://www.npmjs.com/package/@localwebauthn/client][https://img.shields.io/npm/v/@localwebauthn/client.png?label=client]]
 [[https://github.com/LocalWebAuthn/LocalWebAuthn/actions/workflows/ci.yml][https://img.shields.io/github/actions/workflow/status/LocalWebAuthn/LocalWebAuthn/ci.yml.png?label=CI]]
 [[./LICENSE][https://img.shields.io/github/license/LocalWebAuthn/LocalWebAuthn.png]]
 
@@ -38,11 +39,12 @@ idea.  Deeper treatment of every option lives in the two detail documents:
 * There is no secret to steal
 
 *=@localwebauthn/server= never receives or stores credential private keys.*  Its durable state
-is public credential material and one-way token digests.  Nothing in any flow gives the server
-a private key, so no bug in the server package can leak one --- which is not a claim about how
-carefully it was written, but a property of where the keys live: the authenticator generates
-the key pair and keeps the private half, and the only things the relying party ever receives
-are a public key and signatures over challenges it chose itself.
+is public credential material and one-way token digests.  No flow gives the server a private
+key, so no bug in the server package can leak one.
+
+That is not a claim about how carefully the code was written.  It is a property of where the
+keys live.  The authenticator generates the key pair and keeps the private half.  The relying
+party receives only a public key, and signatures over challenges it chose itself.
 
 Three custody questions are separate, and this document keeps them separate:
 
@@ -90,13 +92,13 @@ Private keys do exist, and they come to rest in two places:
 
 - *A person's passkey* is held by a WebAuthn authenticator --- a secure element, a TPM, a
   hardware key, or a password manager the user already trusts with everything else.  How well
-  it is protected is a property of *that* authenticator, not of this project: WebAuthn permits
-  hardware, software, platform, roaming and synced credentials, and a backup-eligible
-  credential may be synchronized or recovered by its provider (Apple's passkeys, for instance,
-  sync through end-to-end-encrypted iCloud Keychain).  What is universal is that the provider
-  is not an identity provider for your application and never hands LocalWebAuthn a key ---
-  =@localwebauthn/browser= touches no key material at all, because the browser performs the
-  ceremony.
+  the key is protected is a property of *that* authenticator, not of this project.  WebAuthn
+  permits hardware, software, platform, roaming and synced credentials.  A backup-eligible
+  credential may also be synchronized or recovered by its provider --- Apple's passkeys sync
+  through end-to-end-encrypted iCloud Keychain, for example.  Two things are always true: the
+  provider is not an identity provider for your application, and it never hands LocalWebAuthn
+  a key.  =@localwebauthn/browser= touches no key material at all, because the browser performs
+  the ceremony.
 - *A script's Passkey* comes to rest wherever the operator put it: a =.env= file, or a
   reference to a platform keystore that holds it non-exportably.  =@localwebauthn/client=
   reads it and keeps it in process memory to sign with; it writes it nowhere.  The mint page
@@ -257,8 +259,8 @@ lives in a drawer.  No link, no administrator, no identity proofing:
 #+ATTR_HTML: :width 390
 [[./docs/images/demo-passkeys-mobile.png]]
 
-The demo also simulates self-serve signup.  Two confirmation messages render as an on-screen
-inbox rather than being sent; each link proves control of one channel, and only after both
+The demo also simulates self-serve signup.  Two confirmation messages appear in an on-screen
+inbox instead of being sent.  Each link proves control of one channel.  Only after both
 confirmations do the same links open passkey setup:
 
 [[./docs/images/demo-signup-inbox.png]]
@@ -269,8 +271,8 @@ does signing in with an existing passkey.
 
 [[./docs/images/demo-recovery-pending.png]]
 
-Finally, a person can mint a Passkey for a script.  It is listed apart from their own
-passkeys and marked =service=, because the server knows it is not a person:
+Finally, a person can mint a Passkey for a script.  The demo lists it apart from their own
+passkeys, and marks it =service=.  The server knows it is not a person:
 
 [[./docs/images/demo-api-credential.png]]
 
@@ -351,9 +353,9 @@ PostgreSQL and D1 are drop-in replacements for =store=; see
 
 * Step 2: signing in
 
-Two routes, mirroring the two-request shape above.  The challenge has to survive between
-them, so the service hands you a =challengeToken= to put in a short-lived cookie and keeps
-only its hash:
+Two routes, mirroring the two-request shape above.  The challenge must survive between them.
+So the service gives you a =challengeToken= for a short-lived cookie, and keeps only its
+hash:
 
 #+begin_src ts
 import { authCookieNames, cookieAttributes } from '@localwebauthn/server';
@@ -482,14 +484,16 @@ then this:
 #+begin_src ts
 import { consumeEnrollmentToken, LocalWebAuthnBrowser } from '@localwebauthn/browser';
 
-const auth = new LocalWebAuthnBrowser();
+// `passkeys` rather than `auth`: everywhere else in this document, `auth` is the
+// server-side service. This is the browser client, and the two are not interchangeable.
+const passkeys = new LocalWebAuthnBrowser();
 const token = consumeEnrollmentToken(window.location, window.history);
 
 if (token) {
-  await auth.exchangeEnrollment(token);
-  await auth.registerPasskey('Primary passkey');
+  await passkeys.exchangeEnrollment(token);
+  await passkeys.registerPasskey('Primary passkey');
 } else {
-  await auth.signIn();
+  await passkeys.signIn();
 }
 #+end_src
 
@@ -508,7 +512,7 @@ Once a person is signed in, adding another passkey needs no link and no proofing
 the session is already proof:
 
 #+begin_src ts
-await auth.registerPasskey('Backup security key');
+await passkeys.registerPasskey('Backup security key'); // the browser client, as above
 #+end_src
 
 Same call, same two routes.  The only difference is that =registrationOptions= was given a
@@ -542,8 +546,8 @@ two-channel pattern, and the failure modes of each --- is in
 * Step 5: a Passkey for a script
 
 #+begin_quote
-*Unreleased.*  Everything in this section --- =credentialKinds=, =verifyDpop=,
-=@localwebauthn/client= --- lands in the next release.  =2.2.0= has the four steps above.
+*New in 3.0.0.*  Everything in this section --- =credentialKinds=, =verifyDpop=,
+=@localwebauthn/client= --- arrived in 3.0.0.  The four steps above work in 2.2.0 too.
 #+end_quote
 
 A WebAuthn assertion is a signature over =authenticatorData || SHA-256(clientDataJSON)=.
@@ -794,7 +798,7 @@ regulated identity assurance, high-volume abuse operations, permanent password o
 fallbacks, or recovery your team cannot safely operate.  Do not make passkey-only access
 mandatory for a population whose devices and accessibility needs you have not checked.
 
-*A stable API is not a production track record.* The current release is =2.2.0=, and LocalWebAuthn
+*A stable API is not a production track record.* The current release is =3.0.0=, and LocalWebAuthn
 follows SemVer for the service API, store contract and schema --- but it is young software with a
 small user base sitting on the authentication path.  Why that is still the safer trade than a
 mature password stack is argued near the top, and it is an argument about structure rather than
@@ -815,7 +819,7 @@ fine.
 - [[./packages/client][=@localwebauthn/client=]] --- the software authenticator, DPoP proofs
   and =MachineClient=, all working through an opaque signer so a TPM, agent or KMS can back
   it.  Raw private-key generation and the credential-file format are behind a second entry
-  point, =@localwebauthn/client/file-key=.  Only for deployments issuing API credentials.
+  point, =@localwebauthn/client/file-key=.  Install it only where you issue API credentials.
 
 This repository is an npm workspace; the packages are versioned together.
 

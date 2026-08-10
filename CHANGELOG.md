@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.0.0-rc.1 - 2026-08-09
+## 3.0.0 - 2026-08-09
 
 Machine credentials: a Passkey a script can hold, plus the credential-class and
 remediation machinery that makes issuing one safe. **Breaking** for custom
