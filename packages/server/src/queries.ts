@@ -534,13 +534,23 @@ export const SQL = {
 } as const;
 
 /**
+ * The column a tripped guard names in D1's error message.
+ *
+ * Defined beside the statements that cause it, and consumed by
+ * `isD1TransactionGuardFailure` in `d1.ts`, so the string that classifies the
+ * failure and the SQL that produces it cannot drift apart.
+ */
+export const D1_GUARD_COLUMN = 'localwebauthn_transaction_guard.value';
+
+/**
  * SQL used only by the D1 adapter.
  *
- * D1 cannot open a transaction, so it cannot check authorization and insert the
- * credential as two statements — another request could invalidate the grant in
- * between. These statements fold the check into the insert: `WHERE EXISTS`
- * makes the insert affect zero rows unless the authorization still holds, and
- * the adapter's row-count guard turns that into a failed batch.
+ * D1 has no *interactive* transaction: a `batch()` runs atomically, but the whole
+ * sequence must be submitted at once, so the adapter cannot check authorization in
+ * one round trip and insert the credential in the next — another request could
+ * invalidate the grant in between. These statements fold the check into the insert:
+ * `WHERE EXISTS` makes the insert affect zero rows unless the authorization still
+ * holds, and the adapter's row-count guard turns that into a failed batch.
  *
  * There is one statement per authorization path. The caller already knows which
  * path it is on, so neither statement carries the other's parameters.
@@ -586,17 +596,34 @@ export const D1_SQL = {
 
   /**
    * Fails the surrounding batch unless the preceding statement changed exactly
-   * one row, because `localwebauthn_transaction_guard.value` is `CHECK (value = 1)`.
+   * one row.
+   *
+   * It fails by inserting `NULL` into a `NOT NULL` column, which is deliberate and
+   * is the whole reason this reads oddly. D1 surfaces no error codes — only a
+   * message string — so the *only* way {@link isD1TransactionGuardFailure} can tell
+   * "the guard tripped" from "the database is broken" is by what that message names.
+   * A `NOT NULL` violation names the column:
+   *
+   *     NOT NULL constraint failed: localwebauthn_transaction_guard.value
+   *
+   * which is {@link D1_GUARD_COLUMN} — a name this package owns. The obvious
+   * alternative, letting the table's `CHECK (value = 1)` fail, reports only its own
+   * expression (`CHECK constraint failed: value = 1`) and names neither the table
+   * nor anything else unique to us, so it cannot be told apart from an unrelated
+   * `CHECK` on some other table.
    */
-  guardPreviousChange: `INSERT INTO localwebauthn_transaction_guard(value) VALUES (changes())`,
+  guardPreviousChange: `
+    INSERT INTO localwebauthn_transaction_guard(value)
+    SELECT CASE WHEN changes() = 1 THEN 1 ELSE NULL END`,
 
   /**
    * Fails the surrounding batch unless the user's registration generation still
-   * equals the one recorded on the challenge — the registration fence, expressed
-   * with the same CHECK trick: it inserts `1` when the fence holds and `0` (which
-   * violates the CHECK, rolling the batch back) when a revoke has moved it.
+   * equals the one recorded on the challenge — the registration fence, failing the
+   * same way {@link guardPreviousChange} does: it inserts `1` when the fence holds
+   * and `NULL` (which violates `NOT NULL`, rolling the batch back under a name we
+   * own) when a revoke has moved it.
    *
-   * Binds: user id, expected generation, user id.
+   * Binds: user id, expected generation.
    */
   guardRegistrationFence: `
     INSERT INTO localwebauthn_transaction_guard(value)
@@ -604,7 +631,7 @@ export const D1_SQL = {
       WHEN COALESCE((
         SELECT generation FROM localwebauthn_registration_fences WHERE user_id = ?
       ), 0) = ? THEN 1
-      ELSE 0
+      ELSE NULL
     END`,
 
   clearGuard: `DELETE FROM localwebauthn_transaction_guard`,

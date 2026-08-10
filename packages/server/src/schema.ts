@@ -175,6 +175,18 @@ CREATE TABLE IF NOT EXISTS localwebauthn_transaction_guard (
   value INTEGER NOT NULL CHECK (value = 1)
 ) STRICT;
 `;
+/*
+ * `localwebauthn_transaction_guard` is scratch, never read, and emptied by every
+ * batch that writes it. `NOT NULL` is the load-bearing constraint: the guard
+ * statements insert NULL to abort a batch, because that failure names
+ * `localwebauthn_transaction_guard.value` and so can be told apart from any other
+ * failure. See `D1_SQL.guardPreviousChange` and `isD1TransactionGuardFailure`.
+ *
+ * `CHECK (value = 1)` is kept as a backstop for the older `VALUES (changes())`
+ * form. If that form is ever reintroduced, the CHECK still aborts the batch, and
+ * the classifier — which does not recognise a CHECK failure — rethrows it as a
+ * storage fault. Loud and wrong beats silent and wrong.
+ */
 
 /**
  * The same logical schema as {@link LOCALWEBAUTHN_SCHEMA_SQL}, rendered for
