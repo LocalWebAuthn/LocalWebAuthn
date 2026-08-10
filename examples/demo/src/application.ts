@@ -3,6 +3,7 @@ import {
   createUserHandle,
   describeSignupPhase,
   isLocalWebAuthnError,
+  provisioningPageHeaders,
   signupPhase,
 } from '@localwebauthn/server';
 import { serveStatic } from '@hono/node-server/serve-static';
@@ -45,6 +46,7 @@ import {
   signupById,
   storeSignupClaim,
 } from './database';
+import { mountApiKeyRoutes, mountMachineRoutes } from './machine';
 
 export type DemoApplicationOptions = {
   auth: DemoAuthConfig;
@@ -74,7 +76,12 @@ async function clientPayload(
   client: DemoClient,
   authentication: DemoAuthentication,
 ): Promise<ClientPayload> {
-  const passkeyCount = (await authentication.listCredentials(client.id)).length;
+  // Interactive credentials only: the administrator table's "Passkeys" column and
+  // the signup phase both mean "can this person sign in", which an API credential
+  // cannot do.
+  const passkeyCount = (await authentication.listCredentials(client.id)).filter((credential) =>
+    authentication.interactiveKind(credential.kind),
+  ).length;
   const phase = signupPhase({
     hasActiveCredential: passkeyCount > 0,
     // Demo treats "no passkeys yet" as an outstanding invite for admin tables.
@@ -438,8 +445,14 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
   const app = new Hono<DemoEnvironment>();
   const authentication = createDemoAuthentication(database, options.auth);
 
-  app.use('/api/*', requireExpectedOrigin(options.auth));
+  // `/api/machine/*` routes authenticate from the `Authorization` header and read
+  // no cookie, so CSRF cannot reach them and the origin check has nothing to
+  // defend — see `cookieFreePrefixes`. Declaring the exemption here means route
+  // registration order below carries no security weight.
+  app.use('/api/*', requireExpectedOrigin(options.auth, { cookieFreePrefixes: ['/api/machine/'] }));
   mountAuthenticationRoutes(app, authentication, options.auth);
+  mountApiKeyRoutes(app, authentication, options.auth);
+  mountMachineRoutes(app, database, authentication);
   mountSignupRoutes(app, database, authentication, options.auth, {
     recoveryDelayMs: options.recoveryDelayMs ?? 10_000,
     recoveryClaimWindowMs: options.recoveryClaimWindowMs ?? 15 * 60_000,
@@ -467,14 +480,20 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
     }
     return context.json({
       client: await clientPayload(current, authentication),
-      passkeys: (await authentication.listCredentials(current.id)).map((credential) => ({
-        id: credential.id,
-        label: credential.label,
-        deviceType: credential.deviceType,
-        backedUp: credential.backedUp,
-        createdAt: credential.createdAt,
-        lastUsedAt: credential.lastUsedAt,
-      })),
+      // Interactive kinds only. An API credential belongs in its own section, and
+      // rendering one here would show it as "Device-bound · Last used", which is
+      // exactly the mislabelling the `kind` column exists to prevent — and would
+      // also offer a revoke button under the wrong heading.
+      passkeys: (await authentication.listCredentials(current.id))
+        .filter((credential) => authentication.interactiveKind(credential.kind))
+        .map((credential) => ({
+          id: credential.id,
+          label: credential.label,
+          deviceType: credential.deviceType,
+          backedUp: credential.backedUp,
+          createdAt: credential.createdAt,
+          lastUsedAt: credential.lastUsedAt,
+        })),
     });
   });
 
@@ -521,10 +540,9 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
            ) VALUES (?, ?, ?, 'client', ?, ?)`,
         )
         .run(id, email, displayName, createUserHandle(), Date.now());
-      const enrollment = await authentication.issueEnrollment(
-        id,
-        context.get('authenticatedUser').id,
-      );
+      const enrollment = await authentication.issueEnrollment(id, {
+        approvedByUserId: context.get('authenticatedUser').id,
+      });
       const created = clientById(database, id);
       if (!created) {
         throw new Error('The client was not persisted.');
@@ -553,10 +571,9 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
     if (!client?.active) {
       return context.json({ error: 'client_not_found', message: 'The client was not found.' }, 404);
     }
-    const enrollment = await authentication.issueEnrollment(
-      client.id,
-      context.get('authenticatedUser').id,
-    );
+    const enrollment = await authentication.issueEnrollment(client.id, {
+      approvedByUserId: context.get('authenticatedUser').id,
+    });
     return context.json({
       enrollmentUrl: enrollment.enrollmentUrl,
       expiresAt: enrollment.expiresAt,
@@ -584,10 +601,9 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
       );
     }
     await authentication.revokeUserAuthentication(client.id);
-    const enrollment = await authentication.issueEnrollment(
-      client.id,
-      context.get('authenticatedUser').id,
-    );
+    const enrollment = await authentication.issueEnrollment(client.id, {
+      approvedByUserId: context.get('authenticatedUser').id,
+    });
     return context.json({
       client: await clientPayload(client, authentication),
       enrollmentUrl: enrollment.enrollmentUrl,
@@ -688,11 +704,33 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
   );
 
   if (options.staticRoot) {
+    // The single-page app displays a freshly minted API credential's private key,
+    // so the document that carries it gets the show-once hardening: a CSP with no
+    // inline script, no framing, no caching, no referrer. One injected script tag
+    // on this page could read the key straight out of the DOM, and headers are the
+    // only thing standing between "our bundle" and "any bundle".
+    //
+    // This app is one origin for both the admin UI and the mint panel, which is a
+    // demo simplification: in production, serve a provisioning page from its own
+    // minimal origin so its attack surface is not the whole application's.
+    app.use('/assets/*', async (context, next) => {
+      await next();
+      for (const [header, value] of Object.entries(provisioningPageHeaders())) {
+        context.header(header, value);
+      }
+    });
     app.use('/assets/*', serveStatic({ root: options.staticRoot }));
+
     const index = serveStatic({ root: options.staticRoot, path: 'index.html' });
-    app.get('/', index);
-    app.get('/enroll', index);
-    app.get('/signup', index);
+    const hardenedIndex: MiddlewareHandler<DemoEnvironment> = async (context, next) => {
+      for (const [header, value] of Object.entries(provisioningPageHeaders())) {
+        context.header(header, value);
+      }
+      return index(context, next);
+    };
+    app.get('/', hardenedIndex);
+    app.get('/enroll', hardenedIndex);
+    app.get('/signup', hardenedIndex);
   }
 
   app.notFound((context) =>

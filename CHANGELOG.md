@@ -1,5 +1,102 @@
 # Changelog
 
+## 3.0.0 - 2026-08-09
+
+Machine credentials: a Passkey a script can hold, plus the credential-class and
+remediation machinery that makes issuing one safe. **Breaking** for custom
+`LocalWebAuthnStore` implementations and for one released service signature; a
+deployment using an official adapter and not issuing API credentials needs no code
+changes, but must still run the schema upgrade.
+
+### Added
+
+- **`@localwebauthn/client`** — a WebAuthn authenticator in software, for programs
+  with no browser and no human: ceremony construction, ES256 and Ed25519 key
+  stores, the two-line credential file, RFC 9449 DPoP proofs, and `MachineClient`.
+  Install it only where API credentials are used. **Two entry points:** the default
+  one works entirely through an opaque `MachineKeyStore`, so a TPM, agent or KMS can
+  back it; raw key generation, import and the credential-file format are behind
+  `@localwebauthn/client/file-key`, so the import line says when a key is being
+  created, read or written.
+- **`provisioningPageHeaders()`** — the header set for a page that displays
+  credential material once: a CSP with no `unsafe-inline`, no framing, no caching,
+  no referrer, cross-origin isolation. The same recipe any API-key page needs, as a
+  function rather than a checklist.
+- **`credentials.kind` and per-kind policy.** A host-defined class, fixed by the
+  server at registration and immutable after. `credentialKinds` turns a label into
+  restrictions: `interactive: false` keeps a credential out of the browser sign-in
+  route, `canRegister: false` stops a leaked key minting itself a spare, and
+  `sessionAbsoluteMs` shortens its sessions. Undeclared kinds — including `null`,
+  which every existing credential has — behave exactly as before.
+- **`authenticateMachineRequest`** — one fail-closed call for a machine route. It
+  derives the session from the token (so no mismatched pair is possible), requires
+  a DPoP proof, and refreshes session activity **only after** the proof holds, so a
+  thief holding just the bearer token cannot keep a session alive.
+- **DPoP verification** (`verifyDpop`, `dpopNonce`, `dpopChallenge`), with the
+  expected key thumbprint _derived_ from the stored credential public key — no
+  per-session key material. Server-issued nonces are opt-in.
+- **Credential heritage** — `createdVia`, `parentCredentialId`, `grantId`,
+  `approvedByUserId`, with `credentialLineage`, `credentialDescendants` and
+  `revokeCredentialTree`. A stolen session can enroll a passkey of its own; the
+  parent link is what makes that remediable afterwards.
+- **A registration fence.** Every user carries a registration generation:
+  `registrationOptions` stamps it on the challenge and the committing statement
+  refuses a stale one, so a revocation cancels ceremonies already in flight instead
+  of racing them.
+- **Kind filters** on `revokeUserSessions` and `revokeUserAuthentication`, and
+  `credentialKind` on enrollment grants, so a bootstrap token cannot be redeemed
+  for a more privileged class than it was issued for.
+- **`interactiveKind(kind)`** for the host's session middleware, which is the only
+  place the grant-path self-replication chain can be closed.
+- **Versioned schema migrations.** All three runners read the stored version and
+  apply only what is missing; a database from a _newer_ build is refused rather
+  than treated as current.
+
+### Changed
+
+- **Breaking, custom stores:** the store contract gains `registrationGeneration`,
+  `bumpRegistrationGeneration`, `revokeLiveCredentialSessions`,
+  `revokePendingEnrollmentGrants`, `credentialAncestry` and
+  `credentialDescendants`; `ChallengeRecord` and `Credential` gain columns. DPoP's
+  three methods live in a **separate** `LocalWebAuthnDpopStore`, required only if
+  you issue API credentials.
+- **Breaking, all hosts:** `issueEnrollment(userId, approvedByUserId)` takes an
+  options object — `issueEnrollment(userId, { approvedByUserId })`. The compiler
+  flags every call site.
+- **Schema version 2**, applied in place. One step from released v1, tested against
+  the literal v1 DDL on SQLite, PostgreSQL and D1.
+- The last-credential guard is now scoped by kind, so revoking a person's only
+  _passkey_ is refused even when an API credential remains.
+- `MachineClient` retries a `401` only on an explicit RFC 9449 challenge, never on
+  an application `401` that merely carries a nonce header — which could otherwise
+  dispatch a `POST` twice.
+- `migrateD1` is version-aware. It previously ran the current schema blind, so a
+  released v1 D1 database could not upgrade at all.
+
+### Fixed
+
+- A bearer-only machine request could refresh a session's idle timer without ever
+  presenting a proof, keeping a stolen token alive to absolute expiry.
+- Compromise revocation revoked one snapshot, so a credential registered
+  concurrently survived; it now re-enumerates to a fixed point and throws
+  `revocation_not_converged` rather than reporting an incomplete result as success.
+- `coseToJwk` threw instead of returning `null`, turning a bad key into a 500 where
+  a 401 was meant; `malformed_jwk` was unreachable and let two differently
+  malformed keys hash alike.
+- `@localwebauthn/client` declared a LICENSE it did not ship, and
+  `@localwebauthn/server` declared a `migrations` directory that has never existed.
+  `release:check` now asserts tarball contents instead of trusting a dry run.
+
+### Security
+
+Documentation corrected where it overstated the guarantees. The private-key claim
+is now component-specific: the **server** never receives or stores a private key,
+human passkeys never reach this project's code, and the optional client and
+provisioning components _do_ transiently handle exportable key material. DPoP is
+described as sender-constraining the token, not signing the request (RFC 9449's
+`htu` excludes query and fragment, and nothing covers the body). D1 batches are
+documented as transactional, which current Cloudflare D1 guarantees.
+
 ## 2.2.0 - 2026-08-06
 
 Additive release: no changes are required for applications using the official

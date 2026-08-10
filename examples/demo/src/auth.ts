@@ -2,6 +2,7 @@ import type {
   AuthenticationVerificationInput,
   AuthUser,
   RegistrationVerificationInput,
+  SessionIdentity,
 } from '@localwebauthn/server';
 import {
   authCookieNames,
@@ -28,6 +29,8 @@ export type DemoAuthConfig = {
 export type DemoEnvironment = {
   Variables: {
     authenticatedUser: AuthUser;
+    /** Set by `requireMachineSession` on `/api/machine/v1/*` routes. */
+    machineSession: SessionIdentity;
   };
 };
 
@@ -49,6 +52,27 @@ export function createDemoAuthentication(
     expectedOrigins: config.publicOrigin,
     publicOrigin: config.publicOrigin,
     store: new SqliteLocalWebAuthnStore(database),
+    // Server-issued DPoP nonces: the one element of a per-request proof the
+    // *server* chooses. Everything else in one — jti, iat, htm, htu, the key — is
+    // the client's, so this is what stops a key holder pre-generating proofs for
+    // later use. Optional in the package; the demo turns it on to exercise it.
+    dpopNonce: { rotationMs: 60_000 },
+    // Declaring the kind is what turns 'service' from a label into a set of
+    // restrictions. An undeclared kind — including null, which every human
+    // passkey here has — keeps the default permissive behaviour.
+    credentialKinds: {
+      service: {
+        // Cannot open a session at the browser sign-in route, which never names
+        // a kind.
+        interactive: false,
+        // Cannot enrol another credential. Without this, a leaked .env key mints
+        // a spare and outlives revocation of the first.
+        canRegister: false,
+        // Short sessions: the client re-runs the ceremony on 401, which costs it
+        // two round trips and nothing else.
+        sessionAbsoluteMs: 15 * 60_000,
+      },
+    },
     users: {
       getUser: async (userId) => {
         const row = database
@@ -126,10 +150,47 @@ function authenticationError(context: Context<DemoEnvironment>, error: unknown):
   );
 }
 
-export function requireExpectedOrigin(config: DemoAuthConfig): MiddlewareHandler<DemoEnvironment> {
+export type OriginCheckOptions = {
+  /**
+   * Path prefixes whose routes read **no cookie**, and are therefore exempt from
+   * the origin check.
+   *
+   * The precondition is the name: an entry here is only sound if every route
+   * beneath it authenticates from the `Authorization` header alone and never
+   * falls back to a cookie. CSRF depends on *ambient* credentials — a cookie the
+   * browser attaches by itself — so a route that reads none cannot be attacked
+   * this way, and there is nothing for the check to defend.
+   *
+   * The exemption is declared rather than implied by registration order, because
+   * order is invisible at the point where it matters. Note also that requiring
+   * the header from a non-browser caller would prove nothing: `Origin` is a
+   * forbidden request-header, so page JavaScript cannot forge it and a browser's
+   * value is trustworthy — but any other client writes whatever string it likes.
+   * A check every caller satisfies trivially is worse than a documented absence,
+   * because its result can no longer be interpreted.
+   */
+  cookieFreePrefixes?: string[];
+};
+
+/**
+ * `Cache-Control: no-store` on every API response, plus an exact-origin check on
+ * state-changing requests to cookie-authenticated routes.
+ */
+export function requireExpectedOrigin(
+  config: DemoAuthConfig,
+  options: OriginCheckOptions = {},
+): MiddlewareHandler<DemoEnvironment> {
+  const cookieFreePrefixes = options.cookieFreePrefixes ?? [];
   return async (context, next) => {
     context.header('Cache-Control', 'no-store');
+    // Normalize before matching. A raw request line may carry `..` segments, and
+    // an exemption decided on the unnormalized path could be claimed by a request
+    // that then routes somewhere else entirely. `URL` removes dot segments, so
+    // this test sees the same path the router resolves.
+    const path = new URL(context.req.url).pathname;
+    const cookieFree = cookieFreePrefixes.some((prefix) => path.startsWith(prefix));
     if (
+      !cookieFree &&
       context.req.method !== 'GET' &&
       !isExactOrigin(context.req.header('Origin'), config.publicOrigin)
     ) {
@@ -156,6 +217,26 @@ export function currentSessionToken(
   return getCookie(context, cookiesFor(config.publicOrigin).session);
 }
 
+/**
+ * Require a live cookie session from an *interactive* credential.
+ *
+ * The kind check is the load-bearing part, and it is fail-closed for every route
+ * that uses this middleware — present and future.
+ *
+ * A machine credential holds a perfectly valid session token, and nothing stops a
+ * script presenting it as a `Cookie` and writing its own `Origin` header. Without
+ * the check it would pass here and reach whatever the route does next — including
+ * `issueEnrollment`. That matters more than it looks: an enrollment token leads to
+ * the *grant* registration path, which carries no `canRegister` gate because it
+ * has no authorizing session to inspect, only possession of a single-use token. So
+ * a machine that can obtain a grant can register a fresh credential and defeat
+ * `canRegister: false` entirely.
+ *
+ * The rule reuses the kind's own `interactive` declaration rather than adding
+ * another switch: a kind that may not *open* a session at the browser login route
+ * may not *use* one at a browser route either. One declaration, two enforcement
+ * points.
+ */
 export function requireAuthentication(
   authentication: DemoAuthentication,
   config: DemoAuthConfig,
@@ -171,6 +252,15 @@ export function requireAuthentication(
           message: 'A passkey session is required.',
         },
         401,
+      );
+    }
+    if (!authentication.interactiveKind(resolved.session.credentialKind)) {
+      return context.json(
+        {
+          error: 'forbidden',
+          message: 'This endpoint requires an interactive credential.',
+        },
+        403,
       );
     }
     context.set('authenticatedUser', resolved.user);

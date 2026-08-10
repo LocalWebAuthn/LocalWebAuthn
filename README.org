@@ -1,0 +1,839 @@
+#+title: LocalWebAuthn
+#+author: Perry Kundert
+#+category: LocalWebAuthn
+
+#+STARTUP: org-startup-with-inline-images inlineimages
+#+OPTIONS: ^:nil # Disable sub/superscripting with bare _; _{...} still works
+#+OPTIONS: toc:nil
+
+*Default to passkeys, not password plumbing.*
+
+[[https://www.npmjs.com/package/@localwebauthn/server][https://img.shields.io/npm/v/@localwebauthn/server.png?label=server]]
+[[https://www.npmjs.com/package/@localwebauthn/browser][https://img.shields.io/npm/v/@localwebauthn/browser.png?label=browser]]
+[[https://www.npmjs.com/package/@localwebauthn/client][https://img.shields.io/npm/v/@localwebauthn/client.png?label=client]]
+[[https://github.com/LocalWebAuthn/LocalWebAuthn/actions/workflows/ci.yml][https://img.shields.io/github/actions/workflow/status/LocalWebAuthn/LocalWebAuthn/ci.yml.png?label=CI]]
+[[./LICENSE][https://img.shields.io/github/license/LocalWebAuthn/LocalWebAuthn.png]]
+
+LocalWebAuthn is a self-hosted, invitation-first, passkey-only authentication lifecycle for
+TypeScript applications.  It supplies what is missing between a WebAuthn ceremony library
+and a logged-in user: enrollment, credentials, challenges, sessions, revocation, and
+SQLite, PostgreSQL or Cloudflare D1 persistence.
+
+Your application keeps its users and its authorization rules.  It keeps no passwords, no
+password hashes, no reset tokens, no TOTP seeds and no recovery codes --- and, the point of
+the first section below, *no private key material of any kind*.  Hand an attacker a complete
+copy of everything LocalWebAuthn stores and they still cannot sign in.
+
+This page builds one application up in order: the security property that makes all of this
+worth doing, why passkeys differ from passwords in your code, what the running demo looks
+like, then the smallest server and browser code that authenticates a person, then a second
+passkey, then a Passkey for a script that has no browser and no human.  Each step adds one
+idea.  Deeper treatment of every option lives in the two detail documents:
+
+- [[./README-DETAIL.org][README-DETAIL.org]] --- deployment and use options: adapters,
+  cookies and origins, sessions, suspension, recovery design, self-serve signup, credential
+  kinds, DPoP, heritage, audit events, migrations.
+- [[./README-DETAIL-EXAMPLES.org][README-DETAIL-EXAMPLES.org]] --- the five worked
+  examples, what each one is for, and how to run it.
+
+* There is no secret to steal
+
+*=@localwebauthn/server= never receives or stores credential private keys.*  Its durable state
+is public credential material and one-way token digests.  No flow gives the server a private
+key, so no bug in the server package can leak one.
+
+That is not a claim about how carefully the code was written.  It is a property of where the
+keys live.  The authenticator generates the key pair and keeps the private half.  The relying
+party receives only a public key, and signatures over challenges it chose itself.
+
+Three custody questions are separate, and this document keeps them separate:
+
+- *Server persistence* --- none, as above.  This is the property a database breach tests.
+- *Transient possession* --- a human's passkey is never touched by our code at all
+  (=@localwebauthn/browser= hands the ceremony to the browser).  The *optional* pieces are
+  different: =@localwebauthn/client= imports a script's private key to sign with it, and the
+  demo's browser minting page generates and displays one.  Both handle exportable key material
+  in process for as long as they run.
+- *Client keystore* --- where a script's key comes to rest is the operator's choice: a
+  =chmod 0600= file, or a platform keystore holding it non-exportably.
+
+So the honest one-line version is *the server has no private key to lose, and no human
+passkey ever reaches our code* --- not that the repository never touches a private key.  If
+you issue API credentials, [[./docs/API-AUTH.org][docs/API-AUTH.org]] covers custody options
+including keeping the key in a TPM or Secure Enclave so no file holds it.
+
+** What the server stores
+
+Every table, and what it is worth to whoever reads it:
+
+| Table                             | Holds                                                         | Worth to a reader                                             |
+|-----------------------------------+---------------------------------------------------------------+---------------------------------------------------------------|
+| =localwebauthn_credentials=       | COSE *public* key, counter, label, kind, heritage, timestamps | nothing --- you cannot sign with a public key                 |
+| =localwebauthn_sessions=          | SHA-256 of the session token, user, credential, timestamps    | nothing --- a digest is not a bearer token                    |
+| =localwebauthn_enrollment_grants= | SHA-256 of the link token and of the enrollment session       | nothing --- the link cannot be reconstructed                  |
+| =localwebauthn_challenges=        | SHA-256 of the challenge cookie, and the challenge itself     | the challenge is public by design; it was sent to the browser |
+| =localwebauthn_dpop_proofs=       | SHA-256 of spent =jti= values                                 | nothing --- it is a replay ledger                             |
+| =localwebauthn_dpop_nonces=       | the current nonce, in the clear                               | nothing --- the server hands it to any caller that asks       |
+
+Exactly two values are stored in plaintext and both are non-secrets by construction: a
+WebAuthn challenge, which the server *published* to the browser moments earlier, and a DPoP
+nonce, whose only property is being unguessable *in advance*.  Every actual secret --- session
+tokens, enrollment tokens, enrollment session tokens --- is 256 bits of random material of
+which only a SHA-256 digest is kept.  A =jti= is chosen by the client, and only its digest is
+kept as well, in a ledger whose sole job is to refuse a second use.
+
+A full read of that database therefore yields *nothing that can be replayed*.  There is no
+offline attack to mount, because there is nothing to attack: a public key is already public,
+and a digest of a 256-bit random token has no shortcut.
+
+** What lives on the client
+
+Private keys do exist, and they come to rest in two places:
+
+- *A person's passkey* is held by a WebAuthn authenticator --- a secure element, a TPM, a
+  hardware key, or a password manager the user already trusts with everything else.  How well
+  the key is protected is a property of *that* authenticator, not of this project.  WebAuthn
+  permits hardware, software, platform, roaming and synced credentials.  A backup-eligible
+  credential may also be synchronized or recovered by its provider --- Apple's passkeys sync
+  through end-to-end-encrypted iCloud Keychain, for example.  Two things are always true: the
+  provider is not an identity provider for your application, and it never hands LocalWebAuthn
+  a key.  =@localwebauthn/browser= touches no key material at all, because the browser performs
+  the ceremony.
+- *A script's Passkey* comes to rest wherever the operator put it: a =.env= file, or a
+  reference to a platform keystore that holds it non-exportably.  =@localwebauthn/client=
+  reads it and keeps it in process memory to sign with; it writes it nowhere.  The mint page
+  displays it once and the server keeps only the public half, so the operator's copy is the
+  authoritative one --- but "once" describes the page, not the world: a value that reached a
+  clipboard, a Downloads folder, a terminal scrollback or a backup has copies this project
+  cannot see or erase.  Browser minting is an exportable-key *compatibility* path; generating
+  the key on the target machine avoids the transfer entirely.
+
+The user's side of the bargain is small and worth stating plainly: create human passkeys
+through the platform's own facility, and save a script's credential file where a secret
+belongs --- =chmod 0600=, beside the script, out of source control.  Do those two things and
+no private key ever exists anywhere else.
+
+** What a full disclosure actually costs
+
+Honesty is more useful here than a slogan, so: which disclosures grant access, and which do
+not?
+
+| Disclosure                               | What the attacker gains                                                                     |
+|------------------------------------------+---------------------------------------------------------------------------------------------|
+| the whole server database, read-only     | *nothing usable* --- public keys, digests and metadata                                      |
+| a database backup from any point in time | nothing usable, then or ever --- public keys do not become interesting with age             |
+| server logs, traces, crash dumps         | nothing usable --- no reusable secret ever crosses the process                               |
+| a live session cookie                    | that one session, until it expires or =revokeSession= / =revokeUserSessions= ends it          |
+| a live machine session token             | nothing on its own --- each request also needs a DPoP proof signed by the credential's key    |
+| an unredeemed enrollment link            | one passkey on that account.  A real bearer capability --- hence single-use, minutes long, and delivered on a channel you choose |
+| a script's credential file               | that one credential, until =revokeCredential=; heritage records what it created              |
+| *write* access to the database           | everything --- an attacker can insert their own public key.  Read disclosure and write compromise are different events, and only the first is bounded |
+
+The two rows that grant anything are bounded in a way a password breach never is: a leaked
+credential is *one* credential, revocable in a single call, and the heritage columns say
+exactly what it was used to create.
+
+Passkeys do not remove application security.  A compromised server can still alter code and
+hijack future sessions, recovery remains a policy you must design, and the database still
+holds user data worth protecting.  The narrow claim is the durable one: *your server never
+receives or stores a reusable user authentication secret, so it cannot lose one.*
+
+* Why a young passkey system is safer than a hardened password one
+
+This project is new and lightly reviewed.  A mature password stack has had years of eyes on
+it.  The comparison still favours passkeys, and not narrowly, for reasons that have nothing
+to do with code quality.
+
+*A password system handles the real secret on every single login.*  The user's password
+crosses TLS termination, a proxy, a body parser, your framework, your logs if anyone is
+careless, process memory, an APM trace, a crash dump, and every dependency in the request
+path.  That is not a defect to review away --- it is what the protocol requires.  A passkey
+login carries a signature over a server-chosen challenge, so all those same places carry
+nothing worth stealing.  *Review reduces the chance of a leak; passkeys remove the thing that
+could leak.*
+
+*A verifier database is a permanent, transferable liability.*  Even Argon2 hashes are
+attackable offline, at the attacker's leisure, on hardware that keeps improving, against
+passwords people reuse elsewhere --- so the damage outlives your incident and escapes your
+system.  You also owe that database maintenance forever, raising parameters as hardware moves.
+A table of public keys is worth nothing on the day it leaks and nothing in ten years, and
+needs no upkeep.
+
+*Passwords drag in a large surface by construction.*  Reset flows, delivery channels,
+credential-stuffing defence, breach-list checks, TOTP, recovery codes --- each is code that
+can be wrong, and every one of them is a login path.  Review quality multiplies against
+surface area, and you cannot review your way to a smaller surface.  A system with fewer moving
+parts has fewer places to be wrong even when each part has had less scrutiny.
+
+*Phishing resistance here is a protocol property, not a training programme.*  The browser
+binds each credential to one origin and will not offer it to a look-alike domain.  No amount
+of review makes a password unphishable, and no amount of user education ever finishes the job.
+
+*And the honest limit.*  A bug in this lifecycle code can absolutely grant access --- a
+mishandled challenge, a leaked enrollment link, a session-fixation mistake.  Those risks are
+real, and this code is young.  But they are *bounded and revocable*: such a failure creates no
+persistent, transferable secret, and nothing an attacker can carry to another site.  The one
+place a passkey deployment can genuinely end up *worse* than a password one is recovery.
+Build "email me a link" recovery and you have rebuilt the password reset flow, put the mailbox
+back in front of the passkey, and inherited the whole problem you just removed.  That is why
+recovery has a section of its own --- it is where the remaining risk actually lives.
+
+* Passkeys instead of passwords, in your code
+
+The properties above come from the
+[[https://www.w3.org/TR/webauthn-3/][WebAuthn standard]], not from this package: the
+authenticator generates a key pair per site, keeps the private half, and signs a challenge
+the browser binds to the origin it is actually talking to --- so a signature produced for
+=evil.example= is worthless at =app.example.com=.  What follows is what that changes in the
+code you write.
+
+Every password concept has a direct replacement:
+
+| Password application                          | LocalWebAuthn                                        |
+|-----------------------------------------------+------------------------------------------------------|
+| =users.password_hash=                         | a public key in =localwebauthn_credentials=          |
+| =bcrypt.hash()= at signup                     | the authenticator generates the key pair             |
+| =bcrypt.compare()= at login                   | =verifyAuthentication({ response, challengeToken })= |
+| a reusable secret the user can be phished for | a signature bound to one origin, valid once          |
+| reset tokens and a mail channel               | an explicit re-enrollment policy you define          |
+| bolt-on TOTP                                  | =userVerification: 'required'=, done by the device   |
+
+Two mechanical differences matter more than the rest.
+
+*Signing in takes two requests instead of one.*  A password can just be sent.  A passkey
+proves possession of a key, so the server issues a challenge first and verifies a signature
+over it second:
+
+#+begin_src text
+password   POST /login          {username, password}   -> Set-Cookie: session
+
+passkey    POST /login/options  {}                     -> challenge + Set-Cookie: challenge
+             (the device prompts: Touch ID, Windows Hello, a security key, a password manager)
+           POST /login/verify   {signed assertion}     -> Set-Cookie: session
+#+end_src
+
+*Sign-in submits no username.*  Passkeys are discoverable: the authenticator already knows
+which account it holds for your site, so the user picks it in the browser's own UI.
+=POST /login/options= takes an empty body.  There is no username-enumeration surface and no
+per-username rate limit to write --- rate limit the route.
+
+What you give up is the free reset email.  There is no shared secret to reset, so recovery
+means issuing a fresh enrollment link, which is identity proofing your application has to
+define.  It is the one design decision this package deliberately refuses to make for you;
+[[./README-DETAIL.org][README-DETAIL.org]] has a section on getting it right, and the
+cheapest answer --- a second passkey, enrolled before anything is lost --- appears below.
+
+* See it running
+
+#+begin_src sh
+git clone https://github.com/LocalWebAuthn/LocalWebAuthn.git
+cd LocalWebAuthn
+nix develop
+make demo
+#+end_src
+
+The demo listens on =http://localhost:4173= and keeps a disposable SQLite database under
+=examples/demo/.data/=.  It prints one URL:
+
+#+begin_src text
+Initial administrator enrollment URL:
+http://localhost:4173/enroll#token=...
+#+end_src
+
+[[./docs/images/quickstart.gif]]
+
+The recording stops where WebAuthn begins --- terminal recorders cannot capture a native
+passkey prompt.  Open that URL and the browser consumes the fragment, removes it from
+history, and asks the platform authenticator to create the administrator's passkey:
+
+[[./docs/images/demo-enrollment.png]]
+
+Signed in, the same page is the whole lifecycle: invite a person with a one-time link, watch
+their passkey count, end sessions without touching credentials, and re-enroll after a loss.
+
+[[./docs/images/demo-administration.png]]
+
+Any signed-in person can add another passkey --- a second device, or a hardware key that
+lives in a drawer.  No link, no administrator, no identity proofing:
+
+#+ATTR_HTML: :width 390
+[[./docs/images/demo-passkeys-mobile.png]]
+
+The demo also simulates self-serve signup.  Two confirmation messages appear in an on-screen
+inbox instead of being sent.  Each link proves control of one channel.  Only after both
+confirmations do the same links open passkey setup:
+
+[[./docs/images/demo-signup-inbox.png]]
+
+Re-proofing an account that *already* has passkeys is recovery, so it behaves differently:
+completion opens a waiting period in which nothing changes, any channel can veto it, and so
+does signing in with an existing passkey.
+
+[[./docs/images/demo-recovery-pending.png]]
+
+Finally, a person can mint a Passkey for a script.  The demo lists it apart from their own
+passkeys, and marks it =service=.  The server knows it is not a person:
+
+[[./docs/images/demo-api-credential.png]]
+
+The whole sequence is an executable Playwright test using Chromium virtual authenticators
+--- four specs covering the lifecycle, self-serve signup and recovery, and the API
+credential end to end including the real CLI script:
+
+#+begin_src sh
+nix develop
+make test-demo-install   # once: Playwright Chromium
+make test-demo
+#+end_src
+
+Play the terminal recording with =asciinema play docs/demo.cast=; see
+[[./docs/DEMO.md][docs/DEMO.md]] to reproduce the media.
+
+* Step 1: the service
+
+Install the two packages an interactive application needs:
+
+#+begin_src sh
+npm install @localwebauthn/server @localwebauthn/browser
+#+end_src
+
+Keep the identity fields your application actually needs.  There is deliberately no password
+column, and one new one --- a stable 32-byte handle WebAuthn uses to name the account:
+
+#+begin_src sql
+CREATE TABLE app_users (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL,
+  webauthn_user_handle BLOB NOT NULL UNIQUE,
+  active INTEGER NOT NULL DEFAULT 1
+);
+#+end_src
+
+Now construct the service.  It needs three facts about your site, a store, and a way to look
+up one of your users:
+
+#+begin_src ts
+import Database from 'better-sqlite3';
+import { LocalWebAuthn } from '@localwebauthn/server';
+import { migrateSqlite, SqliteLocalWebAuthnStore } from '@localwebauthn/server/sqlite';
+
+const database = new Database('application.db');
+migrateSqlite(database); // idempotent; safe on every start
+
+export const auth = new LocalWebAuthn({
+  rpName: 'Example',
+  rpId: 'app.example.com',
+  expectedOrigins: 'https://app.example.com',
+  store: new SqliteLocalWebAuthnStore(database),
+  users: {
+    async getUser(userId) {
+      const user = await applicationUsers.get(userId);
+      return (
+        user && {
+          id: user.id,
+          name: user.email,
+          displayName: user.displayName,
+          webAuthnUserHandle: user.webAuthnUserHandle,
+          active: user.active,
+        }
+      );
+    },
+  },
+});
+#+end_src
+
+That is the whole configuration.  =rpId= is the bare hostname credentials are bound to,
+=expectedOrigins= is what the browser must claim, and =getUser= is the only place your user
+table is touched --- returning =active: false= from it refuses every ceremony and every
+session for that person, which is how you suspend someone.
+
+PostgreSQL and D1 are drop-in replacements for =store=; see
+[[./README-DETAIL.org][README-DETAIL.org]].
+
+* Step 2: signing in
+
+Two routes, mirroring the two-request shape above.  The challenge must survive between them.
+So the service gives you a =challengeToken= for a short-lived cookie, and keeps only its
+hash:
+
+#+begin_src ts
+import { authCookieNames, cookieAttributes } from '@localwebauthn/server';
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
+
+const publicOrigin = 'https://app.example.com';
+const names = authCookieNames(publicOrigin); // __Host-lwa_challenge, _enrollment, _session
+const attrs = (expiresAt?: number) => cookieAttributes({ publicOrigin, expiresAt });
+
+app.post('/api/auth/login/options', async (c) => {
+  const { options, challengeToken, expiresAt } = await auth.authenticationOptions();
+  setCookie(c, names.challenge, challengeToken, attrs(expiresAt));
+  return c.json(options);
+});
+
+app.post('/api/auth/login/verify', async (c) => {
+  const challengeToken = getCookie(c, names.challenge) ?? '';
+  deleteCookie(c, names.challenge, attrs());
+  const result = await auth.verifyAuthentication({
+    response: await c.req.json(),
+    challengeToken,
+  });
+  setCookie(c, names.session, result.sessionToken, attrs(result.expiresAt));
+  return c.json({ verified: true });
+});
+#+end_src
+
+=authCookieNames= and =cookieAttributes= exist so every application gets the same answer:
+=HttpOnly=, =SameSite=Strict=, =Secure= and the =__Host-= prefix on HTTPS, plain names on
+localhost because browsers reject =__Host-= without =Secure=.  Do not re-derive those flags.
+
+Guarding your own routes is one call.  =resolveSession= returns =null= for a session that is
+expired, idle, revoked, belonging to a revoked credential, or belonging to a suspended user
+--- so there is one thing to check:
+
+#+begin_src ts
+app.use('/api/*', async (c, next) => {
+  const resolved = await auth.resolveSession(getCookie(c, names.session) ?? '');
+  if (!resolved) {
+    return c.json({ error: 'unauthenticated' }, 401);
+  }
+  c.set('user', resolved.user);
+  await next();
+});
+#+end_src
+
+Signing out is =auth.revokeSession(token)= plus clearing the cookie.
+
+Every failure from the service is a =LocalWebAuthnError= carrying a =code= and an HTTP
+=status=, so one error mapper turns them into JSON without leaking which part of a ceremony
+failed:
+
+#+begin_src ts
+import { isLocalWebAuthnError } from '@localwebauthn/server';
+
+if (isLocalWebAuthnError(error)) {
+  return c.json({ error: error.code, message: error.message }, error.status);
+}
+#+end_src
+
+* Step 3: the first passkey
+
+Sign-in needs a passkey to exist.  The first one always comes from an *enrollment grant*: a
+single-use, expiring, hashed link bound to exactly one user.  Your application decides who
+may create users and how that link is approved and delivered --- that is identity proofing,
+and it is yours.
+
+#+begin_src ts
+import { createUserHandle } from '@localwebauthn/server';
+
+const user = await applicationUsers.create({
+  email: 'ada@example.com',
+  displayName: 'Ada Lovelace',
+  webAuthnUserHandle: createUserHandle(),
+});
+
+const { enrollmentUrl } = await auth.issueEnrollment(user.id);
+// https://app.example.com/enroll#token=...   (single use, 30 minutes by default)
+#+end_src
+
+The secret rides in the URL *fragment*, which browsers never send to a server and never put
+in a =Referer=.  The page reads it, exchanges it for an enrollment cookie, and then runs the
+same options/verify pair as sign-in --- =registrationOptions= instead of
+=authenticationOptions=:
+
+#+begin_src ts
+app.post('/api/auth/enrollment/exchange', async (c) => {
+  const { token } = await c.req.json<{ token?: string }>();
+  const result = await auth.exchangeEnrollment(token ?? '');
+  setCookie(c, names.enrollment, result.enrollmentSessionToken, attrs(result.expiresAt));
+  return c.json(result.user);
+});
+
+app.post('/api/auth/register/options', async (c) => {
+  const result = await auth.registrationOptions({
+    enrollmentSessionToken: getCookie(c, names.enrollment),
+    sessionToken: getCookie(c, names.session), // for an already-signed-in person
+  });
+  setCookie(c, names.challenge, result.challengeToken, attrs(result.expiresAt));
+  return c.json(result.options);
+});
+
+app.post('/api/auth/register/verify', async (c) => {
+  const challengeToken = getCookie(c, names.challenge) ?? '';
+  deleteCookie(c, names.challenge, attrs());
+  const result = await auth.verifyRegistration({
+    response: await c.req.json(),
+    challengeToken,
+    enrollmentSessionToken: getCookie(c, names.enrollment),
+    sessionToken: getCookie(c, names.session),
+    label: 'Primary passkey',
+  });
+  deleteCookie(c, names.enrollment, attrs());
+  setCookie(c, names.session, result.sessionToken, attrs(result.expiresAt));
+  return c.json({ verified: true }, 201);
+});
+#+end_src
+
+Registration ends signed in: a passkey was just proved, so demanding an immediate sign-in
+would be theatre.
+
+That is five routes; add =POST /api/auth/logout= and you have all six that
+=@localwebauthn/browser= speaks by default.  The browser side of the entire lifecycle is
+then this:
+
+#+begin_src ts
+import { consumeEnrollmentToken, LocalWebAuthnBrowser } from '@localwebauthn/browser';
+
+// `passkeys` rather than `auth`: everywhere else in this document, `auth` is the
+// server-side service. This is the browser client, and the two are not interchangeable.
+const passkeys = new LocalWebAuthnBrowser();
+const token = consumeEnrollmentToken(window.location, window.history);
+
+if (token) {
+  await passkeys.exchangeEnrollment(token);
+  await passkeys.registerPasskey('Primary passkey');
+} else {
+  await passkeys.signIn();
+}
+#+end_src
+
+=consumeEnrollmentToken= reads the fragment and replaces it in history, so a shoulder-surfed
+address bar and the back button both come up empty.  There is no hidden behaviour in
+=LocalWebAuthnBrowser=: it POSTs to those six paths, and nothing happens that your handler
+did not do.  Change the prefix with =new LocalWebAuthnBrowser({ basePath: '/auth' })=.
+
+A complete, copyable version of these six routes is
+[[./examples/starter-hono/src/auth-routes.ts][examples/starter-hono/src/auth-routes.ts]] ---
+164 lines including error handling and the exact-origin check.
+
+* Step 4: more passkeys
+
+Once a person is signed in, adding another passkey needs no link and no proofing, because
+the session is already proof:
+
+#+begin_src ts
+await passkeys.registerPasskey('Backup security key'); // the browser client, as above
+#+end_src
+
+Same call, same two routes.  The only difference is that =registrationOptions= was given a
+=sessionToken= rather than an =enrollmentSessionToken=.
+
+This is the most valuable paragraph in this document.  *A second passkey, enrolled before
+anything goes wrong, is the recovery flow you never have to operate.*  A hardware key in a
+drawer or a second device costs the user thirty seconds at enrollment; the alternative is a
+high-assurance recovery desk that an attacker will target precisely because it is easier
+than the front door.  Prompt for it during enrollment.
+
+Losing the last passkey is what recovery is for, and =revokeCredential= refuses to remove a
+person's only one unless you say =allowLastCredential: true= --- so the lockout has to be
+deliberate.  The three revocation verbs, in increasing severity:
+
+| Call                               | Ends                               | Leaves                    |
+|------------------------------------+------------------------------------+---------------------------|
+| =revokeSession(token)=             | one session                        | everything else           |
+| =revokeUserSessions(userId)=       | every session                      | every passkey             |
+| =revokeUserAuthentication(userId)= | sessions, passkeys, pending grants | a user who must re-enroll |
+
+=revokeUserSessions= is the "my laptop was stolen" button: the person signs in again on
+their phone and nothing needs re-issuing.  Reach for =revokeUserAuthentication= only when
+the credentials themselves must go, and issue the fresh enrollment link *after* it --- it
+revokes pending grants, so the other order destroys the link you just made.
+
+Recovery design --- why the bar has to be high, the administrator-initiated pattern, the
+two-channel pattern, and the failure modes of each --- is in
+[[./README-DETAIL.org][README-DETAIL.org]].
+
+* Step 5: a Passkey for a script
+
+#+begin_quote
+*New in 3.0.0.*  Everything in this section --- =credentialKinds=, =verifyDpop=,
+=@localwebauthn/client= --- arrived in 3.0.0.  The four steps above work in 2.2.0 too.
+#+end_quote
+
+A WebAuthn assertion is a signature over =authenticatorData || SHA-256(clientDataJSON)=.
+Producing one needs a private key and about sixty lines of code --- not a browser, not a
+human, not a biometric.  So the same mechanism authenticates a nightly export script, with
+one honest change: the server records what *class* of credential it is, because everything a
+software authenticator says about itself is self-asserted and therefore worthless as a
+control.
+
+#+begin_src sh
+npm install @localwebauthn/client   # only the script's host needs this
+#+end_src
+
+** What the server declares
+
+One new option turns the label =service= into a set of restrictions:
+
+#+begin_src ts
+export const auth = new LocalWebAuthn({
+  // ... as before
+  credentialKinds: {
+    service: {
+      interactive: false, // cannot sign in at the browser route, which names no kind
+      canRegister: false, // cannot enroll another credential; a leaked key cannot breed
+      sessionAbsoluteMs: 15 * 60_000, // short sessions; the client re-authenticates on 401
+    },
+  },
+  dpopNonce: { rotationMs: 60_000 }, // optional; see below
+});
+#+end_src
+
+=kind= is the only fact about a credential's class that a hostile key holder cannot forge,
+because the server chose it.  =userVerified=, =origin=, the backup flags and the signature
+counter are all claims the signer makes about itself.
+
+Your session middleware must also refuse machine credentials at browser routes.  The package
+cannot do it for you --- a script can present a session cookie and write its own =Origin= ---
+but it tells you which kinds are interactive:
+
+#+begin_src ts
+if (!auth.interactiveKind(resolved.session.credentialKind)) {
+  return c.json({ error: 'forbidden' }, 403);
+}
+#+end_src
+
+** Minting one in the browser
+
+The person's own passkey authorizes the creation; the *page* generates the new key pair, so
+the private half is never sent anywhere.  The route supplies the kind --- never the request
+body, or the client would classify itself:
+
+#+begin_src ts
+// Server: two routes, gated on a fresh assertion from a person.
+const options = await auth.registrationOptions({ sessionToken, credentialKind: 'service' });
+const result = await auth.verifyRegistration({ response, challengeToken, sessionToken, label });
+#+end_src
+
+#+begin_src ts
+// Browser: generate, register, then hand the key to the human once.
+import { createRegistrationResponse, encodeBase64Url, ES256 } from '@localwebauthn/client';
+// Raw private-key operations sit behind their own import, so the import line itself
+// says this file generates and writes a key.
+import { formatCredentialFile, generateKeyStore } from '@localwebauthn/client/file-key';
+
+const { keyStore, exportPrivateKey } = await generateKeyStore(ES256);
+const { response, credentialId } = await createRegistrationResponse({
+  keyStore,
+  challenge: options.challenge,
+  rpId: options.rp.id,
+  origin: window.location.origin,
+});
+await post('/api/api-keys/verify', { response, challengeToken, label });
+
+const env = formatCredentialFile(
+  {
+    v: 1,
+    baseUrl: window.location.origin,
+    rpId: options.rp.id,
+    origin: window.location.origin,
+    credentialId: encodeBase64Url(credentialId),
+    userHandle: options.user.id,
+    alg: ES256,
+  },
+  await exportPrivateKey(),
+  label,
+);
+#+end_src
+
+=env= is two lines --- public metadata as JSON, private key as base64 --- for the script's
+=.env= file:
+
+#+begin_src sh
+# nightly export -- created 2026-08-08T21:00:00.000Z
+LWA_CREDENTIAL='{"v":1,"baseUrl":"https://app.example.com","rpId":"app.example.com", ... }'
+LWA_CREDENTIAL_KEY=MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg...
+#+end_src
+
+The server holds a COSE public key and could not reissue this even if asked, which is
+why the page says *copy this now*.
+
+*This is the same thing every service does* when it shows you an API key once --- a
+GitHub token, a Stripe key, an AWS access key.  The defence is the same too, and it is
+routine rather than exotic: serve that page from its own origin with your own bundle
+and no third-party JavaScript, and set the headers =provisioningPageHeaders()= returns
+(see [[./README-DETAIL.org][README-DETAIL.org]]).  One difference is worth knowing, and
+it favours this design: a server-generated key exists on the server and travels the
+whole response path, so it can surface in logs, traces and crash dumps --- this key
+never touches the server at all.
+
+The other half of the answer is that *the credential is cheap to replace*.  Rotation is
+mint, deploy, revoke, with both credentials live in between and no downtime:
+
+#+begin_src ts
+await auth.revokeCredential(userId, retiringCredentialId, { allowLastCredential: true });
+#+end_src
+
+So a key you are unsure about --- a decommissioned laptop, a clipboard manager, a
+screenshot in a chat --- is not a crisis; it is a five-minute chore.  Do it on a
+schedule too, so the procedure is proven before you need it in a hurry.  Better still,
+avoid the browser entirely by generating the key on the machine that will use it.
+
+** The script
+
+#+begin_src ts
+import { MachineClient, parseCredentialPayload } from '@localwebauthn/client';
+import { importKeyStore, parseCredentialFile } from '@localwebauthn/client/file-key';
+import { readFile } from 'node:fs/promises';
+
+const file = parseCredentialFile(await readFile('.env', 'utf8'))!;
+const payload = parseCredentialPayload(file.payload);
+const client = new MachineClient({
+  payload,
+  keyStore: await importKeyStore(file.key, payload.alg),
+});
+
+await client.authenticate();                            // one full WebAuthn ceremony
+const me = await client.fetch('/api/machine/v1/whoami'); // DPoP proof per request
+#+end_src
+
+=authenticate()= runs the real ceremony in software and gets an ordinary session token.
+Every request after it carries a
+[[https://www.rfc-editor.org/rfc/rfc9449.html][RFC 9449 DPoP]] proof signed by the *same*
+key, which is what makes a stolen session token useless on its own.  The server stores
+nothing per session for this: the expected key thumbprint is derived from the credential's
+stored public key.
+
+Server side, the machine guard is *one* call.  Do not resolve the session first: that is the
+whole point of =authenticateMachineRequest=, which derives the session from the token, demands
+a proof, and refreshes the session's activity only after the proof holds.
+
+#+begin_src ts
+import { dpopChallenge, isLocalWebAuthnError } from '@localwebauthn/server';
+
+const header = c.req.header('Authorization') ?? '';
+const token = /^(?:DPoP|Bearer) (?<token>[A-Za-z0-9_-]+)$/u.exec(header)?.groups?.token;
+if (!token) {
+  return c.json({ error: 'unauthenticated' }, 401);
+}
+
+let authenticated;
+try {
+  authenticated = await auth.authenticateMachineRequest({
+    sessionToken: token,
+    proof: c.req.header('DPoP'),
+    method: c.req.method,
+    url: c.req.url,
+    requireNonce: true,
+  });
+} catch (error) {
+  if (isLocalWebAuthnError(error) && error.code === 'dpop_nonce_required') {
+    // RFC 9449 #8: hand out a nonce and let the client retry once.
+    return c.json({ error: error.code }, 401, dpopChallenge(await auth.dpopNonce()));
+  }
+  // Every other proof failure is one generic outcome: the reason (wrong key,
+  // replayed, bad signature) belongs in your log, never in the response.
+  if (isLocalWebAuthnError(error) && error.status === 401) {
+    return c.json({ error: 'unauthenticated' }, 401);
+  }
+  throw error;
+}
+
+// The kind is a server row, so check it rather than anything the client said.
+if (authenticated.session.credentialKind !== 'service') {
+  return c.json({ error: 'forbidden' }, 403);
+}
+if (authenticated.nonce) {
+  c.header('DPoP-Nonce', authenticated.nonce); // rotate the client forward
+}
+#+end_src
+
+Had that been =resolveSession= followed by =verifyDpop=, a thief holding only the bearer token
+would keep the session's idle timer alive on every rejected request --- =resolveSession=
+refreshes activity by default.  =verifyDpop= remains available as the lower-level primitive
+for hosts that have already resolved a session *without* touching it; prefer the method above.
+
+Nonces are opt-in because they cost the client something real --- it must retain the latest
+=DPoP-Nonce= and retry when challenged.  =MachineClient= already does both.
+
+** What this buys, precisely
+
+| Threat                                       | What stops it                                                          |
+|----------------------------------------------+------------------------------------------------------------------------|
+| the =.env= leaks                             | revoke that one credential; nothing else changes                       |
+| a stolen session token is replayed           | every request needs a DPoP proof from the credential's key             |
+| a captured proof is replayed                 | the =jti= is single-use, and =htm=, =htu= and =ath= tie it to that method, target URI and token |
+| a leaked key mints itself a spare            | =canRegister: false=                                                   |
+| a script signs in at the browser route       | =interactive: false=                                                   |
+| a script calls a cookie route with its token | your =interactiveKind= check                                           |
+| the server database is read                  | it holds a public key; no secret to steal                              |
+
+*What DPoP does not do.*  It sender-constrains the token; it is not an HTTP message signature.
+RFC 9449's =htu= is the target URI with *query and fragment removed*, and nothing covers the
+body --- so two requests to the same method and path with different query strings or bodies
+share every bound component.  TLS is still required, ordinary authorization still applies, and
+if you need exact body integrity add a content digest or use
+[[https://www.rfc-editor.org/rfc/rfc9421.html][RFC 9421]] message signatures.  Never put an
+authorization-significant distinction only in a query parameter.
+
+The full design --- every byte of both flows, key custody options from a file to a TPM, and
+the reasoning behind each restriction --- is
+[[./docs/API-AUTH.org][docs/API-AUTH.org]] (also as
+[[./docs/API-AUTH.pdf][PDF]] and [[./docs/api-auth.txt][plain text]]).  A runnable version of
+everything above is the demo's =/api/api-keys/*= and =/api/machine/v1/*= routes plus
+[[./examples/demo/scripts/api-client.ts][examples/demo/scripts/api-client.ts]], which prints
+every byte it constructs under =--dry-run=.
+
+* Where to go from here
+
+| Document                   | For                                                                                  |
+|----------------------------+--------------------------------------------------------------------------------------|
+| [[./README-DETAIL.org][README-DETAIL.org]]          | Adapters, cookies, sessions, suspension, recovery design, signup, kinds, DPoP, audit |
+| [[./README-DETAIL-EXAMPLES.org][README-DETAIL-EXAMPLES.org]] | The five examples and what each one teaches                                          |
+| [[./docs/API-AUTH.org][docs/API-AUTH.org]]          | The machine-credential design in full                                                |
+| [[./SECURITY.md][SECURITY.md]]                | The stored-material inventory in full, the security boundary, host duties, reporting  |
+| [[./docs/MIGRATING.md][docs/MIGRATING.md]]          | Upgrade notes, schema versions, store-contract changes                               |
+| [[./docs/COMPARISON.md][docs/COMPARISON.md]]         | How this differs from ceremony libraries, auth frameworks and hosted IdPs            |
+| [[./docs/RATIONALE.md][docs/RATIONALE.md]]          | Why the boundary sits where it does; non-goals                                       |
+
+*Is this a good fit?*  Yes, if you want to replace a password system with passkeys only,
+keep authentication in your own TypeScript app and database, enroll each person through an
+explicit one-time grant, and treat recovery as identity proofing plus re-enrollment.  That
+covers internal tools, admin surfaces, B2B apps with deliberate onboarding, consumer
+products that verify contact details at signup, and small production apps whose users are
+passkey-capable.
+
+Choose a mature identity provider instead when you need federation, directory integration,
+regulated identity assurance, high-volume abuse operations, permanent password or OAuth
+fallbacks, or recovery your team cannot safely operate.  Do not make passkey-only access
+mandatory for a population whose devices and accessibility needs you have not checked.
+
+*A stable API is not a production track record.* The current release is =3.0.0=, and LocalWebAuthn
+follows SemVer for the service API, store contract and schema --- but it is young software with a
+small user base sitting on the authentication path.  Why that is still the safer trade than a
+mature password stack is argued near the top, and it is an argument about structure rather than
+about how good this code is.  The code is also deliberately small enough to read --- about 6,000
+lines in the server package, 180 in the browser package, 1,000 in the optional client.  Read it,
+and read [[./SECURITY.md][SECURITY.md]], before depending on it.
+
+*If you are on 1.0.0 or 1.1.0, upgrade.*  Those two releases delete idle passkeys during
+routine =cleanup()=; see [[./docs/MIGRATING.md][the 2.0.0 notes]].  Every later release is
+fine.
+
+* Packages and development
+
+- [[./packages/server][=@localwebauthn/server=]] --- the framework-neutral lifecycle, plus
+  conforming SQLite, PostgreSQL and D1 stores exported from =/sqlite=, =/postgres= and =/d1=.
+- [[./packages/browser][=@localwebauthn/browser=]] --- enrollment, registration,
+  authentication and logout over the six-route protocol.
+- [[./packages/client][=@localwebauthn/client=]] --- the software authenticator, DPoP proofs
+  and =MachineClient=, all working through an opaque signer so a TPM, agent or KMS can back
+  it.  Raw private-key generation and the credential-file format are behind a second entry
+  point, =@localwebauthn/client/file-key=.  Install it only where you issue API credentials.
+
+This repository is an npm workspace; the packages are versioned together.
+
+#+begin_src sh
+nix develop
+make help
+make test                        # unit + store adapters + channel examples
+pg-start && make test-postgres   # add live PostgreSQL conformance
+make test-demo-install           # once: Playwright Chromium
+make test-demo                   # browser lifecycle end to end
+make check                       # typecheck, lint, format, coverage, package gates
+#+end_src
+
+Outside the flake shell, wrap any target: =make nix-test=, =make nix-check=.  Releases use
+npm OIDC Trusted Publishing --- no long-lived write token --- and are triggered by a
+versioned GitHub Release; see [[./docs/RELEASING.md][docs/RELEASING.md]] and
+[[./CHANGELOG.md][CHANGELOG.md]].

@@ -61,13 +61,45 @@ describe('configuration validation', () => {
     expect(auth.config.durations.sessionIdleMs).toBeLessThan(
       auth.config.durations.sessionAbsoluteMs,
     );
+    // A single origin may be given as a string or a one-element array.
+    expect(
+      new LocalWebAuthn(options({ expectedOrigins: ['http://localhost:5173'] })).config
+        .expectedOrigins,
+    ).toEqual(auth.config.expectedOrigins);
+    // Nonce issuance is off unless asked for, and defaults its rotation when it is.
+    expect(auth.config.dpopNonce).toBeNull();
+    expect(new LocalWebAuthn(options({ dpopNonce: {} })).config.dpopNonce).toEqual({
+      rotationMs: 5 * 60_000,
+    });
   });
 
-  it.each([
+  it('lets a kind shorten its absolute lifetime below the global idle window', () => {
+    // The idle window is global. A kind whose absolute lifetime is shorter is not
+    // a misconfiguration: absolute expiry is stamped on the session row at
+    // creation and wins, so the excess idle window is simply unreachable.
+    const auth = new LocalWebAuthn(
+      options({ credentialKinds: { service: { sessionAbsoluteMs: 60_000 } } }),
+    );
+    expect(auth.config.credentialKinds.service.sessionAbsoluteMs).toBeLessThan(
+      auth.config.durations.sessionIdleMs,
+    );
+  });
+
+  it.each<Partial<LocalWebAuthnOptions>>([
     { expectedOrigins: 'http://example.com' },
     { expectedOrigins: 'https://other.example', rpId: 'example.com' },
     { expectedOrigins: 'https://pulse.example.com/path', rpId: 'example.com' },
+    { rpName: '  ' },
+    { rpId: 'localhost:5173' },
+    { rpId: 'not a hostname' },
+    { publicOrigin: 'https://other.example' },
     { durations: { sessionIdleMs: 2, sessionAbsoluteMs: 1 } },
+    { durations: { challengeMs: 0 } },
+    { enrollmentPath: 'enroll?welcome=1' },
+    { credentialKinds: { '  ': {} } },
+    { credentialKinds: { service: { sessionAbsoluteMs: 0 } } },
+    { credentialKinds: { service: { sessionAbsoluteMs: 1.5 } } },
+    { dpopNonce: { rotationMs: -1 } },
   ])('rejects unsafe configuration %#', (override) => {
     expect(() => new LocalWebAuthn(options(override))).toThrow(LocalWebAuthnError);
   });

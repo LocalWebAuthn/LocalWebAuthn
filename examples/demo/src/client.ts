@@ -1,4 +1,8 @@
 import { consumeEnrollmentToken, LocalWebAuthnBrowser } from '@localwebauthn/browser';
+// The same software authenticator the script uses, running in the page: it is
+// what lets this browser mint a credential whose private key can be exported.
+import { createRegistrationResponse, encodeBase64Url, ES256 } from '@localwebauthn/client';
+import { formatCredentialFile, generateKeyStore } from '@localwebauthn/client/file-key';
 import { parseSignupFragment } from '@localwebauthn/channels-core';
 import {
   Check,
@@ -99,6 +103,13 @@ type ProveResult = {
   missing?: string[];
 };
 
+type ApiKey = {
+  id: string;
+  label: string;
+  createdAt: number;
+  lastUsedAt: number | null;
+};
+
 const state: {
   session?: Session;
   clients: DemoClient[];
@@ -106,12 +117,16 @@ const state: {
   issued?: IssuedEnrollment;
   signup?: SignupInbox;
   proof?: SignupProof;
+  apiKeys: ApiKey[];
+  /** The one-time `.env` text, held only until the person dismisses it. */
+  issuedApiKey?: { label: string; env: string };
   checking: boolean;
   busy: boolean;
   error: string;
   notice: string;
 } = {
   clients: [],
+  apiKeys: [],
   checking: true,
   busy: false,
   error: '',
@@ -523,6 +538,96 @@ function passkeysSection(): string {
   `;
 }
 
+/**
+ * The one-time credential display.
+ *
+ * Shown once and never again, because the server has only the public half — it
+ * could not re-issue this even if asked. Unlike a conventional API key, nothing
+ * recoverable is stored anywhere.
+ */
+function issuedApiKeyCallout(): string {
+  const issued = state.issuedApiKey;
+  if (!issued) {
+    return '';
+  }
+  return `
+    <section class="enrollment-callout" aria-labelledby="api-key-title">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">Copy this now</span>
+          <h2 id="api-key-title">${escapeHtml(issued.label)}</h2>
+          <p class="section-help">
+            The private key was generated in this page and never sent to the server, so
+            it cannot be shown again. Save it as <code>.env</code> beside your script,
+            then <code>chmod 0600</code> it.
+          </p>
+          <p class="section-help">
+            &ldquo;Cannot be shown again&rdquo; is about this page, not about your
+            machine: copying or downloading leaves copies in clipboard history, your
+            Downloads folder and any backup of either. Revoke this credential and mint
+            a fresh one if you are unsure where it ended up &mdash; that is cheap, and
+            it is why the button below exists.
+          </p>
+        </div>
+      </div>
+      <pre class="enrollment-url" id="api-key-env">${escapeHtml(issued.env)}</pre>
+      <div class="heading-actions">
+        <button class="button secondary" id="copy-api-key" type="button">${iconMarkup('copy')}Copy</button>
+        <button class="button secondary" id="download-api-key" type="button">${iconMarkup('link')}Download .env</button>
+        <button class="button quiet" id="dismiss-api-key" type="button">${iconMarkup('x')}Done</button>
+      </div>
+    </section>
+  `;
+}
+
+function apiKeysSection(): string {
+  return `
+    <section class="workspace-section" aria-labelledby="api-keys-title">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">Your account</span>
+          <h2 id="api-keys-title">API credentials</h2>
+          <p class="section-help">
+            A Passkey for a script. Same cryptography as the passkeys above, but the key
+            lives in the script's <code>.env</code> instead of your device — so it is
+            marked <code>service</code>, cannot sign you in here, and cannot create more
+            credentials.
+          </p>
+        </div>
+        <div class="heading-actions">
+          <button class="button secondary" id="add-api-key" type="button" ${state.busy ? 'disabled' : ''}>
+            ${iconMarkup('circle-plus')}
+            Create API credential
+          </button>
+        </div>
+      </div>
+      ${
+        state.apiKeys.length === 0
+          ? '<p class="section-help">No API credentials yet.</p>'
+          : `<div class="passkey-grid">
+        ${state.apiKeys
+          .map(
+            (key) => `
+              <article class="passkey-item">
+                <div class="passkey-symbol">${iconMarkup('lock-keyhole', 20)}</div>
+                <div class="passkey-copy">
+                  <strong>${escapeHtml(key.label)}</strong>
+                  <span>service · Last used ${escapeHtml(formatDate(key.lastUsedAt))}</span>
+                </div>
+                <button class="icon-button danger revoke-api-key" data-credential-id="${escapeHtml(key.id)}"
+                  title="Revoke this API credential" aria-label="Revoke ${escapeHtml(key.label)}" type="button">
+                  ${iconMarkup('trash-2', 17)}
+                </button>
+              </article>
+            `,
+          )
+          .join('')}
+      </div>`
+      }
+    </section>
+  `;
+}
+
 function clientDialog(): string {
   return `
     <dialog aria-labelledby="client-dialog-title" id="client-dialog">
@@ -591,8 +696,10 @@ function dashboard(): string {
         <div class="workspace">
           ${alerts()}
           ${enrollmentCallout()}
+          ${issuedApiKeyCallout()}
           ${clientsSection()}
           ${passkeysSection()}
+          ${apiKeysSection()}
         </div>
       </main>
       ${clientDialog()}
@@ -638,6 +745,80 @@ async function refreshSession(): Promise<void> {
   } else {
     state.clients = [];
   }
+  state.apiKeys = (await request<{ apiKeys: ApiKey[] }>('/api/api-keys')).apiKeys;
+}
+
+/**
+ * Mint an API credential.
+ *
+ * The interesting part is that this page acts as a *software authenticator*: it
+ * generates a key pair with WebCrypto and builds the registration response by
+ * hand. Calling `navigator.credentials.create()` instead would put the key inside
+ * Apple Passwords, where it could never be exported — which is the opposite of
+ * what a script needs.
+ *
+ * So two different WebAuthn operations happen here: a real
+ * `navigator.credentials.get()` against the platform authenticator for the
+ * step-up assertion, and a simulated `create()` in JavaScript for the credential
+ * itself.
+ */
+async function createApiKey(label: string): Promise<void> {
+  // Minting a durable credential is a sensitive change, so the server demands a
+  // recent assertion. Re-run the real ceremony first if ours has gone stale.
+  let optionsResponse = await fetch('/api/api-keys/options', {
+    method: 'POST',
+    cache: 'no-store',
+    credentials: 'same-origin',
+  });
+  if (optionsResponse.status === 401) {
+    await auth.signIn();
+    optionsResponse = await fetch('/api/api-keys/options', {
+      method: 'POST',
+      cache: 'no-store',
+      credentials: 'same-origin',
+    });
+  }
+  if (!optionsResponse.ok) {
+    const body = (await optionsResponse.json().catch(() => ({}))) as { message?: string };
+    throw new Error(body.message ?? 'The API credential could not be created.');
+  }
+  const { options, challengeToken } = (await optionsResponse.json()) as {
+    options: { challenge: string; rp: { id: string }; user: { id: string } };
+    challengeToken: string;
+  };
+
+  const { keyStore, exportPrivateKey } = await generateKeyStore(ES256);
+  const { response, credentialId } = await createRegistrationResponse({
+    keyStore,
+    challenge: options.challenge,
+    rpId: options.rp.id,
+    origin: window.location.origin,
+  });
+
+  await request<{ credentialId: string }>('/api/api-keys/verify', {
+    method: 'POST',
+    body: JSON.stringify({ response, challengeToken, label }),
+  });
+
+  state.issuedApiKey = {
+    label,
+    env: formatCredentialFile(
+      {
+        v: 1,
+        baseUrl: window.location.origin,
+        rpId: options.rp.id,
+        origin: window.location.origin,
+        credentialId: encodeBase64Url(credentialId),
+        userHandle: options.user.id,
+        alg: ES256,
+      },
+      await exportPrivateKey(),
+      // The label goes in a comment, not the payload: the payload is
+      // single-quoted for shell safety and so cannot contain an apostrophe.
+      `${label} -- created ${new Date().toISOString()}`,
+    ),
+  };
+  await refreshSession();
 }
 
 let proofPoll: number | undefined;
@@ -950,6 +1131,58 @@ function bindEvents(): void {
       });
     });
   }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('.revoke-api-key')) {
+    button.addEventListener('click', () => {
+      void perform(async () => {
+        await request(
+          `/api/api-keys/${encodeURIComponent(button.dataset.credentialId ?? '')}/revoke`,
+          { method: 'POST' },
+        );
+        await refreshSession();
+        state.notice = 'API credential revoked. Any script using it stops immediately.';
+      });
+    });
+  }
+
+  document.querySelector('#add-api-key')?.addEventListener('click', () => {
+    const label = window.prompt('What is this credential for?', 'nightly export');
+    if (!label?.trim()) {
+      return;
+    }
+    void perform(async () => {
+      await createApiKey(label.trim().slice(0, 80));
+      state.notice = 'API credential created. Copy it now — it cannot be shown again.';
+    });
+  });
+  document.querySelector('#copy-api-key')?.addEventListener('click', () => {
+    if (state.issuedApiKey) {
+      void navigator.clipboard.writeText(state.issuedApiKey.env);
+      state.notice = 'Credential copied. Paste it into your script’s .env file.';
+      render();
+    }
+  });
+  document.querySelector('#download-api-key')?.addEventListener('click', () => {
+    if (!state.issuedApiKey) {
+      return;
+    }
+    // A blob download works everywhere, unlike showSaveFilePicker, but it lands
+    // in ~/Downloads — readable by every process the person runs and swept into
+    // backups. Hence the warning rather than a silent save.
+    const blob = new Blob([state.issuedApiKey.env], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${state.issuedApiKey.label.replaceAll(/[^a-z0-9-]+/giu, '-')}.env`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    state.notice = 'Downloaded. Move it out of ~/Downloads and chmod 0600 it.';
+    render();
+  });
+  document.querySelector('#dismiss-api-key')?.addEventListener('click', () => {
+    state.issuedApiKey = undefined;
+    render();
+  });
 
   document.querySelector('#copy-enrollment')?.addEventListener('click', () => {
     if (state.issued) {

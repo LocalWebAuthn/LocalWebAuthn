@@ -1,5 +1,5 @@
-import { i as LocalWebAuthnOptions, j as EnrollmentIssue, k as EnrollmentExchange, l as RegistrationOptionsResult, m as RegistrationVerificationInput, n as RegistrationVerificationResult, A as AuthenticationOptionsResult, o as AuthenticationVerificationInput, p as AuthenticationVerificationResult, q as AuthUser, S as SessionIdentity, d as Credential, h as CleanupResult } from './types-Cne4CLO3.js';
-export { r as CeremonyProvider, b as ChallengeKind, C as ChallengeRecord, f as CompleteAuthenticationInput, e as CompleteRegistrationInput, c as ConsumedChallenge, E as EnrollmentGrantRecord, a as EnrollmentSession, s as LocalWebAuthnDurations, t as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, u as NewSession, g as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-Cne4CLO3.js';
+import { j as LocalWebAuthnOptions, k as EnrollmentIssue, l as EnrollmentExchange, m as RegistrationOptionsInput, n as RegistrationOptionsResult, o as RegistrationVerificationInput, p as RegistrationVerificationResult, A as AuthenticationOptionsInput, q as AuthenticationOptionsResult, r as AuthenticationVerificationInput, s as AuthenticationVerificationResult, t as AuthUser, S as SessionIdentity, e as Credential, i as CleanupResult } from './types-DKx5wADO.js';
+export { u as CeremonyProvider, c as ChallengeKind, C as ChallengeRecord, g as CompleteAuthenticationInput, f as CompleteRegistrationInput, d as ConsumedChallenge, v as CredentialKindPolicy, w as CredentialProvenance, E as EnrollmentGrantRecord, b as EnrollmentSession, a as LocalWebAuthnDpopStore, x as LocalWebAuthnDurations, y as LocalWebAuthnEvent, L as LocalWebAuthnStore, N as NewCredential, z as NewSession, h as RevokeCredentialResult, R as RevokedSession, U as UserProvider } from './types-DKx5wADO.js';
 export { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server';
 
 declare function defaultRandomBytes(length: number): Uint8Array;
@@ -12,7 +12,155 @@ declare function createUserHandle(randomBytes?: typeof defaultRandomBytes): Uint
 declare function createEnrollmentToken(randomBytes?: typeof defaultRandomBytes): string;
 declare function createOpaqueToken(randomBytes?: typeof defaultRandomBytes): string;
 
-type LocalWebAuthnErrorCode = 'invalid_configuration' | 'invalid_enrollment' | 'enrollment_not_authorized' | 'invalid_ceremony' | 'registration_failed' | 'authentication_failed' | 'unauthenticated' | 'credential_not_found' | 'last_credential';
+type NormalizedCredentialKind = {
+    interactive: boolean;
+    canRegister: boolean;
+    sessionAbsoluteMs: number;
+};
+type NormalizedConfig = {
+    rpName: string;
+    rpId: string;
+    expectedOrigins: string[];
+    publicOrigin: string;
+    enrollmentPath: string;
+    durations: {
+        enrollmentGrantMs: number;
+        enrollmentSessionMs: number;
+        challengeMs: number;
+        sessionIdleMs: number;
+        sessionAbsoluteMs: number;
+    };
+    /** Declared kinds only; an undeclared kind falls back to {@link defaultKindPolicy}. */
+    credentialKinds: Record<string, NormalizedCredentialKind>;
+    /** `null` when nonce issuance was not configured. */
+    dpopNonce: {
+        rotationMs: number;
+    } | null;
+};
+/**
+ * Policy for a kind the host never declared, including `null`.
+ *
+ * Permissive on purpose: an undeclared kind must behave exactly as it did before
+ * `credentialKinds` existed, or adding the option would silently change
+ * behaviour for every deployment that ignores it.
+ */
+declare function defaultKindPolicy(config: NormalizedConfig): NormalizedCredentialKind;
+/** Effective policy for `kind`, falling back to {@link defaultKindPolicy}. */
+declare function kindPolicy(config: NormalizedConfig, kind: string | null): NormalizedCredentialKind;
+
+/**
+ * DPoP (RFC 9449) proof verification, bound to a stored WebAuthn credential.
+ *
+ * The usual OAuth deployment stores a `jkt` — the thumbprint of the key that
+ * will sign proofs — alongside each access token, because there the DPoP key is
+ * unrelated to whatever authenticated the client. Here it *is* the credential
+ * key: a software client signs its WebAuthn assertion and its DPoP proofs with
+ * one key, so the expected thumbprint is derived from `credentials.public_key`
+ * and there is nothing new to store per session.
+ *
+ * The per-request check therefore reduces to: this proof was signed by the same
+ * key that produced the assertion that opened this session.
+ *
+ * Reusing one key across the two protocols is safe because the signed inputs
+ * cannot collide. A WebAuthn assertion covers `authenticatorData ‖
+ * SHA-256(clientDataJSON)` — 69 bytes opening with a SHA-256 digest — while a
+ * JWS signing input is printable ASCII that always begins `eyJ`. The separation
+ * is structural, not a coincidence of encoding.
+ */
+/** Public JWK for an EC2 P-256 or OKP Ed25519 key. */
+type PublicJwk = {
+    kty: 'EC';
+    crv: 'P-256';
+    x: string;
+    y: string;
+} | {
+    kty: 'OKP';
+    crv: 'Ed25519';
+    x: string;
+};
+type DpopVerificationInput = {
+    /** Raw `DPoP` header value: a compact JWS. */
+    proof: string;
+    /** Request method, e.g. `"POST"`. */
+    method: string;
+    /** Full request URL; query and fragment are stripped before comparison. */
+    url: string;
+    /** The session token this proof accompanies, hashed into the `ath` claim. */
+    accessToken: string;
+    /** COSE public key of the credential that opened the session. */
+    publicKeyCose: Uint8Array;
+    /**
+     * When non-empty, the proof's `nonce` must be one of these — normally the
+     * current and previous rotation slot, so a rotation landing mid-flight does not
+     * reject a proof built moments earlier.
+     */
+    nonces?: string[];
+    /** Accepted clock skew for `iat`, in milliseconds. Defaults to 60s either way. */
+    skewMs?: number;
+    now?: number;
+};
+type DpopVerification = {
+    valid: true;
+    /** SHA-256 of the `jti`, for the single-use claim in the store. */
+    jtiHash: Uint8Array;
+    /** When the replay-cache entry may be reaped. */
+    expiresAt: number;
+} | {
+    valid: false;
+    reason: string;
+};
+/**
+ * Convert a COSE public key to its public JWK form.
+ *
+ * Returns `null` for key types this package does not register (RSA), or for a
+ * structurally incomplete key.
+ */
+declare function coseToJwk(publicKeyCose: Uint8Array): PublicJwk | null;
+/**
+ * RFC 7638 JWK thumbprint.
+ *
+ * The canonical form contains only the required members, in lexicographic order,
+ * with no whitespace — so the JSON below is written by hand rather than by
+ * `JSON.stringify` over an object whose key order would be incidental.
+ */
+declare function jwkThumbprint(jwk: PublicJwk): Promise<string>;
+/**
+ * Verify a DPoP proof against the credential that opened the session.
+ *
+ * Checks, in order: the compact JWS shape; `typ` and `alg`; that the embedded
+ * `jwk` is the credential's own key, by thumbprint; the signature; then `htm`,
+ * `htu`, `iat`, `ath` and `nonce`.
+ *
+ * A `true` result still requires the caller to claim `jtiHash` through
+ * {@link LocalWebAuthnStore.claimDpopProof} — this function is pure and cannot
+ * detect replay by itself.
+ */
+declare function verifyDpopProof(input: DpopVerificationInput): Promise<DpopVerification>;
+
+type LocalWebAuthnErrorCode = 'invalid_configuration' | 'invalid_enrollment' | 'enrollment_not_authorized' | 'invalid_ceremony' | 'registration_failed' | 'authentication_failed' | 'unauthenticated' | 'credential_not_found' | 'last_credential'
+/**
+ * The authorizing session's credential kind is configured `canRegister: false`
+ * — a machine credential may authenticate but may not enroll another
+ * credential. See {@link CredentialKindPolicy.canRegister}.
+ */
+ | 'registration_not_permitted'
+/** A DPoP proof was absent, malformed, replayed, or signed by the wrong key. */
+ | 'invalid_dpop_proof'
+/**
+ * A DPoP proof carried no nonce, or one the server no longer recognises. The
+ * host should answer `401` with `WWW-Authenticate: DPoP
+ * error="use_dpop_nonce"` and a fresh `DPoP-Nonce` header, which the client
+ * echoes on its retry.
+ */
+ | 'dpop_nonce_required'
+/**
+ * A revocation could not be shown to have finished: credentials kept appearing
+ * as fast as they were revoked, so the operation stopped at its pass bound
+ * without reaching a quiet state. Some credentials *were* revoked. Treat this
+ * as remediation **not** complete — suspend the user's ability to register
+ * (or deactivate the user via `getUser`) and retry.
+ */
+ | 'revocation_not_converged';
 declare class LocalWebAuthnError extends Error {
     readonly code: LocalWebAuthnErrorCode;
     readonly status: number;
@@ -79,6 +227,60 @@ declare function authCookieNames(publicOrigin: string, namespace?: string): Auth
  * misconfiguration.
  */
 declare function cookieAttributes(options: CookieAttributesOptions): CookieAttributes;
+/**
+ * Response headers for a page that displays credential material once — the
+ * "here is your API key, copy it now" page.
+ *
+ * This is the same hardening every service with a show-once token page needs, and
+ * it is deliberately a function for the same reason {@link cookieAttributes} is: a
+ * checklist in prose gets three of six items right. What it sets, and why each one
+ * is on the list:
+ *
+ * - `Content-Security-Policy` — `default-src 'self'` with no `unsafe-inline`, so a
+ *   single injected or third-party script cannot read the key out of the DOM. This
+ *   is the one that matters most; everything else is depth.
+ * - `frame-ancestors 'none'` (and `X-Frame-Options: DENY` for older agents) — the
+ *   page cannot be framed, so it cannot be clickjacked into revealing anything.
+ * - `Cache-Control: no-store` plus `Pragma`/`Expires` — no shared cache, no disk
+ *   cache, and no back-button redisplay of a secret.
+ * - `Referrer-Policy: no-referrer` — nothing about this URL travels onward.
+ * - `Permissions-Policy` — the page needs no camera, microphone or geolocation, so
+ *   it asks for none.
+ * - `Cross-Origin-Opener-Policy`/`-Embedder-Policy`/`-Resource-Policy` — isolate the
+ *   browsing context so another origin cannot get a handle to this window.
+ * - `X-Content-Type-Options: nosniff`.
+ *
+ * **Headers are necessary, not sufficient.** They cannot help if the page loads
+ * third-party JavaScript, registers a service worker, or the value reaches a
+ * clipboard, a download, an SSR payload or an error reporter — all of which outlive
+ * the page. See the "provisioning pages" guidance in README-DETAIL.org, and prefer
+ * generating a script's key *on the machine that will use it*, which removes this
+ * page from the design entirely.
+ *
+ * @param options.scriptNonce - Per-response nonce for a `<script nonce>` tag, when
+ *   the page cannot use only external scripts. Omit for a fully external bundle.
+ * @param options.connectSelf - Origins the page may call, beyond `'self'`.
+ */
+declare function provisioningPageHeaders(options?: {
+    scriptNonce?: string;
+    connectSrc?: string[];
+}): Record<string, string>;
+/**
+ * Response headers that ask a DPoP client to retry with a server-issued nonce
+ * (RFC 9449 section 8).
+ *
+ * Send these with a `401` when `verifyDpop` throws `dpop_nonce_required`, passing
+ * the value of `auth.dpopNonce()`. Without a helper this is four things to get
+ * right in every host — catch the code, fetch a nonce, name both headers exactly
+ * — for one fixed protocol behaviour.
+ *
+ * The nonce is not a secret: the server hands the current one to any caller, and
+ * its only property is being unguessable *in advance*. So answering a request
+ * that failed authentication with one gives nothing away. `null` or `undefined`
+ * (nonces not configured) yields the challenge without the nonce header, which is
+ * a client-side bug worth surfacing rather than hiding.
+ */
+declare function dpopChallenge(nonce?: string | null): Record<string, string>;
 /**
  * Exact-origin check for state-changing requests.
  *
@@ -177,21 +379,6 @@ declare function describeSignupPhase(phase: SignupPhase): string;
  */
 declare const SELF_SERVE_SIGNUP_STEPS: readonly ["Collect identifiers (e.g. email and phone) and rate-limit the form", "Verify control of two independent channels before creating durable access", "Insert application user with createUserHandle(); do not store a password", "Call issueEnrollment(userId); store only the URL for delivery, never log the raw token long-term", "Deliver the enrollment URL on a bound channel (not an attacker-supplied address)", "User opens fragment → exchangeEnrollment → registerPasskey", "Optionally prompt for a second passkey while the session is fresh"];
 
-type NormalizedConfig = {
-    rpName: string;
-    rpId: string;
-    expectedOrigins: string[];
-    publicOrigin: string;
-    enrollmentPath: string;
-    durations: {
-        enrollmentGrantMs: number;
-        enrollmentSessionMs: number;
-        challengeMs: number;
-        sessionIdleMs: number;
-        sessionAbsoluteMs: number;
-    };
-};
-
 /**
  * Framework-neutral passkey authentication lifecycle.
  *
@@ -233,11 +420,18 @@ declare class LocalWebAuthn {
      * `webAuthnUserHandle` that is not 32 bytes.
      *
      * @param userId - The application user ID to enroll.
-     * @param approvedByUserId - Optional ID of the administrator who approved this enrollment.
+     * @param options.approvedByUserId - ID of the administrator who approved this
+     *   enrollment, recorded on the grant and on any credential it creates.
+     * @param options.credentialKind - The {@link Credential.kind} this grant may
+     *   create. Confines the token to that class: whichever route redeems it, the
+     *   resulting credential gets this kind and its restrictions.
      * @returns The enrollment URL (with `#token=` fragment), raw token, expiry,
      *   and the IDs of any grants this issue superseded.
      */
-    issueEnrollment(userId: string, approvedByUserId?: string): Promise<EnrollmentIssue>;
+    issueEnrollment(userId: string, options?: {
+        approvedByUserId?: string;
+        credentialKind?: string;
+    }): Promise<EnrollmentIssue>;
     /**
      * Exchange a one-time enrollment token for an enrollment session.
      *
@@ -267,10 +461,7 @@ declare class LocalWebAuthn {
      * valid — including when the user is **inactive** as reported by the
      * `getUser` provider.
      */
-    registrationOptions(input: {
-        enrollmentSessionToken?: string;
-        sessionToken?: string;
-    }): Promise<RegistrationOptionsResult>;
+    registrationOptions(input: RegistrationOptionsInput): Promise<RegistrationOptionsResult>;
     /**
      * Verify a registration response, store the credential, and open a session.
      *
@@ -295,7 +486,7 @@ declare class LocalWebAuthn {
      * No user is identified at this point; the authenticator chooses the
      * credential and {@link verifyAuthentication} resolves and checks the user.
      */
-    authenticationOptions(): Promise<AuthenticationOptionsResult>;
+    authenticationOptions(input?: AuthenticationOptionsInput): Promise<AuthenticationOptionsResult>;
     /**
      * Verify an authentication assertion and create a session.
      *
@@ -346,13 +537,104 @@ declare class LocalWebAuthn {
      * suspect. Emits a `user.sessions_revoked` event when at least one session
      * was revoked.
      *
+     * Pass `kinds` to scope the revoke to sessions opened by credentials of those
+     * {@link Credential.kind} values — "sign this person out of their devices
+     * without stopping the nightly export". `null` is a legal member and matches
+     * unclassified credentials.
+     *
      * @param userId - The application user whose sessions end.
      * @param options.exceptSessionToken - Raw session token to leave live.
+     * @param options.kinds - Restrict to sessions from credentials of these kinds.
      * @returns The number of live sessions revoked.
      */
     revokeUserSessions(userId: string, options?: {
         exceptSessionToken?: string;
+        kinds?: (string | null)[];
     }): Promise<number>;
+    /**
+     * Whether a credential of this {@link Credential.kind} may act through an
+     * interactive (browser, cookie-bearing) route.
+     *
+     * Hosts that accept machine credentials **must** consult this at their session
+     * middleware, not only at authentication. A machine credential holds a valid
+     * session token, and a script can present it as a `Cookie` and write its own
+     * `Origin` — so without this check it reaches every cookie-authenticated route.
+     *
+     * The one that matters is enrollment issuance. `canRegister: false` closes the
+     * session registration path, but the *grant* path is authorized purely by
+     * possession of a single-use enrollment token, with no session to inspect — so
+     * the package cannot gate it, and a machine that can obtain a grant registers a
+     * fresh credential and defeats `canRegister` entirely. Refusing non-interactive
+     * kinds at the session middleware is what closes that, and it has to be the
+     * host because only the host knows who is calling `issueEnrollment`.
+     *
+     * An undeclared kind — including `null` — is interactive, matching the
+     * behaviour from before `credentialKinds` existed.
+     */
+    interactiveKind(kind: string | null): boolean;
+    /**
+     * A credential and its ancestors, root first.
+     *
+     * The root is whichever credential came from an enrollment grant, so the chain
+     * answers "who authorized this, and who authorized them" back to an
+     * out-of-band approval. Credentials registered before heritage was recorded
+     * have `parentCredentialId: null` and terminate the walk early with
+     * `createdVia: null` — unknown rather than guessed.
+     *
+     * Returns `[]` for an unknown credential, or one belonging to another user.
+     */
+    credentialLineage(userId: string, credentialId: string): Promise<Credential[]>;
+    /**
+     * A credential and everything descended from it, nearest first.
+     *
+     * Index 0 is the credential itself. This is the blast radius of a compromised
+     * credential: everything it was used to enroll, and everything those enrolled.
+     */
+    credentialDescendants(userId: string, credentialId: string): Promise<Credential[]>;
+    /**
+     * Revoke a credential and every credential descended from it.
+     *
+     * The remediation primitive for a compromised credential. A stolen session can
+     * enroll another passkey — that is the intended "add a passkey" feature for a
+     * person, and `canRegister` only restrains non-interactive kinds — so revoking
+     * the credential you suspect can leave the attacker's behind, indistinguishable
+     * from a legitimate one after the fact. This revokes the subtree.
+     *
+     * Revokes with `allowLastCredential`, because stopping short of emptying the
+     * account would leave a partially-revoked tree, which is worse than requiring
+     * re-enrollment after a compromise. The account may therefore be left with no
+     * usable credential; that is the intent.
+     *
+     * **Unscoped, this crosses kinds, and that is usually a surprise.** Every API
+     * credential a person provisions has *their passkey* as its parent, so revoking
+     * a suspected passkey's tree also stops their scripts. For a compromise that is
+     * correct — the passkey could have minted those credentials, and after the fact
+     * a legitimate one is indistinguishable from an attacker's. When it is not what
+     * you meant, pass `kinds`.
+     *
+     * `kinds` restricts which credentials in the subtree are revoked; the walk is
+     * unchanged. A credential excluded by `kinds` still has *its* descendants
+     * considered, because the parent link records who enrolled whom regardless of
+     * class — sparing a node must not silently spare what it created. `null` is a
+     * legal member and matches unclassified credentials.
+     *
+     * @param options.kinds - Revoke only credentials of these {@link Credential.kind} values.
+     * Re-enumerates until a pass revokes nothing, so a credential registered
+     * *concurrently* with this call is caught rather than surviving a stale snapshot.
+     * Unscoped, that is conclusive — every authority in the subtree is revoked, so
+     * nothing remains that could author another. **With `kinds`, it is not:** a
+     * spared credential still permitted to register can create a fresh in-scope
+     * credential just after the final enumeration. Suspend registration for the user
+     * (or deactivate them through `getUser`) while remediating a compromise.
+     *
+     * Throws `revocation_not_converged` (503) if credentials keep appearing until the
+     * pass bound — remediation is then incomplete, and some credentials were revoked.
+     *
+     * @returns IDs actually revoked, root first. Already-revoked ones are skipped.
+     */
+    revokeCredentialTree(userId: string, credentialId: string, options?: {
+        kinds?: (string | null)[];
+    }): Promise<string[]>;
     /** List a user's credentials; revoked ones only when `includeRevoked` is `true`. */
     listCredentials(userId: string, includeRevoked?: boolean): Promise<Credential[]>;
     /**
@@ -374,14 +656,118 @@ declare class LocalWebAuthn {
      * The user must re-enroll through a fresh {@link issueEnrollment} to sign in
      * again. To end sessions while keeping passkeys, use
      * {@link revokeUserSessions} instead.
+     *
+     * Pass `kinds` to scope the revoke to credentials of those
+     * {@link Credential.kind} values — "revoke this person's machine access,
+     * leave their passkeys". Two differences from the unscoped form:
+     *
+     * - Pending enrollment grants **of those kinds** are revoked too, but grants of
+     *   other kinds and all unconsumed challenges are left alone. Revoking the
+     *   grants matters: a live grant of kind X is standing authorization to create
+     *   another credential of kind X, so leaving one would let the holder
+     *   immediately re-enroll and undo the revoke.
+     * - It is not a lockout. A surviving credential of another kind still
+     *   authenticates as this user, so `{ kinds: ['person'] }` does *not* stop the
+     *   account being used — it stops the person's own devices being used. Suspend
+     *   the user through `getUser` returning `active: false` if that is the intent.
+     *
+     * **The scoped form is administrative revocation, not complete remediation.** It
+     * revokes to a fixed point, so a credential registered concurrently is caught
+     * rather than missed — but it deliberately spares other kinds, and a spared
+     * credential that may still register can create a fresh in-scope credential just
+     * after the final enumeration. For a compromise, use the unscoped form (which
+     * leaves no authority behind) and suspend the user while you do it. Throws
+     * `revocation_not_converged` (503) if credentials keep appearing until the pass
+     * bound; no `user.authentication_revoked` event is emitted in that case.
      */
-    revokeUserAuthentication(userId: string): Promise<void>;
+    revokeUserAuthentication(userId: string, options?: {
+        kinds?: (string | null)[];
+    }): Promise<void>;
     /**
      * Reap expired enrollment grants, finished challenges, and dead sessions.
      * Schedule periodically (every few minutes is ample); credentials are never
      * part of cleanup.
      */
     cleanup(): Promise<CleanupResult>;
+    /**
+     * The current nonce, for a `DPoP-Nonce` response header.
+     *
+     * Returns `null` when nonce issuance is not configured, so a host can attach the
+     * header unconditionally and have it simply not appear.
+     *
+     * Every server in a deployment derives the same slot from its clock and claims
+     * it through the store; whichever inserts first decides the value and the rest
+     * read it back. No shared secret and no rotation coordination.
+     */
+    dpopNonce(): Promise<string | null>;
+    /**
+     * Verify a DPoP proof (RFC 9449) for a request on an already-resolved session.
+     *
+     * **Prefer {@link authenticateMachineRequest} for a machine route.** This is
+     * the lower-level primitive: it trusts the caller to have resolved `session`
+     * from `sessionToken` and to touch the session only after this succeeds. Pair a
+     * token with the wrong session, or resolve-with-touch before calling this, and
+     * the sender-constraint guarantee is lost. `authenticateMachineRequest` removes
+     * both footguns by taking only the token.
+     *
+     * Derives the expected key thumbprint from the session's credential, so there
+     * is no per-session key material to store, then claims the proof's `jti`
+     * through the store so a captured proof cannot be replayed inside its `iat`
+     * window.
+     *
+     * Throws `invalid_dpop_proof` (401) on any failure. The `reason` is attached to
+     * the message for logs; do not surface it to callers, since it distinguishes
+     * "wrong key" from "replayed".
+     */
+    verifyDpop(input: {
+        proof: string | undefined;
+        method: string;
+        url: string;
+        sessionToken: string;
+        session: SessionIdentity;
+        /**
+         * Demand a server-issued nonce (RFC 9449 section 8). Requires `dpopNonce` in
+         * configuration; throws `dpop_nonce_required` when the proof carries none or
+         * carries one the server no longer recognises.
+         */
+        requireNonce?: boolean;
+    }): Promise<void>;
+    /**
+     * Resolve a machine request's session **only if** its DPoP proof holds — one
+     * fail-closed operation for a sender-constrained (RFC 9449) route.
+     *
+     * This is the method a machine route should call. It closes two gaps that come
+     * from assembling {@link resolveSession} and {@link verifyDpop} by hand:
+     *
+     * - **The session is derived from the token, never supplied alongside it.** A
+     *   caller cannot pair a token for one session with the resolved identity of
+     *   another, because there is only one input.
+     * - **Idle activity is touched only after the proof succeeds.** Resolving first
+     *   with `touch` would let a thief holding just the bearer token keep the idle
+     *   timer alive to absolute expiry without ever producing a proof. Here a
+     *   request that cannot prove possession changes no server state.
+     *
+     * A DPoP proof is always required; there is no bearer-only path through this
+     * method. Throws `unauthenticated` (401) when the token resolves to no live
+     * session, `dpop_nonce_required` (401) when a nonce is demanded and absent
+     * (answer with {@link dpopChallenge}), and `invalid_dpop_proof` (401) on any
+     * other proof failure. On success the session's `lastSeenAt` is advanced.
+     *
+     * @returns The authenticated user and session, plus the current response nonce
+     *   (`null` when nonce issuance is not configured).
+     */
+    authenticateMachineRequest(input: {
+        sessionToken: string;
+        proof: string | undefined;
+        method: string;
+        url: string;
+        /** Demand a server-issued nonce (RFC 9449 section 8). Requires `dpopNonce`. */
+        requireNonce?: boolean;
+    }): Promise<{
+        user: AuthUser;
+        session: SessionIdentity;
+        nonce: string | null;
+    }>;
 }
 
-export { type AuthCookieKind, type AuthCookieNames, AuthUser, AuthenticationOptionsResult, AuthenticationVerificationInput, AuthenticationVerificationResult, CleanupResult, type CookieAttributes, type CookieAttributesOptions, Credential, EnrollmentExchange, EnrollmentIssue, LocalWebAuthn, LocalWebAuthnError, type LocalWebAuthnErrorCode, LocalWebAuthnOptions, RegistrationOptionsResult, RegistrationVerificationInput, RegistrationVerificationResult, SELF_SERVE_SIGNUP_STEPS, SessionIdentity, type SignupFacts, type SignupNextStep, type SignupPhase, authCookieNames, cookieAttributes, createEnrollmentToken, createOpaqueToken, createUserHandle, decodeBase64Url, describeSignupPhase, encodeBase32, encodeBase64Url, equalBytes, isExactOrigin, isHttpsPublicOrigin, isLocalWebAuthnError, nextSignupStep, parseCookieHeader, serializeClearedCookie, serializeCookie, sha256, signupPhase };
+export { type AuthCookieKind, type AuthCookieNames, AuthUser, AuthenticationOptionsInput, AuthenticationOptionsResult, AuthenticationVerificationInput, AuthenticationVerificationResult, CleanupResult, type CookieAttributes, type CookieAttributesOptions, Credential, type DpopVerification, type DpopVerificationInput, EnrollmentExchange, EnrollmentIssue, LocalWebAuthn, LocalWebAuthnError, type LocalWebAuthnErrorCode, LocalWebAuthnOptions, type NormalizedConfig, type NormalizedCredentialKind, type PublicJwk, RegistrationOptionsInput, RegistrationOptionsResult, RegistrationVerificationInput, RegistrationVerificationResult, SELF_SERVE_SIGNUP_STEPS, SessionIdentity, type SignupFacts, type SignupNextStep, type SignupPhase, authCookieNames, cookieAttributes, coseToJwk, createEnrollmentToken, createOpaqueToken, createUserHandle, decodeBase64Url, defaultKindPolicy, describeSignupPhase, dpopChallenge, encodeBase32, encodeBase64Url, equalBytes, isExactOrigin, isHttpsPublicOrigin, isLocalWebAuthnError, jwkThumbprint, kindPolicy, nextSignupStep, parseCookieHeader, provisioningPageHeaders, serializeClearedCookie, serializeCookie, sha256, signupPhase, verifyDpopProof };

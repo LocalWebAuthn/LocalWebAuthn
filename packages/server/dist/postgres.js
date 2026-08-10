@@ -6,11 +6,12 @@ import {
   enrollmentSessionFromRow,
   sessionFromRow,
   toPositionalPlaceholders
-} from "./chunk-JJPVA6J5.js";
+} from "./chunk-IBOQAKS5.js";
 import {
-  LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL,
-  LOCALWEBAUTHN_SCHEMA_VERSION
-} from "./chunk-6NWV3XTI.js";
+  LOCALWEBAUTHN_SCHEMA_VERSION,
+  localWebAuthnMigrationsTableStatement,
+  localWebAuthnUpgradeStatements
+} from "./chunk-U6SG3F4P.js";
 
 // src/postgres.ts
 var PG = Object.fromEntries(
@@ -25,7 +26,12 @@ async function migratePostgres(pool, now = Date.now()) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query(LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL);
+    await client.query(localWebAuthnMigrationsTableStatement("postgres"));
+    const stored = await client.query(PG.selectSchemaVersion);
+    const from = Number(stored.rows[0]?.version ?? 0);
+    for (const statement of localWebAuthnUpgradeStatements(from, "postgres")) {
+      await client.query(statement);
+    }
     await client.query(PG.insertMigration, [LOCALWEBAUTHN_SCHEMA_VERSION, now]);
     await client.query("COMMIT");
   } catch (error) {
@@ -44,7 +50,8 @@ var PostgresLocalWebAuthnStore = class {
     return this.#transaction(async (tx) => {
       const revoked = await tx.query(PG.revokePendingGrants, [
         record.createdAt,
-        record.userId
+        record.userId,
+        record.credentialKind
       ]);
       await tx.query(PG.insertEnrollmentGrant, [
         record.id,
@@ -52,10 +59,19 @@ var PostgresLocalWebAuthnStore = class {
         record.tokenHash,
         record.expiresAt,
         record.approvedByUserId,
+        record.credentialKind,
         record.createdAt
       ]);
       return revoked.rows.map((row) => row.id);
     });
+  }
+  async revokePendingEnrollmentGrants(userId, now, credentialKind) {
+    const result = await this.#pool.query(PG.revokePendingGrants, [
+      now,
+      userId,
+      credentialKind
+    ]);
+    return result.rows.map((row) => row.id);
   }
   async exchangeEnrollment(tokenHash, sessionHash, sessionExpiresAt, now) {
     const result = await this.#pool.query(PG.exchangeEnrollment, [
@@ -84,6 +100,9 @@ var PostgresLocalWebAuthnStore = class {
       record.userId,
       record.grantId,
       record.authorizationSessionHash,
+      record.credentialKind,
+      record.allowedCredentialKinds === null ? null : JSON.stringify(record.allowedCredentialKinds),
+      record.registrationGeneration,
       record.expiresAt,
       record.createdAt
     ]);
@@ -111,6 +130,20 @@ var PostgresLocalWebAuthnStore = class {
     const row = result.rows.at(0);
     return row ? credentialFromRow(row) : null;
   }
+  async credentialAncestry(userId, credentialId) {
+    const result = await this.#pool.query(PG.selectCredentialAncestry, [
+      credentialId,
+      userId
+    ]);
+    return result.rows.map(credentialFromRow);
+  }
+  async credentialDescendants(userId, credentialId) {
+    const result = await this.#pool.query(PG.selectCredentialDescendants, [
+      credentialId,
+      userId
+    ]);
+    return result.rows.map(credentialFromRow);
+  }
   async completeRegistration(input) {
     try {
       return await this.#transaction(async (tx) => {
@@ -127,6 +160,11 @@ var PostgresLocalWebAuthnStore = class {
           credential.deviceType,
           credential.backedUp,
           credential.label,
+          credential.kind,
+          credential.createdVia,
+          credential.parentCredentialId,
+          credential.grantId,
+          credential.approvedByUserId,
           credential.createdAt
         ]);
         if (input.challenge.grantId) {
@@ -248,15 +286,55 @@ var PostgresLocalWebAuthnStore = class {
       const sessions = await tx.query(PG.deleteExpiredSessions, [now]);
       const enrollmentGrants = await tx.query(PG.deleteFinishedGrants, [now]);
       const challenges = await tx.query(PG.deleteFinishedChallenges, [now]);
+      const dpopProofs = await tx.query(PG.deleteExpiredDpopProofs, [now]);
+      const dpopNonces = await tx.query(PG.deleteExpiredDpopNonces, [now]);
       return {
         sessions: sessions.rowCount ?? 0,
         enrollmentGrants: enrollmentGrants.rowCount ?? 0,
-        challenges: challenges.rowCount ?? 0
+        challenges: challenges.rowCount ?? 0,
+        dpopProofs: dpopProofs.rowCount ?? 0,
+        dpopNonces: dpopNonces.rowCount ?? 0
       };
     });
   }
+  async revokeLiveCredentialSessions(credentialId, now, idleExpiresBefore, exceptSessionHash) {
+    const result = exceptSessionHash ? await this.#pool.query(PG.revokeLiveCredentialSessionsExcept, [
+      now,
+      credentialId,
+      now,
+      idleExpiresBefore,
+      exceptSessionHash
+    ]) : await this.#pool.query(PG.revokeLiveCredentialSessions, [
+      now,
+      credentialId,
+      now,
+      idleExpiresBefore
+    ]);
+    return result.rowCount ?? 0;
+  }
+  async claimDpopProof(jtiHash, expiresAt) {
+    const result = await this.#pool.query(PG.claimDpopProof, [jtiHash, expiresAt]);
+    return result.rowCount === 1;
+  }
+  async claimDpopNonce(slot, candidate, expiresAt) {
+    return this.#transaction(async (tx) => {
+      await tx.query(PG.insertDpopNonce, [slot, candidate, expiresAt]);
+      const result = await tx.query(PG.selectDpopNonce, [slot]);
+      return result.rows[0]?.nonce ?? candidate;
+    });
+  }
+  async dpopNonces(currentSlot, previousSlot) {
+    const result = await this.#pool.query(PG.selectDpopNonces, [
+      currentSlot,
+      previousSlot
+    ]);
+    return result.rows.map((row) => row.nonce);
+  }
   /** Re-check the authorizing grant or session at commit time. */
   async #registrationIsAuthorized(tx, input) {
+    if (!await this.#fenceHolds(tx, input)) {
+      return false;
+    }
     if (input.challenge.grantId && input.enrollmentSessionHash) {
       const result = await tx.query(PG.authorizeRegistrationByGrant, [
         input.challenge.grantId,
@@ -275,6 +353,35 @@ var PostgresLocalWebAuthnStore = class {
       return result.rows.length > 0;
     }
     return false;
+  }
+  /** Whether the challenge's recorded generation is still current, under a row lock. */
+  async #fenceHolds(tx, input) {
+    const expected = input.challenge.registrationGeneration;
+    if (expected === null) {
+      return true;
+    }
+    const locked = await tx.query(PG_ONLY.lockRegistrationFence, [
+      input.credential.userId
+    ]);
+    if (locked.rows.length === 0) {
+      return expected === 0;
+    }
+    return Number(locked.rows[0].generation) === expected;
+  }
+  async registrationGeneration(userId, now) {
+    await this.#pool.query(PG.ensureRegistrationFence, [userId, now]);
+    const result = await this.#pool.query(
+      PG.selectRegistrationFence,
+      [userId]
+    );
+    return Number(result.rows[0]?.generation ?? 0);
+  }
+  async bumpRegistrationGeneration(userId, now) {
+    const result = await this.#pool.query(
+      PG.bumpRegistrationFence,
+      [userId, now]
+    );
+    return Number(result.rows[0]?.generation ?? 0);
   }
   async #insertSession(tx, session) {
     await tx.query(PG.insertSession, [

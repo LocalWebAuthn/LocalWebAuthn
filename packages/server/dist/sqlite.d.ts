@@ -1,4 +1,4 @@
-import { L as LocalWebAuthnStore, E as EnrollmentGrantRecord, a as EnrollmentSession, C as ChallengeRecord, b as ChallengeKind, c as ConsumedChallenge, d as Credential, e as CompleteRegistrationInput, f as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, g as RevokeCredentialResult, h as CleanupResult } from './types-Cne4CLO3.js';
+import { L as LocalWebAuthnStore, a as LocalWebAuthnDpopStore, E as EnrollmentGrantRecord, b as EnrollmentSession, C as ChallengeRecord, c as ChallengeKind, d as ConsumedChallenge, e as Credential, f as CompleteRegistrationInput, g as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, h as RevokeCredentialResult, i as CleanupResult } from './types-DKx5wADO.js';
 import '@simplewebauthn/server';
 
 type SqliteRunResult = {
@@ -34,27 +34,36 @@ declare function migrateSqlite(database: SqliteDatabase, now?: number): void;
  * partial writes cannot be observed or left behind. The constructor enables
  * foreign-key enforcement on the given connection.
  */
-declare class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
+declare class SqliteLocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAuthnDpopStore {
     #private;
     constructor(database: SqliteDatabase);
     replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]>;
+    revokePendingEnrollmentGrants(userId: string, now: number, credentialKind: string | null): Promise<string[]>;
     exchangeEnrollment(tokenHash: Uint8Array, sessionHash: Uint8Array, sessionExpiresAt: number, now: number): Promise<EnrollmentSession | null>;
     resolveEnrollmentSession(sessionHash: Uint8Array, now: number): Promise<EnrollmentSession | null>;
     createChallenge(record: ChallengeRecord): Promise<boolean>;
     consumeChallenge(idHash: Uint8Array, kind: ChallengeKind, now: number): Promise<ConsumedChallenge | null>;
     listCredentials(userId: string, includeRevoked?: boolean): Promise<Credential[]>;
     getCredential(credentialId: string): Promise<Credential | null>;
+    credentialAncestry(userId: string, credentialId: string): Promise<Credential[]>;
+    credentialDescendants(userId: string, credentialId: string): Promise<Credential[]>;
     completeRegistration(input: CompleteRegistrationInput): Promise<boolean>;
     completeAuthentication(input: CompleteAuthenticationInput): Promise<boolean>;
     resolveSession(idHash: Uint8Array, now: number, idleExpiresBefore: number): Promise<SessionIdentity | null>;
     touchSession(idHash: Uint8Array, now: number): Promise<boolean>;
     revokeSession(idHash: Uint8Array, now: number): Promise<RevokedSession | null>;
     revokeUserSessions(userId: string, now: number, idleExpiresBefore: number, exceptSessionHash?: Uint8Array): Promise<number>;
+    revokeLiveCredentialSessions(credentialId: string, now: number, idleExpiresBefore: number, exceptSessionHash?: Uint8Array): Promise<number>;
     revokeCredential(userId: string, credentialId: string, now: number, options?: {
         allowLastCredential?: boolean;
     }): Promise<RevokeCredentialResult>;
     revokeUserAuthentication(userId: string, now: number): Promise<void>;
+    claimDpopProof(jtiHash: Uint8Array, expiresAt: number): Promise<boolean>;
+    claimDpopNonce(slot: number, candidate: string, expiresAt: number): Promise<string>;
+    dpopNonces(currentSlot: number, previousSlot: number): Promise<string[]>;
     cleanup(now: number): Promise<CleanupResult>;
+    registrationGeneration(userId: string, now: number): Promise<number>;
+    bumpRegistrationGeneration(userId: string, now: number): Promise<number>;
 }
 
 export { type SqliteDatabase, SqliteLocalWebAuthnStore, type SqliteRunResult, type SqliteStatement, type SqliteTransaction, migrateSqlite };

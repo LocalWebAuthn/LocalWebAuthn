@@ -1,6 +1,7 @@
 # Releasing LocalWebAuthn
 
-Both packages are versioned and released together. Publishing is triggered by the GitHub
+**All three packages** — `@localwebauthn/server`, `@localwebauthn/browser` and
+`@localwebauthn/client` — are versioned and released together. Publishing is triggered by the GitHub
 Release **published** event — `.github/workflows/publish.yml` runs
 `on: release: types: [published]` — for a Release whose tag is `vX.Y.Z`.
 
@@ -22,9 +23,10 @@ and a GitHub Release a maintainer chose to publish.
    ```console
    npm publish --workspace @localwebauthn/server
    npm publish --workspace @localwebauthn/browser
+   npm publish --workspace @localwebauthn/client
    ```
 
-6. Open each package on npm and configure its Trusted Publisher:
+6. Open **each of the three** packages on npm and configure its Trusted Publisher:
 
    - Provider: GitHub Actions
    - Organization or user: `LocalWebAuthn`
@@ -42,9 +44,75 @@ No npm write token is stored in GitHub. Trusted Publishing exchanges GitHub's sh
 OIDC identity for publish authorization. npm automatically generates provenance for public
 packages published from the public repository through this workflow.
 
+## Bootstrapping a New Package Record (`@localwebauthn/client`)
+
+A package that has never been published has **no npm record**, so it has no Trusted Publisher
+to configure and the automated workflow cannot publish it. The first version must be pushed by
+a human, once. Do this **before** the v3 tag exists — otherwise server and browser become
+immutable at `3.0.0` and the run then fails on the client, forcing an immediate `3.0.1`.
+
+Publish the client **first** of the three. It is the least-proven record, so any scope,
+permission or provenance problem surfaces before the two established packages are touched.
+
+```console
+nix develop
+npm whoami                       # confirm the account that owns the localwebauthn scope
+make release-check               # full gate + all three tarballs
+npm pack --workspace @localwebauthn/client   # inspect the real tarball, not a dry run
+tar -tzf localwebauthn-client-*.tgz          # expect LICENSE, README.md, package.json, dist/
+```
+
+Then publish it as a prerelease, so the bootstrap cannot become anyone's default install:
+
+```console
+npm publish --workspace @localwebauthn/client --tag next
+```
+
+Notes on the flags and the likely failures:
+
+- **`--tag next` matters more than it looks.** Without a `--tag`, npm marks the version `latest`,
+  which is what a bare `npm install @localwebauthn/client` resolves. Bootstrapping under `next`
+  keeps the record honest: nothing is `latest` until a final version ships.
+- **`--access public` is not needed here**: `packages/client/package.json` already sets
+  `publishConfig.access: "public"`. (A scoped package without that would need the flag, or npm
+  attempts a private publish and fails with `402` on a free account.)
+- **Do not pass `--provenance` from a laptop.** Provenance needs a supported CI OIDC context and
+  errors outside one. The workflow attests every subsequent release; the bootstrap version simply
+  will not have provenance, which is acceptable for an rc.
+- **2FA**: with publishing 2FA enabled npm prompts for an OTP; `--otp=NNNNNN` avoids the prompt
+  in a non-TTY shell.
+- **`E403` / name unavailable**: confirm the scope exists and your account may publish to it
+  (`npm org ls localwebauthn`).
+- **Every version you publish is permanent.** `npm unpublish` is not an undo — it burns the
+  number. Bootstrap a prerelease (`3.0.0-rc.1`), not a placeholder like `2.2.0`, and let the
+  final `3.0.0` come from the workflow.
+
+Immediately after the bootstrap publish, configure the client's Trusted Publisher exactly as
+for the other two (GitHub Actions · `LocalWebAuthn` · `LocalWebAuthn` · `publish.yml` ·
+environment `npm`), then verify:
+
+```console
+npm dist-tag ls @localwebauthn/client         # expect `next`, and NO `latest`
+npm view @localwebauthn/client@next version
+
+mkdir /tmp/lwa-consumer && cd /tmp/lwa-consumer && npm init -y
+npm install @localwebauthn/client@next       # @next is required while no latest exists
+node --input-type=module -e "import { ES256 } from '@localwebauthn/client'; console.log(ES256)"
+```
+
+Install `@next` explicitly: with no `latest` dist-tag, a bare `npm install @localwebauthn/client`
+resolves `@latest` and fails. That is the intended state for a prerelease-only package — and the
+reason to confirm it with `npm dist-tag ls` rather than assume. If a `latest` did get set by
+accident, `npm dist-tag add @localwebauthn/client@3.0.0 latest` on the real release fixes the
+default, but the stray version stays published forever.
+
+That consumer check is the one a workspace cannot make: inside the workspace, `dist/` resolves
+through a symlink whether or not the tarball contained it. Installing the tarball is what proves
+the published artifact resolves, imports and runs.
+
 ## Regular Release
 
-1. Update both package versions to the same SemVer value, and update the example
+1. Update all three package versions to the same SemVer value, and update the example
    dependency pins (`examples/*/package.json` pin `@localwebauthn/*` exactly) so
    examples copied out of the workspace install the release that actually has
    the APIs they use.
@@ -64,7 +132,7 @@ packages published from the public repository through this workflow.
    published — not the tag existing — that triggers `publish.yml`.
 
 6. Approve the `npm` environment deployment if required reviewers are configured.
-7. Confirm both npm packages show the new version and provenance.
+7. Confirm all three npm packages show the new version and provenance.
 8. Verify installation into a clean Node and Workers example.
 
 Before publishing anything, the workflow asserts the tag name equals `v` + the shared
@@ -74,6 +142,24 @@ release with nothing published.
 
 ## Recovery
 
-If the server publish succeeds and the browser publish fails, do not overwrite or unpublish
-the server version. Correct the problem, increment both package versions, and publish a new
-release. npm package versions are immutable release artifacts.
+**No multi-package publish is atomic.** The workflow publishes in order — server, browser,
+client — and each `npm publish` is an independent, immutable act. Any prefix of that sequence
+can succeed while the rest fails.
+
+The rule, whatever failed: **never overwrite and never unpublish what succeeded.** Correct the
+problem, increment _all three_ versions to the next patch, and publish a new release. A version
+that reached npm is a permanent artifact; `npm unpublish` is not an undo (it burns the version
+number and breaks anyone who already installed it).
+
+| What happened                              | What to do                                       |
+| ------------------------------------------ | ------------------------------------------------ |
+| server failed (nothing published)          | fix, re-run the Release; no version bump needed  |
+| server ok, browser failed                  | bump all three to `X.Y.Z+1`, new tag and Release |
+| server + browser ok, client failed         | bump all three to `X.Y.Z+1`, new tag and Release |
+| all three ok but the gate flagged an issue | ship a fix as `X.Y.Z+1`; do not retag            |
+
+The workflow re-runs the full gate _before_ the first publish, so the common failure mode is a
+gate failure with nothing published. The dangerous mode is a per-package authorization problem,
+which is why every package's Trusted Publisher must be configured **before** the first v3 tag
+exists — see the bootstrap section, and the note there about publishing the newest package
+record first.

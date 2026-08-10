@@ -14,6 +14,7 @@ import {
 
 import type {
   AuthUser,
+  AuthenticationOptionsInput,
   AuthenticationOptionsResult,
   AuthenticationVerificationInput,
   AuthenticationVerificationResult,
@@ -21,15 +22,17 @@ import type {
   Credential,
   EnrollmentExchange,
   EnrollmentIssue,
+  LocalWebAuthnDpopStore,
   LocalWebAuthnEvent,
   LocalWebAuthnOptions,
+  RegistrationOptionsInput,
   RegistrationOptionsResult,
   RegistrationVerificationInput,
   RegistrationVerificationResult,
   SessionIdentity,
 } from './types.js';
 
-import { normalizeConfig } from './config.js';
+import { kindPolicy, normalizeConfig } from './config.js';
 import {
   createEnrollmentToken,
   createOpaqueToken,
@@ -38,6 +41,7 @@ import {
   equalBytes,
   sha256,
 } from './crypto.js';
+import { verifyDpopProof } from './dpop.js';
 import { LocalWebAuthnError } from './errors.js';
 import { toWebAuthnCredential } from './types.js';
 
@@ -54,13 +58,29 @@ type RegistrationAuthorization =
       grantId: string;
       enrollmentSessionHash: Uint8Array;
       authenticatedSessionHash: null;
+      /** The grant's declared kind, which overrides anything the route requests. */
+      grantCredentialKind: string | null;
+      /** Who approved the grant, copied onto the credential so it outlives the grant. */
+      approvedByUserId: string | null;
+      parentCredentialId: null;
     }
   | {
       user: AuthUser;
       grantId: null;
       enrollmentSessionHash: null;
       authenticatedSessionHash: Uint8Array;
+      /** Always null: a session path has no grant to take a kind from. */
+      grantCredentialKind: null;
+      approvedByUserId: null;
+      /** The credential whose session authorized this registration. */
+      parentCredentialId: string;
     };
+
+/** Normalize a host-supplied kind: trimmed, or `null` for unclassified. */
+function normalizeKind(kind: string | undefined): string | null {
+  const trimmed = kind?.trim() ?? '';
+  return trimmed === '' ? null : trimmed;
+}
 
 /**
  * Framework-neutral passkey authentication lifecycle.
@@ -121,11 +141,19 @@ export class LocalWebAuthn {
    * `webAuthnUserHandle` that is not 32 bytes.
    *
    * @param userId - The application user ID to enroll.
-   * @param approvedByUserId - Optional ID of the administrator who approved this enrollment.
+   * @param options.approvedByUserId - ID of the administrator who approved this
+   *   enrollment, recorded on the grant and on any credential it creates.
+   * @param options.credentialKind - The {@link Credential.kind} this grant may
+   *   create. Confines the token to that class: whichever route redeems it, the
+   *   resulting credential gets this kind and its restrictions.
    * @returns The enrollment URL (with `#token=` fragment), raw token, expiry,
    *   and the IDs of any grants this issue superseded.
    */
-  async issueEnrollment(userId: string, approvedByUserId?: string): Promise<EnrollmentIssue> {
+  async issueEnrollment(
+    userId: string,
+    options: { approvedByUserId?: string; credentialKind?: string } = {},
+  ): Promise<EnrollmentIssue> {
+    const credentialKind = normalizeKind(options.credentialKind);
     const user = await this.#activeUser(userId);
     if (!user) {
       throw new LocalWebAuthnError(
@@ -144,7 +172,8 @@ export class LocalWebAuthn {
       userId,
       tokenHash: await sha256(enrollmentToken),
       expiresAt,
-      approvedByUserId: approvedByUserId ?? null,
+      approvedByUserId: options.approvedByUserId ?? null,
+      credentialKind,
       createdAt: now,
     });
 
@@ -234,11 +263,24 @@ export class LocalWebAuthn {
    * valid — including when the user is **inactive** as reported by the
    * `getUser` provider.
    */
-  async registrationOptions(input: {
-    enrollmentSessionToken?: string;
-    sessionToken?: string;
-  }): Promise<RegistrationOptionsResult> {
+  async registrationOptions(input: RegistrationOptionsInput): Promise<RegistrationOptionsResult> {
     const authorization = await this.#registrationAuthorization(input);
+    const requested = normalizeKind(input.credentialKind);
+    // On the grant path the kind belongs to the grant, written by whoever issued
+    // it. It is binding: a token authorized for one class cannot be redeemed at a
+    // route that asks for another, which is the confinement the column exists for.
+    // A grant with no kind falls back to the route's, preserving the behaviour of
+    // every host that does not set one.
+    const granted = authorization.grantCredentialKind;
+    if (granted !== null && requested !== null && granted !== requested) {
+      throw new LocalWebAuthnError(
+        'invalid_configuration',
+        `This enrollment grant authorizes credential kind ${JSON.stringify(granted)}, ` +
+          `but the route asked for ${JSON.stringify(requested)}.`,
+        500,
+      );
+    }
+    const credentialKind = granted ?? requested;
     const credentials = await this.#store.listCredentials(authorization.user.id);
     const options = await this.#ceremonies.generateRegistrationOptions({
       rpName: this.config.rpName,
@@ -268,6 +310,16 @@ export class LocalWebAuthn {
         userId: authorization.user.id,
         grantId: authorization.grantId,
         authorizationSessionHash: authorization.authenticatedSessionHash,
+        credentialKind,
+        allowedCredentialKinds: null,
+        // The registration fence. The credential insert re-checks this value, so a
+        // revocation between here and `verifyRegistration` — a whole round trip
+        // and a passkey ceremony away — cancels this registration instead of
+        // racing it.
+        registrationGeneration: await this.#store.registrationGeneration(
+          authorization.user.id,
+          now,
+        ),
         expiresAt,
         createdAt: now,
       }))
@@ -351,7 +403,7 @@ export class LocalWebAuthn {
 
     const { credential, credentialBackedUp, credentialDeviceType } = verification.registrationInfo;
     const sessionToken = createOpaqueToken(this.#randomBytes);
-    const expiresAt = now + this.config.durations.sessionAbsoluteMs;
+    const expiresAt = now + kindPolicy(this.config, challenge.credentialKind).sessionAbsoluteMs;
     const completed = await this.#store.completeRegistration({
       challenge,
       enrollmentSessionHash: authorization.enrollmentSessionHash,
@@ -364,7 +416,18 @@ export class LocalWebAuthn {
         transports: credential.transports ?? [],
         deviceType: credentialDeviceType,
         backedUp: credentialBackedUp,
-        label: this.#credentialLabel(input.label, credentialDeviceType),
+        label: this.#credentialLabel(input.label, credentialDeviceType, challenge.credentialKind),
+        // Taken from the challenge, which the host wrote before the client saw
+        // it — never from `input`, which is shaped by the request body.
+        kind: challenge.credentialKind,
+        // Heritage, from the authorization that permitted this registration. The
+        // rows that carry it — the consumed challenge, the completed grant, the
+        // authorizing session — are all reaped within minutes, so this is the only
+        // durable record of where the credential came from.
+        createdVia: authorization.grantId === null ? 'credential' : 'enrollment',
+        parentCredentialId: authorization.parentCredentialId,
+        grantId: authorization.grantId,
+        approvedByUserId: authorization.approvedByUserId,
         createdAt: now,
       },
       session: {
@@ -398,14 +461,22 @@ export class LocalWebAuthn {
       at: now,
       userId: user.id,
       credentialId: credential.id,
+      credentialKind: challenge.credentialKind,
     });
     await this.#emit({
       type: 'session.created',
       at: now,
       userId: user.id,
       credentialId: credential.id,
+      credentialKind: challenge.credentialKind,
     });
-    return { verified: true, sessionToken, expiresAt, credentialId: credential.id };
+    return {
+      verified: true,
+      sessionToken,
+      expiresAt,
+      credentialId: credential.id,
+      credentialKind: challenge.credentialKind,
+    };
   }
 
   /**
@@ -415,7 +486,9 @@ export class LocalWebAuthn {
    * No user is identified at this point; the authenticator chooses the
    * credential and {@link verifyAuthentication} resolves and checks the user.
    */
-  async authenticationOptions(): Promise<AuthenticationOptionsResult> {
+  async authenticationOptions(
+    input: AuthenticationOptionsInput = {},
+  ): Promise<AuthenticationOptionsResult> {
     const options = await this.#ceremonies.generateAuthenticationOptions({
       rpID: this.config.rpId,
       userVerification: 'required',
@@ -431,6 +504,10 @@ export class LocalWebAuthn {
         userId: null,
         grantId: null,
         authorizationSessionHash: null,
+        credentialKind: null,
+        allowedCredentialKinds: this.#admissibleKinds(input.credentialKinds),
+        // Authentication creates no credential, so there is nothing to fence.
+        registrationGeneration: null,
         expiresAt,
         createdAt: now,
       }))
@@ -483,7 +560,12 @@ export class LocalWebAuthn {
       credential.revokedAt !== null ||
       !user ||
       !responseHandle ||
-      !equalBytes(responseHandle, user.webAuthnUserHandle)
+      !equalBytes(responseHandle, user.webAuthnUserHandle) ||
+      // The ceremony declared which credential kinds it accepts, before this
+      // client was handed a challenge. A machine credential presenting itself at
+      // the browser sign-in route fails here, and vice versa — enforced once,
+      // centrally, rather than in every host route.
+      !this.#kindAdmitted(credential.kind, challenge.allowedCredentialKinds)
     ) {
       throw new LocalWebAuthnError(
         'authentication_failed',
@@ -530,7 +612,7 @@ export class LocalWebAuthn {
     }
 
     const sessionToken = createOpaqueToken(this.#randomBytes);
-    const expiresAt = now + this.config.durations.sessionAbsoluteMs;
+    const expiresAt = now + kindPolicy(this.config, credential.kind).sessionAbsoluteMs;
     const completed = await this.#store.completeAuthentication({
       credentialId: credential.id,
       previousCounter,
@@ -558,18 +640,21 @@ export class LocalWebAuthn {
       at: now,
       userId: user.id,
       credentialId: credential.id,
+      credentialKind: credential.kind,
     });
     await this.#emit({
       type: 'session.created',
       at: now,
       userId: user.id,
       credentialId: credential.id,
+      credentialKind: credential.kind,
     });
     return {
       verified: true,
       sessionToken,
       expiresAt,
       credentialId: credential.id,
+      credentialKind: credential.kind,
       user: this.#publicUser(user),
     };
   }
@@ -644,25 +729,252 @@ export class LocalWebAuthn {
    * suspect. Emits a `user.sessions_revoked` event when at least one session
    * was revoked.
    *
+   * Pass `kinds` to scope the revoke to sessions opened by credentials of those
+   * {@link Credential.kind} values — "sign this person out of their devices
+   * without stopping the nightly export". `null` is a legal member and matches
+   * unclassified credentials.
+   *
    * @param userId - The application user whose sessions end.
    * @param options.exceptSessionToken - Raw session token to leave live.
+   * @param options.kinds - Restrict to sessions from credentials of these kinds.
    * @returns The number of live sessions revoked.
    */
   async revokeUserSessions(
     userId: string,
-    options: { exceptSessionToken?: string } = {},
+    options: { exceptSessionToken?: string; kinds?: (string | null)[] } = {},
   ): Promise<number> {
     const now = this.#now();
-    const count = await this.#store.revokeUserSessions(
-      userId,
-      now,
-      now - this.config.durations.sessionIdleMs,
-      options.exceptSessionToken ? await sha256(options.exceptSessionToken) : undefined,
-    );
+    const exceptHash = options.exceptSessionToken
+      ? await sha256(options.exceptSessionToken)
+      : undefined;
+
+    // The same liveness cutoff `resolveSession` uses, on both paths: a session
+    // this leaves alone must be one `resolveSession` would also refuse.
+    const idleBefore = now - this.config.durations.sessionIdleMs;
+
+    let count: number;
+    if (options.kinds) {
+      // Per credential, because a variable-length kind filter cannot be expressed
+      // in the shared static SQL.
+      const kinds = new Set(options.kinds);
+      const credentials = await this.#store.listCredentials(userId, true);
+      count = 0;
+      for (const credential of credentials) {
+        if (!kinds.has(credential.kind)) {
+          continue;
+        }
+        count += await this.#store.revokeLiveCredentialSessions(
+          credential.id,
+          now,
+          idleBefore,
+          exceptHash,
+        );
+      }
+    } else {
+      count = await this.#store.revokeUserSessions(userId, now, idleBefore, exceptHash);
+    }
+
     if (count > 0) {
-      await this.#emit({ type: 'user.sessions_revoked', at: now, userId, count });
+      await this.#emit({
+        type: 'user.sessions_revoked',
+        at: now,
+        userId,
+        count,
+        ...(options.kinds ? { kinds: options.kinds } : {}),
+      });
     }
     return count;
+  }
+
+  /**
+   * Whether a credential of this {@link Credential.kind} may act through an
+   * interactive (browser, cookie-bearing) route.
+   *
+   * Hosts that accept machine credentials **must** consult this at their session
+   * middleware, not only at authentication. A machine credential holds a valid
+   * session token, and a script can present it as a `Cookie` and write its own
+   * `Origin` — so without this check it reaches every cookie-authenticated route.
+   *
+   * The one that matters is enrollment issuance. `canRegister: false` closes the
+   * session registration path, but the *grant* path is authorized purely by
+   * possession of a single-use enrollment token, with no session to inspect — so
+   * the package cannot gate it, and a machine that can obtain a grant registers a
+   * fresh credential and defeats `canRegister` entirely. Refusing non-interactive
+   * kinds at the session middleware is what closes that, and it has to be the
+   * host because only the host knows who is calling `issueEnrollment`.
+   *
+   * An undeclared kind — including `null` — is interactive, matching the
+   * behaviour from before `credentialKinds` existed.
+   */
+  interactiveKind(kind: string | null): boolean {
+    return kindPolicy(this.config, kind).interactive;
+  }
+
+  /**
+   * A credential and its ancestors, root first.
+   *
+   * The root is whichever credential came from an enrollment grant, so the chain
+   * answers "who authorized this, and who authorized them" back to an
+   * out-of-band approval. Credentials registered before heritage was recorded
+   * have `parentCredentialId: null` and terminate the walk early with
+   * `createdVia: null` — unknown rather than guessed.
+   *
+   * Returns `[]` for an unknown credential, or one belonging to another user.
+   */
+  credentialLineage(userId: string, credentialId: string): Promise<Credential[]> {
+    return this.#store.credentialAncestry(userId, credentialId);
+  }
+
+  /**
+   * A credential and everything descended from it, nearest first.
+   *
+   * Index 0 is the credential itself. This is the blast radius of a compromised
+   * credential: everything it was used to enroll, and everything those enrolled.
+   */
+  credentialDescendants(userId: string, credentialId: string): Promise<Credential[]> {
+    return this.#store.credentialDescendants(userId, credentialId);
+  }
+
+  /**
+   * Revoke a credential and every credential descended from it.
+   *
+   * The remediation primitive for a compromised credential. A stolen session can
+   * enroll another passkey — that is the intended "add a passkey" feature for a
+   * person, and `canRegister` only restrains non-interactive kinds — so revoking
+   * the credential you suspect can leave the attacker's behind, indistinguishable
+   * from a legitimate one after the fact. This revokes the subtree.
+   *
+   * Revokes with `allowLastCredential`, because stopping short of emptying the
+   * account would leave a partially-revoked tree, which is worse than requiring
+   * re-enrollment after a compromise. The account may therefore be left with no
+   * usable credential; that is the intent.
+   *
+   * **Unscoped, this crosses kinds, and that is usually a surprise.** Every API
+   * credential a person provisions has *their passkey* as its parent, so revoking
+   * a suspected passkey's tree also stops their scripts. For a compromise that is
+   * correct — the passkey could have minted those credentials, and after the fact
+   * a legitimate one is indistinguishable from an attacker's. When it is not what
+   * you meant, pass `kinds`.
+   *
+   * `kinds` restricts which credentials in the subtree are revoked; the walk is
+   * unchanged. A credential excluded by `kinds` still has *its* descendants
+   * considered, because the parent link records who enrolled whom regardless of
+   * class — sparing a node must not silently spare what it created. `null` is a
+   * legal member and matches unclassified credentials.
+   *
+   * @param options.kinds - Revoke only credentials of these {@link Credential.kind} values.
+   * Re-enumerates until a pass revokes nothing, so a credential registered
+   * *concurrently* with this call is caught rather than surviving a stale snapshot.
+   * Unscoped, that is conclusive — every authority in the subtree is revoked, so
+   * nothing remains that could author another. **With `kinds`, it is not:** a
+   * spared credential still permitted to register can create a fresh in-scope
+   * credential just after the final enumeration. Suspend registration for the user
+   * (or deactivate them through `getUser`) while remediating a compromise.
+   *
+   * Throws `revocation_not_converged` (503) if credentials keep appearing until the
+   * pass bound — remediation is then incomplete, and some credentials were revoked.
+   *
+   * @returns IDs actually revoked, root first. Already-revoked ones are skipped.
+   */
+  async revokeCredentialTree(
+    userId: string,
+    credentialId: string,
+    options: { kinds?: (string | null)[] } = {},
+  ): Promise<string[]> {
+    const now = this.#now();
+    const kinds = options.kinds ? new Set(options.kinds) : null;
+    // `credentialDescendants` returns the root first, so the authority at the top
+    // of the tree is revoked before the credentials beneath it.
+    return this.#revokeCredentialsToFixedPoint(
+      userId,
+      now,
+      () => this.#store.credentialDescendants(userId, credentialId),
+      (credential) => !kinds || kinds.has(credential.kind),
+      (credential) =>
+        this.#emit({
+          type: 'credential.revoked',
+          at: now,
+          userId,
+          credentialId: credential.id,
+          credentialKind: credential.kind,
+        }),
+    );
+  }
+
+  /**
+   * Revoke every credential a re-read of `enumerate` yields that `select`
+   * accepts, repeating until a pass revokes nothing.
+   *
+   * Re-enumeration, not a single snapshot, is what closes the remediation race. A
+   * credential registered *after* the list is first read — by a live session
+   * racing the revoke — would not be in that snapshot and would survive it.
+   * Reading again after each pass catches it, and the store's conditional insert
+   * (which requires the authorizing credential's `revoked_at IS NULL`) means a
+   * revoked node can author no further children, so the frontier shrinks and the
+   * loop converges — normally in two passes: one to revoke, one to confirm.
+   *
+   * **Two guarantees, and they differ.** When the operation revokes *every*
+   * authority in scope — an unscoped tree, where the root and all its descendants
+   * go — reaching a quiet pass is conclusive: nothing is left that could author a
+   * new credential. When the caller *spares* authorities (a `kinds` filter, or a
+   * scoped account revoke), a spared credential that is still permitted to
+   * register can create a fresh in-scope credential right after the final
+   * enumeration. Re-enumeration cannot fence that; only a registration epoch can,
+   * and it is not implemented (docs/REVIEW-20260809.md §3). SECURITY.md states the
+   * limit and tells hosts to suspend registration while remediating.
+   *
+   * Non-convergence is **not** reported as success: hitting the pass bound throws
+   * `revocation_not_converged`, so a caller cannot mistake "credentials kept
+   * appearing" for "remediation finished".
+   */
+  async #revokeCredentialsToFixedPoint(
+    userId: string,
+    now: number,
+    enumerate: () => Promise<Credential[]>,
+    select: (credential: Credential) => boolean,
+    onRevoked?: (credential: Credential) => Promise<void>,
+  ): Promise<string[]> {
+    // Advance the fence before revoking anything. Every registration challenge
+    // already issued to this user is now stale, so a ceremony in flight cannot
+    // commit behind us — which is the half of the race that re-enumeration cannot
+    // see, because the credential does not exist yet to be enumerated.
+    await this.#store.bumpRegistrationGeneration(userId, now);
+
+    const revoked: string[] = [];
+    const seen = new Set<string>();
+    const maxPasses = 64;
+    for (let pass = 0; pass < maxPasses; pass += 1) {
+      let progressed = false;
+      for (const credential of await enumerate()) {
+        if (credential.revokedAt !== null || seen.has(credential.id) || !select(credential)) {
+          continue;
+        }
+        const result = await this.#store.revokeCredential(userId, credential.id, now, {
+          allowLastCredential: true,
+        });
+        if (result === 'revoked') {
+          progressed = true;
+          seen.add(credential.id);
+          revoked.push(credential.id);
+          await onRevoked?.(credential);
+        }
+      }
+      if (!progressed) {
+        return revoked;
+      }
+    }
+    // Still revoking on the last allowed pass: something is registering as fast as
+    // this revokes. Fail loudly — a warning in a log is not an API contract, and a
+    // caller responding to a compromise must not read this as "done".
+    this.#logger.warn('Credential revocation did not converge; registrations may be racing it.', {
+      userId,
+      revoked: revoked.length,
+    });
+    throw new LocalWebAuthnError(
+      'revocation_not_converged',
+      `Revocation did not converge after ${String(maxPasses)} passes; ${String(revoked.length)} credentials were revoked. Suspend registration for this user and retry.`,
+      503,
+    );
   }
 
   /** List a user's credentials; revoked ones only when `includeRevoked` is `true`. */
@@ -688,6 +1000,10 @@ export class LocalWebAuthn {
     // Last-credential protection is enforced atomically inside the store so two
     // concurrent revokes cannot both observe "more than one active" and empty
     // the account.
+    // Revoking one credential also invalidates registrations already authorized
+    // for this user: the credential being removed may be the very authorizer a
+    // pending ceremony is relying on.
+    await this.#store.bumpRegistrationGeneration(userId, now);
     const result = await this.#store.revokeCredential(userId, credentialId, now, options);
     if (result === 'last_credential') {
       throw new LocalWebAuthnError(
@@ -715,11 +1031,67 @@ export class LocalWebAuthn {
    * The user must re-enroll through a fresh {@link issueEnrollment} to sign in
    * again. To end sessions while keeping passkeys, use
    * {@link revokeUserSessions} instead.
+   *
+   * Pass `kinds` to scope the revoke to credentials of those
+   * {@link Credential.kind} values — "revoke this person's machine access,
+   * leave their passkeys". Two differences from the unscoped form:
+   *
+   * - Pending enrollment grants **of those kinds** are revoked too, but grants of
+   *   other kinds and all unconsumed challenges are left alone. Revoking the
+   *   grants matters: a live grant of kind X is standing authorization to create
+   *   another credential of kind X, so leaving one would let the holder
+   *   immediately re-enroll and undo the revoke.
+   * - It is not a lockout. A surviving credential of another kind still
+   *   authenticates as this user, so `{ kinds: ['person'] }` does *not* stop the
+   *   account being used — it stops the person's own devices being used. Suspend
+   *   the user through `getUser` returning `active: false` if that is the intent.
+   *
+   * **The scoped form is administrative revocation, not complete remediation.** It
+   * revokes to a fixed point, so a credential registered concurrently is caught
+   * rather than missed — but it deliberately spares other kinds, and a spared
+   * credential that may still register can create a fresh in-scope credential just
+   * after the final enumeration. For a compromise, use the unscoped form (which
+   * leaves no authority behind) and suspend the user while you do it. Throws
+   * `revocation_not_converged` (503) if credentials keep appearing until the pass
+   * bound; no `user.authentication_revoked` event is emitted in that case.
    */
-  async revokeUserAuthentication(userId: string): Promise<void> {
+  async revokeUserAuthentication(
+    userId: string,
+    options: { kinds?: (string | null)[] } = {},
+  ): Promise<void> {
     const now = this.#now();
-    await this.#store.revokeUserAuthentication(userId, now);
-    await this.#emit({ type: 'user.authentication_revoked', at: now, userId });
+    if (options.kinds) {
+      const kinds = new Set(options.kinds);
+      // Close the grant path first. A live grant of a revoked kind is standing
+      // authorization to create another credential of that kind, so a
+      // grant-path registration started after this could otherwise re-enroll
+      // straight back in.
+      for (const kind of kinds) {
+        for (const grantId of await this.#store.revokePendingEnrollmentGrants(userId, now, kind)) {
+          await this.#emit({ type: 'enrollment.revoked', at: now, userId, grantId });
+        }
+      }
+      // Then revoke the credentials of those kinds to a fixed point, so one
+      // registered concurrently with this call is caught on re-enumeration
+      // rather than surviving a single snapshot. `allowLastCredential` because a
+      // scoped bulk revoke is a deliberate administrative act; the guard exists to
+      // stop an *accidental* lockout via the single-credential path.
+      await this.#revokeCredentialsToFixedPoint(
+        userId,
+        now,
+        () => this.#store.listCredentials(userId, true),
+        (credential) => kinds.has(credential.kind),
+      );
+    } else {
+      await this.#store.bumpRegistrationGeneration(userId, now);
+      await this.#store.revokeUserAuthentication(userId, now);
+    }
+    await this.#emit({
+      type: 'user.authentication_revoked',
+      at: now,
+      userId,
+      ...(options.kinds ? { kinds: options.kinds } : {}),
+    });
   }
 
   /**
@@ -746,17 +1118,37 @@ export class LocalWebAuthn {
           grantId: enrollment.grantId,
           enrollmentSessionHash,
           authenticatedSessionHash: null,
+          grantCredentialKind: enrollment.credentialKind,
+          approvedByUserId: enrollment.approvedByUserId,
+          parentCredentialId: null,
         };
       }
     } else if (input.sessionToken) {
       const authenticatedSessionHash = await sha256(input.sessionToken);
       const resolved = await this.resolveSession(input.sessionToken, false);
       if (resolved) {
+        // A machine credential may authenticate but may not enroll another
+        // credential. Without this, a leaked machine key registers a spare and
+        // survives revocation of the original, so revocation stops being a
+        // remedy at all. This is the only place the check can live: nothing sits
+        // between a host route and this call.
+        if (!kindPolicy(this.config, resolved.session.credentialKind).canRegister) {
+          throw new LocalWebAuthnError(
+            'registration_not_permitted',
+            'This credential may not register additional credentials.',
+            403,
+          );
+        }
         return {
           user: resolved.user,
           grantId: null,
           enrollmentSessionHash: null,
           authenticatedSessionHash,
+          grantCredentialKind: null,
+          approvedByUserId: null,
+          // The session that authorized this registration knows which credential
+          // opened it, so the parent link costs no extra lookup.
+          parentCredentialId: resolved.session.credentialId,
         };
       }
     }
@@ -768,6 +1160,245 @@ export class LocalWebAuthn {
     );
   }
 
+  /**
+   * The `allowed_credential_kinds` value to record on an authentication challenge.
+   *
+   * An explicit list is stored as given, so a machine route can name its kind and
+   * that decision is fixed on a server row before the client sees the challenge.
+   *
+   * With no list the column stays `null`, meaning "unconstrained by this
+   * ceremony" — the admissibility question is then answered from configuration at
+   * verification time by {@link #kindAdmitted}. Storing `null` rather than an
+   * enumerated allow-list matters because the set of kinds present in the
+   * database is not knowable from configuration alone.
+   */
+  #admissibleKinds(requested: (string | null)[] | undefined): (string | null)[] | null {
+    return requested ? [...new Set(requested)] : null;
+  }
+
+  /**
+   * Whether `kind` may authenticate under a challenge's recorded constraint.
+   *
+   * An enumerated list is authoritative. An unconstrained challenge falls back to
+   * the kind's `interactive` policy, so a kind declared `interactive: false` is
+   * refused at any route that did not ask for it by name — while an undeclared
+   * kind (including `null`) is admitted, preserving pre-`credentialKinds`
+   * behaviour.
+   */
+  #kindAdmitted(kind: string | null, allowed: (string | null)[] | null): boolean {
+    return allowed === null ? kindPolicy(this.config, kind).interactive : allowed.includes(kind);
+  }
+
+  /**
+   * The store, proved to implement {@link LocalWebAuthnDpopStore}.
+   *
+   * DPoP persistence is a separate contract because it serves an optional
+   * feature, so the check is here, at the point of use, rather than in the
+   * `store` type. A host that never issues API credentials writes none of these
+   * methods; one that does and forgot gets told which are missing.
+   */
+  #dpopStore(): LocalWebAuthnDpopStore {
+    const store = this.#store as Partial<LocalWebAuthnDpopStore>;
+    const missing = (['claimDpopProof', 'claimDpopNonce', 'dpopNonces'] as const).filter(
+      (method) => typeof store[method] !== 'function',
+    );
+    if (missing.length > 0) {
+      throw new LocalWebAuthnError(
+        'invalid_configuration',
+        `DPoP needs a store implementing LocalWebAuthnDpopStore; missing ${missing.join(', ')}.`,
+        500,
+      );
+    }
+    return store as LocalWebAuthnDpopStore;
+  }
+
+  /** `floor(now / rotationMs)` — the same value on every server, from the clock alone. */
+  #dpopSlot(now: number, rotationMs: number): number {
+    return Math.floor(now / rotationMs);
+  }
+
+  /**
+   * The current nonce, for a `DPoP-Nonce` response header.
+   *
+   * Returns `null` when nonce issuance is not configured, so a host can attach the
+   * header unconditionally and have it simply not appear.
+   *
+   * Every server in a deployment derives the same slot from its clock and claims
+   * it through the store; whichever inserts first decides the value and the rest
+   * read it back. No shared secret and no rotation coordination.
+   */
+  async dpopNonce(): Promise<string | null> {
+    if (!this.config.dpopNonce) {
+      return null;
+    }
+    const { rotationMs } = this.config.dpopNonce;
+    const now = this.#now();
+    const slot = this.#dpopSlot(now, rotationMs);
+    return this.#dpopStore().claimDpopNonce(
+      slot,
+      createOpaqueToken(this.#randomBytes),
+      // Outlive the previous-slot grace window before becoming reapable.
+      (slot + 3) * rotationMs,
+    );
+  }
+
+  /** Current and previous slot, so a rotation mid-flight does not reject a fresh proof. */
+  async #acceptableDpopNonces(now: number): Promise<string[]> {
+    if (!this.config.dpopNonce) {
+      return [];
+    }
+    const { rotationMs } = this.config.dpopNonce;
+    const slot = this.#dpopSlot(now, rotationMs);
+    // Claim the current slot first: a client cannot present a nonce for a slot no
+    // server has issued yet, and this makes the current one exist even if the
+    // deployment has served nothing since the slot turned over.
+    const store = this.#dpopStore();
+    await store.claimDpopNonce(slot, createOpaqueToken(this.#randomBytes), (slot + 3) * rotationMs);
+    return store.dpopNonces(slot, slot - 1);
+  }
+
+  /**
+   * Verify a DPoP proof (RFC 9449) for a request on an already-resolved session.
+   *
+   * **Prefer {@link authenticateMachineRequest} for a machine route.** This is
+   * the lower-level primitive: it trusts the caller to have resolved `session`
+   * from `sessionToken` and to touch the session only after this succeeds. Pair a
+   * token with the wrong session, or resolve-with-touch before calling this, and
+   * the sender-constraint guarantee is lost. `authenticateMachineRequest` removes
+   * both footguns by taking only the token.
+   *
+   * Derives the expected key thumbprint from the session's credential, so there
+   * is no per-session key material to store, then claims the proof's `jti`
+   * through the store so a captured proof cannot be replayed inside its `iat`
+   * window.
+   *
+   * Throws `invalid_dpop_proof` (401) on any failure. The `reason` is attached to
+   * the message for logs; do not surface it to callers, since it distinguishes
+   * "wrong key" from "replayed".
+   */
+  async verifyDpop(input: {
+    proof: string | undefined;
+    method: string;
+    url: string;
+    sessionToken: string;
+    session: SessionIdentity;
+    /**
+     * Demand a server-issued nonce (RFC 9449 section 8). Requires `dpopNonce` in
+     * configuration; throws `dpop_nonce_required` when the proof carries none or
+     * carries one the server no longer recognises.
+     */
+    requireNonce?: boolean;
+  }): Promise<void> {
+    if (!input.proof) {
+      throw new LocalWebAuthnError('invalid_dpop_proof', 'A DPoP proof is required.', 401);
+    }
+    // Before any verification work, so a store missing the DPoP contract is
+    // reported as the configuration error it is, whether or not the proof is good.
+    const dpopStore = this.#dpopStore();
+    if (input.requireNonce && !this.config.dpopNonce) {
+      throw new LocalWebAuthnError(
+        'invalid_configuration',
+        'requireNonce needs dpopNonce configuration; otherwise no nonce is ever issued.',
+        500,
+      );
+    }
+    const credential = await this.#store.getCredential(input.session.credentialId);
+    if (!credential || credential.revokedAt !== null) {
+      throw new LocalWebAuthnError('invalid_dpop_proof', 'The credential is unavailable.', 401);
+    }
+
+    const now = this.#now();
+    const verification = await verifyDpopProof({
+      proof: input.proof,
+      method: input.method,
+      url: input.url,
+      accessToken: input.sessionToken,
+      publicKeyCose: credential.publicKey,
+      nonces: input.requireNonce ? await this.#acceptableDpopNonces(now) : undefined,
+      now,
+    });
+    if (!verification.valid) {
+      // A nonce problem gets its own code so the host knows to answer with a
+      // `use_dpop_nonce` challenge and a fresh header, rather than a flat refusal.
+      throw new LocalWebAuthnError(
+        verification.reason === 'use_dpop_nonce' ? 'dpop_nonce_required' : 'invalid_dpop_proof',
+        `The DPoP proof is not valid (${verification.reason}).`,
+        401,
+      );
+    }
+    if (!(await dpopStore.claimDpopProof(verification.jtiHash, verification.expiresAt))) {
+      throw new LocalWebAuthnError(
+        'invalid_dpop_proof',
+        'The DPoP proof is not valid (replayed).',
+        401,
+      );
+    }
+  }
+
+  /**
+   * Resolve a machine request's session **only if** its DPoP proof holds — one
+   * fail-closed operation for a sender-constrained (RFC 9449) route.
+   *
+   * This is the method a machine route should call. It closes two gaps that come
+   * from assembling {@link resolveSession} and {@link verifyDpop} by hand:
+   *
+   * - **The session is derived from the token, never supplied alongside it.** A
+   *   caller cannot pair a token for one session with the resolved identity of
+   *   another, because there is only one input.
+   * - **Idle activity is touched only after the proof succeeds.** Resolving first
+   *   with `touch` would let a thief holding just the bearer token keep the idle
+   *   timer alive to absolute expiry without ever producing a proof. Here a
+   *   request that cannot prove possession changes no server state.
+   *
+   * A DPoP proof is always required; there is no bearer-only path through this
+   * method. Throws `unauthenticated` (401) when the token resolves to no live
+   * session, `dpop_nonce_required` (401) when a nonce is demanded and absent
+   * (answer with {@link dpopChallenge}), and `invalid_dpop_proof` (401) on any
+   * other proof failure. On success the session's `lastSeenAt` is advanced.
+   *
+   * @returns The authenticated user and session, plus the current response nonce
+   *   (`null` when nonce issuance is not configured).
+   */
+  async authenticateMachineRequest(input: {
+    sessionToken: string;
+    proof: string | undefined;
+    method: string;
+    url: string;
+    /** Demand a server-issued nonce (RFC 9449 section 8). Requires `dpopNonce`. */
+    requireNonce?: boolean;
+  }): Promise<{ user: AuthUser; session: SessionIdentity; nonce: string | null }> {
+    // No touch: a request that fails the proof below must not have refreshed the
+    // session's activity.
+    const resolved = await this.resolveSession(input.sessionToken, false);
+    if (!resolved) {
+      throw new LocalWebAuthnError('unauthenticated', 'An API session is required.', 401);
+    }
+
+    // Verifies the proof against the credential of *this* session and binds it to
+    // *this* token; a mismatch is impossible because both come from one input.
+    await this.verifyDpop({
+      proof: input.proof,
+      method: input.method,
+      url: input.url,
+      sessionToken: input.sessionToken,
+      session: resolved.session,
+      requireNonce: input.requireNonce,
+    });
+
+    // Proof held: now, and only now, keep the session alive.
+    const now = this.#now();
+    if (!(await this.#store.touchSession(await sha256(input.sessionToken), now))) {
+      // A concurrent revoke landed between resolution and this update.
+      throw new LocalWebAuthnError('unauthenticated', 'An API session is required.', 401);
+    }
+
+    return {
+      user: resolved.user,
+      session: { ...resolved.session, lastSeenAt: now },
+      nonce: await this.dpopNonce(),
+    };
+  }
+
   async #verifyRegistrationAuthorization(
     challenge: {
       grantId: string | null;
@@ -777,6 +1408,11 @@ export class LocalWebAuthn {
   ): Promise<{
     enrollmentSessionHash: Uint8Array | null;
     authenticatedSessionHash: Uint8Array | null;
+    /** Non-null on the grant path; the credential's recorded heritage. */
+    grantId: string | null;
+    approvedByUserId: string | null;
+    /** Non-null on the session path; the credential that authorized this one. */
+    parentCredentialId: string | null;
   } | null> {
     if (challenge.grantId && input.enrollmentSessionToken) {
       const enrollmentSessionHash = await sha256(input.enrollmentSessionToken);
@@ -785,7 +1421,13 @@ export class LocalWebAuthn {
         this.#now(),
       );
       return enrollment?.grantId === challenge.grantId
-        ? { enrollmentSessionHash, authenticatedSessionHash: null }
+        ? {
+            enrollmentSessionHash,
+            authenticatedSessionHash: null,
+            grantId: enrollment.grantId,
+            approvedByUserId: enrollment.approvedByUserId,
+            parentCredentialId: null,
+          }
         : null;
     }
 
@@ -795,7 +1437,18 @@ export class LocalWebAuthn {
         return null;
       }
       const session = await this.resolveSession(input.sessionToken, false);
-      return session ? { enrollmentSessionHash: null, authenticatedSessionHash } : null;
+      return session
+        ? {
+            enrollmentSessionHash: null,
+            authenticatedSessionHash,
+            grantId: null,
+            approvedByUserId: null,
+            // Re-read here rather than carried from `registrationOptions`: this is
+            // the session that still holds at commit time, which is the one that
+            // actually authorized the credential.
+            parentCredentialId: session.session.credentialId,
+          }
+        : null;
     }
     return null;
   }
@@ -812,10 +1465,17 @@ export class LocalWebAuthn {
   #credentialLabel(
     requestedLabel: string | undefined,
     deviceType: 'singleDevice' | 'multiDevice',
+    kind: string | null,
   ): string {
     const label = requestedLabel?.trim();
     if (label) {
       return label.slice(0, 80);
+    }
+    // "Device passkey" on a machine credential is the mislabelling this whole
+    // feature exists to prevent, so a kinded credential falls back to its kind
+    // rather than to device wording it cannot honestly claim.
+    if (kind !== null) {
+      return kind.slice(0, 80);
     }
     return deviceType === 'multiDevice' ? 'Synced passkey' : 'Device passkey';
   }

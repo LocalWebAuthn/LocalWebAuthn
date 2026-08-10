@@ -1,13 +1,12 @@
 {
   "name": "@localwebauthn/server",
-  "version": "2.2.0",
+  "version": "3.0.0",
   "description": "Self-hosted, invitation-first passkey authentication lifecycle",
   "type": "module",
   "license": "MIT",
   "sideEffects": false,
   "files": [
     "dist",
-    "migrations",
     "README.md",
     "LICENSE"
   ],

@@ -8,8 +8,17 @@ import { afterAll, describe, expect, it } from 'vitest';
 import type {
   ChallengeRecord,
   CompleteRegistrationInput,
+  LocalWebAuthnDpopStore,
   LocalWebAuthnStore,
 } from '../../packages/server/src/index.js';
+
+/**
+ * Every official adapter implements both contracts, so conformance tests the
+ * intersection. A custom store may implement only {@link LocalWebAuthnStore}; the
+ * service then refuses DPoP with `invalid_configuration` rather than failing to
+ * typecheck.
+ */
+type ConformingStore = LocalWebAuthnStore & LocalWebAuthnDpopStore;
 import {
   type D1DatabaseLike,
   D1LocalWebAuthnStore,
@@ -23,7 +32,7 @@ import {
 import { migrateSqlite, SqliteLocalWebAuthnStore } from '../../packages/server/src/sqlite.js';
 
 type StoreFixture = {
-  store: LocalWebAuthnStore;
+  store: ConformingStore;
   close(): Promise<void>;
 };
 
@@ -43,6 +52,11 @@ function credential(id: string, userId = 'user-1') {
     deviceType: 'multiDevice' as const,
     backedUp: true,
     label: 'Primary passkey',
+    kind: null,
+    createdVia: 'enrollment' as const,
+    parentCredentialId: null,
+    grantId: 'grant-1',
+    approvedByUserId: 'admin-1',
     createdAt: now,
   };
 }
@@ -55,6 +69,9 @@ function enrollmentChallenge(grantId: string): ChallengeRecord {
     userId: 'user-1',
     grantId,
     authorizationSessionHash: null,
+    credentialKind: null,
+    allowedCredentialKinds: null,
+    registrationGeneration: 0,
     expiresAt: now + 1_000,
     createdAt: now,
   };
@@ -72,6 +89,7 @@ async function exchangedGrant(
     tokenHash: bytes(tokenByte),
     expiresAt: now + 10_000,
     approvedByUserId: 'admin-1',
+    credentialKind: null,
     createdAt: now,
   });
   return store.exchangeEnrollment(bytes(tokenByte), bytes(sessionByte), now + 5_000, now);
@@ -85,6 +103,9 @@ function registrationInput(grantId: string): CompleteRegistrationInput {
       userId: 'user-1',
       grantId,
       authorizationSessionHash: null,
+      credentialKind: null,
+      allowedCredentialKinds: null,
+      registrationGeneration: 0,
     },
     enrollmentSessionHash: bytes(2),
     authenticatedSessionHash: null,
@@ -166,7 +187,8 @@ async function postgresFixture(): Promise<StoreFixture> {
     localwebauthn_sessions,
     localwebauthn_credentials,
     localwebauthn_challenges,
-    localwebauthn_enrollment_grants
+    localwebauthn_enrollment_grants,
+    localwebauthn_registration_fences
     RESTART IDENTITY CASCADE`);
   return {
     store: new PostgresLocalWebAuthnStore(pool as unknown as PostgresPool),
@@ -187,6 +209,167 @@ function storeConformance(
 ) {
   const suite = options.skip ? describe.skip : describe;
   suite(`${name} store`, () => {
+    it('fences a registration whose generation the store has moved on from', async () => {
+      // The registration fence, which every adapter must enforce inside the same
+      // transaction that commits the credential. Registration spans two requests
+      // with a passkey ceremony in between, so the authorization checked when the
+      // challenge was issued cannot be re-checked in one transaction — the
+      // generation stamped on the challenge is the optimistic-concurrency version
+      // that stands in for it.
+      const fixture = await createFixture();
+      try {
+        // A fresh user starts at generation 0 and the read is idempotent.
+        expect(await fixture.store.registrationGeneration('user-1', now)).toBe(0);
+        expect(await fixture.store.registrationGeneration('user-1', now)).toBe(0);
+
+        // Bumping is strictly monotonic: two bumps never yield the same value.
+        const first = await fixture.store.bumpRegistrationGeneration('user-1', now);
+        const second = await fixture.store.bumpRegistrationGeneration('user-1', now);
+        expect(first).toBe(1);
+        expect(second).toBe(2);
+        expect(await fixture.store.registrationGeneration('user-1', now)).toBe(2);
+
+        // A registration carrying a stale generation must not commit, even though
+        // its grant and enrollment session are still perfectly valid.
+        await exchangedGrant(fixture.store);
+        const stale = registrationInput('grant-1');
+        stale.challenge = { ...stale.challenge, registrationGeneration: 1 };
+        expect(await fixture.store.completeRegistration(stale)).toBe(false);
+        await expect(fixture.store.listCredentials('user-1')).resolves.toEqual([]);
+
+        // The same registration at the current generation commits.
+        const current = registrationInput('grant-1');
+        current.challenge = { ...current.challenge, registrationGeneration: 2 };
+        expect(await fixture.store.completeRegistration(current)).toBe(true);
+        await expect(fixture.store.listCredentials('user-1')).resolves.toHaveLength(1);
+      } finally {
+        await fixture.close();
+      }
+    });
+
+    it('walks credential heritage in both directions', async () => {
+      const fixture = await createFixture();
+      try {
+        // root <- child <- grandchild, plus a sibling of child under root.
+        await exchangedGrant(fixture.store);
+        await fixture.store.completeRegistration(registrationInput('grant-1'));
+        const link = async (id: string, parent: string, byte: number) => {
+          await fixture.store.completeRegistration({
+            ...registrationInput('grant-1'),
+            challenge: {
+              kind: 'registration',
+              challenge: 'registration-challenge',
+              userId: 'user-1',
+              grantId: null,
+              authorizationSessionHash: bytes(4),
+              credentialKind: null,
+              allowedCredentialKinds: null,
+              registrationGeneration: 0,
+            },
+            enrollmentSessionHash: null,
+            authenticatedSessionHash: bytes(4),
+            credential: {
+              ...credential(id),
+              createdVia: 'credential' as const,
+              parentCredentialId: parent,
+              grantId: null,
+              approvedByUserId: null,
+            },
+            session: {
+              idHash: bytes(byte),
+              userId: 'user-1',
+              credentialId: id,
+              authenticatedAt: now,
+              expiresAt: now + 10_000,
+              lastSeenAt: now,
+            },
+          });
+        };
+        await link('credential-2', 'credential-1', 20);
+        await link('credential-3', 'credential-2', 21);
+        await link('credential-sibling', 'credential-1', 22);
+
+        // Ancestry is root first, so the enrollment-derived credential leads.
+        const ancestry = await fixture.store.credentialAncestry('user-1', 'credential-3');
+        expect(ancestry.map((entry) => entry.id)).toEqual([
+          'credential-1',
+          'credential-2',
+          'credential-3',
+        ]);
+        expect(ancestry[0]).toMatchObject({ createdVia: 'enrollment', grantId: 'grant-1' });
+
+        // Descendants include the subject at index 0 and exclude the sibling.
+        const subtree = await fixture.store.credentialDescendants('user-1', 'credential-2');
+        expect(subtree.map((entry) => entry.id)).toEqual(['credential-2', 'credential-3']);
+
+        const whole = await fixture.store.credentialDescendants('user-1', 'credential-1');
+        expect(whole.map((entry) => entry.id).sort()).toEqual([
+          'credential-1',
+          'credential-2',
+          'credential-3',
+          'credential-sibling',
+        ]);
+
+        // Scoped by user, and quiet about credentials that do not exist.
+        await expect(fixture.store.credentialAncestry('other', 'credential-3')).resolves.toEqual(
+          [],
+        );
+        await expect(fixture.store.credentialDescendants('user-1', 'nope')).resolves.toEqual([]);
+      } finally {
+        await fixture.close();
+      }
+    });
+
+    it('converges on one DPoP nonce per slot', async () => {
+      const fixture = await createFixture();
+      try {
+        // Two servers derive the same slot from their clocks and each offer their
+        // own candidate. Whichever insert wins, both must read back the same
+        // value — otherwise a client's nonce would be rejected by whichever
+        // server it did not talk to first, which is the whole reason this lives
+        // in the database rather than in memory.
+        const [first, second] = await Promise.all([
+          fixture.store.claimDpopNonce(1000, 'from-server-a', now + 60_000),
+          fixture.store.claimDpopNonce(1000, 'from-server-b', now + 60_000),
+        ]);
+        expect(first).toBe(second);
+        expect(['from-server-a', 'from-server-b']).toContain(first);
+
+        // A later read is stable, and a different slot is a different nonce.
+        await expect(
+          fixture.store.claimDpopNonce(1000, 'from-server-c', now + 60_000),
+        ).resolves.toBe(first);
+        const next = await fixture.store.claimDpopNonce(1001, 'next-slot', now + 60_000);
+        expect(next).toBe('next-slot');
+
+        // Current plus previous slot are both accepted, so a rotation landing
+        // mid-flight does not reject a proof built moments earlier.
+        const accepted = await fixture.store.dpopNonces(1001, 1000);
+        expect([...accepted].sort()).toEqual([first, next].sort());
+
+        // An unclaimed slot contributes nothing rather than erroring.
+        await expect(fixture.store.dpopNonces(9999, 9998)).resolves.toEqual([]);
+      } finally {
+        await fixture.close();
+      }
+    });
+
+    it('reaps expired DPoP nonces and proofs', async () => {
+      const fixture = await createFixture();
+      try {
+        await fixture.store.claimDpopNonce(1, 'stale', now - 1);
+        await fixture.store.claimDpopNonce(2, 'live', now + 60_000);
+        expect(await fixture.store.claimDpopProof(bytes(30), now - 1)).toBe(true);
+
+        const result = await fixture.store.cleanup(now);
+        expect(result.dpopNonces).toBe(1);
+        expect(result.dpopProofs).toBe(1);
+        await expect(fixture.store.dpopNonces(2, 1)).resolves.toEqual(['live']);
+      } finally {
+        await fixture.close();
+      }
+    });
+
     it('exchanges enrollment grants exactly once', async () => {
       const fixture = await createFixture();
       try {
@@ -284,6 +467,7 @@ function storeConformance(
           tokenHash: bytes(7),
           expiresAt: now + 20_000,
           approvedByUserId: 'admin-1',
+          credentialKind: null,
           createdAt: now + 1,
         });
 

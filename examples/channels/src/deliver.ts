@@ -31,7 +31,7 @@ export type EnrollmentDelivery = {
 type IssuesEnrollment = {
   issueEnrollment(
     userId: string,
-    approvedByUserId?: string,
+    options?: { approvedByUserId?: string },
   ): Promise<{ enrollmentUrl: string; expiresAt: number; supersededGrantIds: string[] }>;
 };
 
@@ -58,7 +58,9 @@ export async function inviteAndDeliver(
   if (!input.to.email && !input.to.phone) {
     throw new TypeError('At least one delivery channel (email or phone) is required.');
   }
-  const issue = await auth.issueEnrollment(input.userId, input.approvedByUserId);
+  const issue = await auth.issueEnrollment(input.userId, {
+    approvedByUserId: input.approvedByUserId,
+  });
   const results = await delivery.enrollment(input.to, {
     url: issue.enrollmentUrl,
     expiresAt: issue.expiresAt,

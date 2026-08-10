@@ -120,7 +120,9 @@ LocalWebAuthn does not provide:
 - Cookie or CSRF policy for a particular HTTP framework.
 - Automated rate limiting.
 - Device attestation policy.
-- Machine-to-machine authentication.
+- Business authorization for machine clients. The package records a credential's
+  _kind_ and reports it on every session and event; what a given kind may do stays
+  with the host.
 
 These policies vary materially between applications. Keeping them outside the package makes
 the security boundary smaller and easier to review.

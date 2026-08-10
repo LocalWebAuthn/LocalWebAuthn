@@ -5,18 +5,36 @@ import {
   credentialFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-JJPVA6J5.js";
+} from "./chunk-IBOQAKS5.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
-  localWebAuthnSchemaStatements
-} from "./chunk-6NWV3XTI.js";
+  localWebAuthnMigrationsTableStatement,
+  localWebAuthnUpgradeStatements
+} from "./chunk-U6SG3F4P.js";
 
 // src/d1.ts
 async function migrateD1(database, now = Date.now()) {
-  await database.batch([
-    ...localWebAuthnSchemaStatements().map((statement) => database.prepare(statement)),
-    database.prepare(SQL.insertMigration).bind(LOCALWEBAUTHN_SCHEMA_VERSION, now)
-  ]);
+  await database.prepare(localWebAuthnMigrationsTableStatement()).run();
+  const from = await installedD1Version(database);
+  const upgrade = localWebAuthnUpgradeStatements(from, "sqlite");
+  if (upgrade.length === 0) {
+    return;
+  }
+  try {
+    await database.batch([
+      ...upgrade.map((statement) => database.prepare(statement)),
+      database.prepare(SQL.insertMigration).bind(LOCALWEBAUTHN_SCHEMA_VERSION, now)
+    ]);
+  } catch (error) {
+    if (await installedD1Version(database) >= LOCALWEBAUTHN_SCHEMA_VERSION) {
+      return;
+    }
+    throw error;
+  }
+}
+async function installedD1Version(database) {
+  const row = await database.prepare(SQL.selectSchemaVersion).first();
+  return row?.version ?? 0;
 }
 function guardTripped(error) {
   if (String(error).includes("CHECK constraint failed")) {
@@ -37,16 +55,21 @@ var D1LocalWebAuthnStore = class {
     this.#database = database;
   }
   async replaceEnrollmentGrant(record) {
-    const revoked = await this.#database.prepare(SQL.revokePendingGrants).bind(record.createdAt, record.userId).run();
+    const revoked = await this.#database.prepare(SQL.revokePendingGrants).bind(record.createdAt, record.userId, record.credentialKind).run();
     await this.#database.prepare(SQL.insertEnrollmentGrant).bind(
       record.id,
       record.userId,
       record.tokenHash,
       record.expiresAt,
       record.approvedByUserId,
+      record.credentialKind,
       record.createdAt
     ).run();
     return revoked.results.map((row) => row.id);
+  }
+  async revokePendingEnrollmentGrants(userId, now, credentialKind) {
+    const result = await this.#database.prepare(SQL.revokePendingGrants).bind(now, userId, credentialKind).all();
+    return result.results.map((row) => row.id);
   }
   async exchangeEnrollment(tokenHash, sessionHash, sessionExpiresAt, now) {
     const row = await returningRow(
@@ -66,6 +89,9 @@ var D1LocalWebAuthnStore = class {
       record.userId,
       record.grantId,
       record.authorizationSessionHash,
+      record.credentialKind,
+      record.allowedCredentialKinds === null ? null : JSON.stringify(record.allowedCredentialKinds),
+      record.registrationGeneration,
       record.expiresAt,
       record.createdAt
     ).run();
@@ -84,6 +110,14 @@ var D1LocalWebAuthnStore = class {
   async getCredential(credentialId) {
     const row = await this.#database.prepare(SQL.selectCredentialById).bind(credentialId).first();
     return row ? credentialFromRow(row) : null;
+  }
+  async credentialAncestry(userId, credentialId) {
+    const result = await this.#database.prepare(SQL.selectCredentialAncestry).bind(credentialId, userId).all();
+    return result.results.map(credentialFromRow);
+  }
+  async credentialDescendants(userId, credentialId) {
+    const result = await this.#database.prepare(SQL.selectCredentialDescendants).bind(credentialId, userId).all();
+    return result.results.map(credentialFromRow);
   }
   async completeRegistration(input) {
     const { credential, challenge, enrollmentSessionHash, authenticatedSessionHash, session, now } = input;
@@ -107,7 +141,11 @@ var D1LocalWebAuthnStore = class {
     } else {
       return false;
     }
-    const statements = [credentialInsert, this.#guard()];
+    const statements = challenge.registrationGeneration === null ? [credentialInsert, this.#guard()] : [
+      this.#database.prepare(D1_SQL.guardRegistrationFence).bind(credential.userId, challenge.registrationGeneration),
+      credentialInsert,
+      this.#guard()
+    ];
     if (grantId) {
       statements.push(
         this.#database.prepare(SQL.completeEnrollmentGrant).bind(now, grantId, enrollmentSessionHash, now),
@@ -194,15 +232,45 @@ var D1LocalWebAuthnStore = class {
     const results = await this.#database.batch([
       this.#database.prepare(SQL.deleteExpiredSessions).bind(now),
       this.#database.prepare(SQL.deleteFinishedGrants).bind(now),
-      this.#database.prepare(SQL.deleteFinishedChallenges).bind(now)
+      this.#database.prepare(SQL.deleteFinishedChallenges).bind(now),
+      this.#database.prepare(SQL.deleteExpiredDpopProofs).bind(now),
+      this.#database.prepare(SQL.deleteExpiredDpopNonces).bind(now)
     ]);
     return {
       sessions: changes(results[0]),
       enrollmentGrants: changes(results[1]),
-      challenges: changes(results[2])
+      challenges: changes(results[2]),
+      dpopProofs: changes(results[3]),
+      dpopNonces: changes(results[4])
     };
   }
-  /** The nine `localwebauthn_credentials` column values, in schema order. */
+  async registrationGeneration(userId, now) {
+    await this.#database.prepare(SQL.ensureRegistrationFence).bind(userId, now).run();
+    const row = await this.#database.prepare(SQL.selectRegistrationFence).bind(userId).first();
+    return row?.generation ?? 0;
+  }
+  async bumpRegistrationGeneration(userId, now) {
+    const row = await this.#database.prepare(SQL.bumpRegistrationFence).bind(userId, now).first();
+    return row?.generation ?? 0;
+  }
+  async claimDpopProof(jtiHash, expiresAt) {
+    const result = await this.#database.prepare(SQL.claimDpopProof).bind(jtiHash, expiresAt).run();
+    return changes(result) === 1;
+  }
+  async revokeLiveCredentialSessions(credentialId, now, idleExpiresBefore, exceptSessionHash) {
+    const statement = exceptSessionHash ? this.#database.prepare(SQL.revokeLiveCredentialSessionsExcept).bind(now, credentialId, now, idleExpiresBefore, exceptSessionHash) : this.#database.prepare(SQL.revokeLiveCredentialSessions).bind(now, credentialId, now, idleExpiresBefore);
+    return changes(await statement.run());
+  }
+  async claimDpopNonce(slot, candidate, expiresAt) {
+    await this.#database.prepare(SQL.insertDpopNonce).bind(slot, candidate, expiresAt).run();
+    const row = await this.#database.prepare(SQL.selectDpopNonce).bind(slot).first();
+    return row?.nonce ?? candidate;
+  }
+  async dpopNonces(currentSlot, previousSlot) {
+    const result = await this.#database.prepare(SQL.selectDpopNonces).bind(currentSlot, previousSlot).all();
+    return result.results.map((row) => row.nonce);
+  }
+  /** The ten `localwebauthn_credentials` column values, in schema order. */
   #credentialValues(credential) {
     return [
       credential.id,
@@ -213,6 +281,11 @@ var D1LocalWebAuthnStore = class {
       credential.deviceType,
       credential.backedUp ? 1 : 0,
       credential.label,
+      credential.kind,
+      credential.createdVia,
+      credential.parentCredentialId,
+      credential.grantId,
+      credential.approvedByUserId,
       credential.createdAt
     ];
   }

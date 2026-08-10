@@ -4,10 +4,12 @@ import {
   authCookieNames,
   cookieAttributes,
   describeSignupPhase,
+  dpopChallenge,
   isExactOrigin,
   isHttpsPublicOrigin,
   nextSignupStep,
   parseCookieHeader,
+  provisioningPageHeaders,
   SELF_SERVE_SIGNUP_STEPS,
   serializeClearedCookie,
   serializeCookie,
@@ -76,6 +78,52 @@ describe('HTTP cookie and origin helpers', () => {
     expect(() => serializeCookie('name', 'semi;colon', attributes)).toThrow(TypeError);
     expect(() => serializeCookie('name', 'new\nline', attributes)).toThrow(TypeError);
     expect(serializeCookie('name', 'tokenb32value', attributes)).toContain('name=tokenb32value');
+  });
+
+  it('hardens a page that displays credential material once', () => {
+    const headers = provisioningPageHeaders();
+    const csp = headers['Content-Security-Policy'];
+
+    // The one that matters: no inline script, so an injected tag cannot read the
+    // key out of the DOM. Everything else is depth.
+    expect(csp).toContain("default-src 'self'");
+    expect(csp).toContain("script-src 'self'");
+    expect(csp).not.toContain('unsafe-inline');
+    expect(csp).not.toContain('unsafe-eval');
+    // Not framable, no plugins, no form posts anywhere, no base-tag rewriting.
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("object-src 'none'");
+    expect(csp).toContain("base-uri 'none'");
+    expect(csp).toContain("form-action 'none'");
+
+    // A secret must not sit in a cache or come back with the back button.
+    expect(headers['Cache-Control']).toContain('no-store');
+    expect(headers['Referrer-Policy']).toBe('no-referrer');
+    expect(headers['X-Frame-Options']).toBe('DENY');
+    expect(headers['Cross-Origin-Opener-Policy']).toBe('same-origin');
+  });
+
+  it('allows a script nonce and extra connect origins when a page needs them', () => {
+    const withNonce = provisioningPageHeaders({
+      scriptNonce: 'r4nd0m',
+      connectSrc: ['https://api.example.com'],
+    });
+    const csp = withNonce['Content-Security-Policy'];
+    expect(csp).toContain("script-src 'self' 'nonce-r4nd0m'");
+    expect(csp).toContain("connect-src 'self' https://api.example.com");
+    // A nonce permits *that* script, never inline script generally.
+    expect(csp).not.toContain('unsafe-inline');
+  });
+
+  it('builds the RFC 9449 nonce challenge headers', () => {
+    expect(dpopChallenge('nonce-1')).toEqual({
+      'WWW-Authenticate': 'DPoP error="use_dpop_nonce"',
+      'DPoP-Nonce': 'nonce-1',
+    });
+    // No nonce configured: still challenge, so the client is told why it failed
+    // rather than being handed a header with an empty value.
+    expect(dpopChallenge(null)).toEqual({ 'WWW-Authenticate': 'DPoP error="use_dpop_nonce"' });
+    expect(dpopChallenge()).not.toHaveProperty('DPoP-Nonce');
   });
 
   it('parses and serializes cookies for plain Node adapters', () => {

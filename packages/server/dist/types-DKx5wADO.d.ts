@@ -64,6 +64,59 @@ type Credential = {
     backedUp: boolean;
     /** Human-readable label assigned during registration. */
     label: string;
+    /**
+     * Host-defined credential class, fixed at registration and immutable after.
+     *
+     * Opaque to this package: it takes no position on what a host's categories
+     * are. `null` means unclassified, which is every credential registered before
+     * the host started setting one.
+     *
+     * The point of the column is that it is the *only* fact about a credential's
+     * class that survives a hostile key holder. `userVerified`, `origin`,
+     * `deviceType` and the counter are all asserted by whatever produced the
+     * assertion; a software client can claim any of them. This is a server row.
+     *
+     * See `credentialKinds` in {@link LocalWebAuthnOptions} for the policy that
+     * hangs off it.
+     */
+    kind: string | null;
+    /**
+     * How this credential came to exist: from an enrollment grant, or authorized by
+     * an existing credential's session.
+     *
+     * `null` for credentials registered before heritage was recorded — honestly
+     * "unknown" rather than guessed, since the rows that carried the answer were
+     * ephemeral and are long gone.
+     */
+    createdVia: CredentialProvenance | null;
+    /**
+     * The credential whose session authorized this one, when `createdVia` is
+     * `'credential'`.
+     *
+     * A real foreign key, which is only safe because credentials are never deleted —
+     * cleanup does not touch them and revocation only stamps `revokedAt` — so a
+     * heritage chain never breaks.
+     *
+     * This is what makes a compromise remediable. A stolen session can enroll another
+     * passkey (that is the intended "add a passkey" feature for a person), and
+     * without a parent link the new credential is indistinguishable from a legitimate
+     * one after the fact. See {@link LocalWebAuthn.revokeCredentialTree}.
+     */
+    parentCredentialId: string | null;
+    /**
+     * The enrollment grant that authorized this credential, when `createdVia` is
+     * `'enrollment'`.
+     *
+     * Deliberately *not* a foreign key: grants are reaped by `cleanup`, so this is a
+     * copied fact about the past rather than a live reference.
+     */
+    grantId: string | null;
+    /**
+     * Who approved the enrollment, copied off the grant so it outlives the grant
+     * row. `null` on the credential path, where nobody approved anything — an
+     * existing credential authorized itself a sibling.
+     */
+    approvedByUserId: string | null;
     /** Unix-millisecond timestamp of registration. */
     createdAt: number;
     /** Unix-millisecond timestamp of last authentication, or `null`. */
@@ -87,6 +140,19 @@ type SessionIdentity = {
     expiresAt: number;
     /** Last activity timestamp; updated on each {@link LocalWebAuthn.resolveSession} touch. */
     lastSeenAt: number;
+    /**
+     * {@link Credential.kind} of the credential that opened this session.
+     *
+     * Reported here so authorization can depend on it at the moment a session is
+     * resolved, without a second lookup. A host that supports machine credentials
+     * must consult this on every privileged route — a session opened by a service
+     * credential is otherwise indistinguishable from a person's.
+     *
+     * Note that a freshness check alone is not a human-presence check: a service
+     * credential can produce a fresh assertion at will, so a step-up gate must
+     * test this field *and* {@link SessionIdentity.authenticatedAt}.
+     */
+    credentialKind: string | null;
 };
 type EnrollmentGrantRecord = {
     id: string;
@@ -94,6 +160,16 @@ type EnrollmentGrantRecord = {
     tokenHash: Uint8Array;
     expiresAt: number;
     approvedByUserId: string | null;
+    /**
+     * {@link Credential.kind} this grant is authorized to create.
+     *
+     * Written by whoever issued the grant, and binding: the registration it
+     * authorizes produces exactly this kind, whatever route the token holder
+     * presents it at. Without it the class is chosen by the route, so a token
+     * intended for a script could be redeemed at the human registration route for
+     * an unrestricted credential — which is the whole point of the column.
+     */
+    credentialKind: string | null;
     createdAt: number;
 };
 type EnrollmentSession = {
@@ -101,8 +177,21 @@ type EnrollmentSession = {
     userId: string;
     sessionHash: Uint8Array;
     sessionExpiresAt: number;
+    /** From the grant; see {@link EnrollmentGrantRecord.credentialKind}. */
+    credentialKind: string | null;
+    /** From the grant, copied onto the credential so it outlives the grant row. */
+    approvedByUserId: string | null;
 };
 type ChallengeKind = 'registration' | 'authentication';
+/**
+ * How a credential was authorized into existence.
+ *
+ * - `'enrollment'` — a single-use enrollment grant, i.e. somebody with authority
+ *   issued a token out of band.
+ * - `'credential'` — an existing credential's live session, i.e. "add another
+ *   passkey while signed in".
+ */
+type CredentialProvenance = 'enrollment' | 'credential';
 type ChallengeRecord = {
     idHash: Uint8Array;
     kind: ChallengeKind;
@@ -110,6 +199,35 @@ type ChallengeRecord = {
     userId: string | null;
     grantId: string | null;
     authorizationSessionHash: Uint8Array | null;
+    /**
+     * Registration challenges only: the {@link Credential.kind} the resulting
+     * credential will be given.
+     *
+     * Written when the options are generated — before the client has seen the
+     * challenge — and read back at verification. `verifyRegistration` accepts no
+     * kind input of its own, so a client cannot influence its own classification
+     * no matter what it puts in the request body.
+     */
+    credentialKind: string | null;
+    /**
+     * Authentication challenges only: which {@link Credential.kind} values this
+     * ceremony will accept. `null` is unconstrained.
+     *
+     * This is how a machine-only or browser-only endpoint is enforced centrally
+     * rather than in each host route. `null` is a legal member, matching
+     * unclassified credentials.
+     */
+    allowedCredentialKinds: (string | null)[] | null;
+    /**
+     * Registration challenges only: the user's registration generation when this
+     * challenge was issued. `null` on authentication challenges.
+     *
+     * The credential insert refuses to commit when the stored generation no longer
+     * matches, which is what lets a revocation cancel registrations that are already
+     * in flight — the authorization was checked one request ago, and a passkey
+     * ceremony sits in between, so it cannot be checked in the same transaction.
+     */
+    registrationGeneration: number | null;
     expiresAt: number;
     createdAt: number;
 };
@@ -149,6 +267,14 @@ type CleanupResult = {
     enrollmentGrants: number;
     challenges: number;
     sessions: number;
+    /**
+     * Expired DPoP proof-replay entries (see
+     * {@link LocalWebAuthnDpopStore.claimDpopProof}). A store that does not
+     * implement {@link LocalWebAuthnDpopStore} has no such rows and reports `0`.
+     */
+    dpopProofs: number;
+    /** Expired DPoP nonce slots; `0` for a store without DPoP support. */
+    dpopNonces: number;
 };
 /** Outcome of {@link LocalWebAuthnStore.revokeCredential}. */
 type RevokeCredentialResult = 'revoked' | 'not_found' | 'last_credential';
@@ -184,6 +310,13 @@ type LocalWebAuthnStore = {
      */
     replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]>;
     /**
+     * Revoke every pending grant for a user, optionally only those of one kind.
+     *
+     * Pending means uncompleted and unrevoked. Returns the revoked IDs for audit.
+     * Touches neither credentials nor sessions.
+     */
+    revokePendingEnrollmentGrants(userId: string, now: number, credentialKind: string | null): Promise<string[]>;
+    /**
      * Atomically consume an enrollment token, creating an enrollment session.
      *
      * Must be single-use: the first call with a given `tokenHash` succeeds;
@@ -213,6 +346,20 @@ type LocalWebAuthnStore = {
     listCredentials(userId: string, includeRevoked?: boolean): Promise<Credential[]>;
     /** Look up a single credential by its WebAuthn credential ID. */
     getCredential(credentialId: string): Promise<Credential | null>;
+    /**
+     * A credential and its ancestors, root first.
+     *
+     * The root is the credential that came from an enrollment grant. Returns an
+     * empty array when the credential does not exist or belongs to another user.
+     */
+    credentialAncestry(userId: string, credentialId: string): Promise<Credential[]>;
+    /**
+     * A credential and everything descended from it, nearest first.
+     *
+     * Index 0 is the credential itself, so this is exactly the set
+     * {@link LocalWebAuthn.revokeCredentialTree} acts on.
+     */
+    credentialDescendants(userId: string, credentialId: string): Promise<Credential[]>;
     /**
      * Atomically insert a credential, complete its enrollment grant (if any),
      * and create the initial session.
@@ -265,6 +412,14 @@ type LocalWebAuthnStore = {
      */
     revokeUserSessions(userId: string, now: number, idleExpiresBefore: number, exceptSessionHash?: Uint8Array): Promise<number>;
     /**
+     * As {@link revokeUserSessions}, scoped to one credential.
+     *
+     * Used by the kind-filtered form of {@link LocalWebAuthn.revokeUserSessions},
+     * which loops over the matching credentials. Same liveness predicates, so the
+     * returned counts sum to the same meaning.
+     */
+    revokeLiveCredentialSessions(credentialId: string, now: number, idleExpiresBefore: number, exceptSessionHash?: Uint8Array): Promise<number>;
+    /**
      * Revoke a single credential and all its sessions.
      *
      * When `allowLastCredential` is false (the default), the store must refuse
@@ -282,12 +437,82 @@ type LocalWebAuthnStore = {
      */
     revokeUserAuthentication(userId: string, now: number): Promise<void>;
     /**
-     * Remove expired enrollment grants, finished challenges, and dead sessions.
+     * The user's current registration generation, creating their fence row at `0`
+     * if they have none.
+     *
+     * Read when a registration challenge is issued, and recorded on it. See
+     * {@link ChallengeRecord.registrationGeneration}.
+     */
+    registrationGeneration(userId: string, now: number): Promise<number>;
+    /**
+     * Advance the user's registration generation and return the new value.
+     *
+     * Every revocation path calls this. Advancing it invalidates every registration
+     * challenge already issued to that user, so a credential whose ceremony is in
+     * flight cannot commit after the revoke — the gap between authorizing a
+     * registration and committing it is a whole HTTP round trip plus a human, which
+     * no transaction can span.
+     *
+     * Must be atomic: two concurrent bumps must produce two distinct generations,
+     * never the same one.
+     */
+    bumpRegistrationGeneration(userId: string, now: number): Promise<number>;
+    /**
+     * Remove expired enrollment grants, finished challenges, dead sessions, and
+     * spent DPoP proof records.
      *
      * Call periodically (e.g. every few minutes) to reclaim storage. Does not
      * touch credentials.
      */
     cleanup(now: number): Promise<CleanupResult>;
+};
+/**
+ * Additional persistence for DPoP (RFC 9449), required only when a deployment
+ * issues API credentials.
+ *
+ * Separate from {@link LocalWebAuthnStore} on purpose. These three methods serve
+ * an optional feature, and a host that will never call
+ * {@link LocalWebAuthn.verifyDpop} or {@link LocalWebAuthn.dpopNonce} should not
+ * have to write them — or stub them wrongly — to satisfy a type. Every official
+ * adapter implements both contracts, so passing one costs nothing and needs no
+ * declaration.
+ *
+ * The service checks for these methods where it uses them and throws
+ * `invalid_configuration` (500) naming the missing ones, which is a clearer
+ * failure than a compile error about a method the host has no interest in.
+ */
+type LocalWebAuthnDpopStore = {
+    /**
+     * Claim a DPoP proof's `jti` exactly once, for replay detection.
+     *
+     * Returns `true` when this digest was newly recorded and `false` when it was
+     * already present — which is a replayed proof and must fail the request.
+     * `expiresAt` is when the entry may be reaped, normally the end of the
+     * acceptance window the proof's `iat` implies; it is absolute, so no clock is
+     * passed.
+     *
+     * Must be atomic: two concurrent requests carrying the same `jti` must not
+     * both see `true`.
+     */
+    claimDpopProof(jtiHash: Uint8Array, expiresAt: number): Promise<boolean>;
+    /**
+     * Return the deployment-wide DPoP nonce for `slot`, inserting `candidate` if no
+     * server has claimed that slot yet.
+     *
+     * `slot` is `floor(now / rotationMs)`, so every server computes the same one and
+     * whichever inserts first decides the value — the primary key is the only
+     * coordination needed. Must return the *stored* nonce, not `candidate`, or two
+     * servers would disagree.
+     */
+    claimDpopNonce(slot: number, candidate: string, expiresAt: number): Promise<string>;
+    /**
+     * Nonces for the current and previous slot, in any order, omitting slots that
+     * have never been claimed.
+     *
+     * Two are accepted so a rotation landing mid-flight does not reject a proof the
+     * client built moments earlier against the outgoing value.
+     */
+    dpopNonces(currentSlot: number, previousSlot: number): Promise<string[]>;
 };
 type LocalWebAuthnEvent = {
     type: 'enrollment.issued' | 'enrollment.exchanged' | 'enrollment.completed' | 'enrollment.revoked';
@@ -299,11 +524,14 @@ type LocalWebAuthnEvent = {
     at: number;
     userId: string;
     credentialId: string;
+    /** {@link Credential.kind}, so an audit trail can tell a person from a program. */
+    credentialKind?: string | null;
 } | {
     type: 'session.created' | 'session.revoked';
     at: number;
     userId?: string;
     credentialId?: string;
+    credentialKind?: string | null;
 } | {
     /** Bulk session revoke ("sign out everywhere"): credentials and grants untouched. */
     type: 'user.sessions_revoked';
@@ -311,17 +539,65 @@ type LocalWebAuthnEvent = {
     userId: string;
     /** Live sessions revoked; an excepted session is not counted. */
     count: number;
+    /** Credential kinds the revoke was scoped to, when it was scoped. */
+    kinds?: (string | null)[];
 } | {
-    /** Bulk recovery revoke: credentials, sessions, grants, and challenges. */
+    /**
+     * Bulk recovery revoke: credentials, sessions, and — only when unscoped —
+     * grants and challenges.
+     */
     type: 'user.authentication_revoked';
     at: number;
     userId: string;
+    /** Credential kinds the revoke was scoped to, when it was scoped. */
+    kinds?: (string | null)[];
 };
 type LocalWebAuthnDurations = {
     enrollmentGrantMs?: number;
     enrollmentSessionMs?: number;
     challengeMs?: number;
     sessionIdleMs?: number;
+    sessionAbsoluteMs?: number;
+};
+/**
+ * Policy for one host-defined {@link Credential.kind}.
+ *
+ * Declaring a kind here is what turns it from a label into a restriction. Kinds
+ * that are *not* declared — including `null`, which every pre-existing
+ * credential has — behave exactly as they did before this option existed, so
+ * adding the option changes nothing until a host opts in.
+ *
+ * That asymmetry is deliberate. The alternative default, "unknown kinds are
+ * non-interactive", would lock out any host that backfilled `kind: 'person'`
+ * onto its human credentials.
+ */
+type CredentialKindPolicy = {
+    /**
+     * Whether {@link LocalWebAuthn.authenticationOptions} admits this kind when
+     * the caller does not name it explicitly. Defaults to `true`.
+     *
+     * Set `false` for machine credentials: the browser sign-in route then cannot
+     * accept one even by mistake, and the machine route must ask for it by name.
+     */
+    interactive?: boolean;
+    /**
+     * Whether a session opened by this kind may authorize registering a new
+     * credential. Defaults to `true`.
+     *
+     * Set `false` for machine credentials. Otherwise a leaked key can register a
+     * second credential and outlive revocation of the first, which makes
+     * revocation useless as a remedy — the credential replicates itself. The cost
+     * is that unattended key rotation has to go back through a human-authorized
+     * enrollment instead of chaining off the old key.
+     */
+    canRegister?: boolean;
+    /**
+     * Absolute session lifetime for this kind, overriding `durations.sessionAbsoluteMs`.
+     *
+     * The idle window stays global (`durations.sessionIdleMs`) and applies to every
+     * kind. A shorter absolute lifetime here wins regardless, so this one field is
+     * all a host needs to give machine sessions a shorter life.
+     */
     sessionAbsoluteMs?: number;
 };
 type CeremonyProvider = {
@@ -367,12 +643,52 @@ type LocalWebAuthnOptions = {
      * Defaults to `"/enroll"`.
      */
     enrollmentPath?: string;
-    /** Persistence adapter (see {@link SqliteLocalWebAuthnStore} or {@link D1LocalWebAuthnStore}). */
+    /**
+     * Persistence adapter (see {@link SqliteLocalWebAuthnStore} or
+     * {@link D1LocalWebAuthnStore}).
+     *
+     * Issuing API credentials additionally needs {@link LocalWebAuthnDpopStore};
+     * every official adapter implements both, and a custom store is checked for
+     * those three methods where they are used rather than up front.
+     */
     store: LocalWebAuthnStore;
     /** Host-provided user lookup. */
     users: UserProvider;
     /** Override default token and session lifetimes (all values in milliseconds). */
     durations?: LocalWebAuthnDurations;
+    /**
+     * Enable DPoP nonce issuance (RFC 9449 section 8).
+     *
+     * Presence enables it; absence means {@link LocalWebAuthn.dpopNonce} returns
+     * `null` and asking `verifyDpop` to require one is a configuration error. Left
+     * off by default because it costs the client something real: it must retain the
+     * most recent `DPoP-Nonce` and retry once when the server demands one.
+     * `@localwebauthn/client` already does both, but a hand-written client would
+     * have to.
+     *
+     * Worth enabling once credential keys live in hardware, which is when
+     * "possession of the key" and "able to sign right now" stop being the same
+     * thing — a nonce is what makes that distinction enforceable server-side.
+     */
+    dpopNonce?: {
+        /**
+         * How often the nonce changes, in milliseconds. Defaults to 5 minutes.
+         *
+         * A proof is accepted against the current or previous slot, so this is also
+         * roughly how long a pre-generated proof could remain usable.
+         */
+        rotationMs?: number;
+    };
+    /**
+     * Per-kind policy, keyed by {@link Credential.kind}.
+     *
+     * ```ts
+     * credentialKinds: {
+     *   service: { interactive: false, canRegister: false, sessionAbsoluteMs: 15 * 60_000 },
+     * }
+     * ```
+     */
+    credentialKinds?: Record<string, CredentialKindPolicy>;
     /**
      * Override the clock. Defaults to `Date.now`. Inject a fixed clock in tests.
      */
@@ -426,6 +742,8 @@ type RegistrationVerificationResult = {
     sessionToken: string;
     expiresAt: number;
     credentialId: string;
+    /** {@link Credential.kind} the new credential was given. */
+    credentialKind: string | null;
 };
 type AuthenticationOptionsResult = {
     options: PublicKeyCredentialRequestOptionsJSON;
@@ -437,7 +755,37 @@ type AuthenticationVerificationResult = {
     sessionToken: string;
     expiresAt: number;
     credentialId: string;
+    /**
+     * {@link Credential.kind} of the credential that authenticated, so the host
+     * can decide what this session may do without a second lookup.
+     */
+    credentialKind: string | null;
     user: Pick<AuthUser, 'id' | 'name' | 'displayName'>;
+};
+type RegistrationOptionsInput = {
+    enrollmentSessionToken?: string;
+    sessionToken?: string;
+    /**
+     * {@link Credential.kind} to give the credential this ceremony creates.
+     *
+     * Supplied by the *host route*, from what it decided to authorize — never
+     * forwarded from the request body, or the client would be classifying itself.
+     * Recorded on the challenge, so the class is settled on a server row before
+     * the client is handed a challenge, and {@link RegistrationVerificationInput}
+     * has no corresponding field at all.
+     */
+    credentialKind?: string;
+};
+type AuthenticationOptionsInput = {
+    /**
+     * Restrict this ceremony to these {@link Credential.kind} values. `null` is a
+     * legal member and matches unclassified credentials.
+     *
+     * Omit to admit every kind not declared `interactive: false` in
+     * `credentialKinds` — so a browser route needs no argument, and a machine
+     * route names its kind explicitly.
+     */
+    credentialKinds?: (string | null)[];
 };
 type RegistrationVerificationInput = {
     response: RegistrationResponseJSON;
@@ -451,4 +799,4 @@ type AuthenticationVerificationInput = {
     challengeToken: string;
 };
 
-export type { AuthenticationOptionsResult as A, ChallengeRecord as C, EnrollmentGrantRecord as E, LocalWebAuthnStore as L, NewCredential as N, RevokedSession as R, SessionIdentity as S, UserProvider as U, EnrollmentSession as a, ChallengeKind as b, ConsumedChallenge as c, Credential as d, CompleteRegistrationInput as e, CompleteAuthenticationInput as f, RevokeCredentialResult as g, CleanupResult as h, LocalWebAuthnOptions as i, EnrollmentIssue as j, EnrollmentExchange as k, RegistrationOptionsResult as l, RegistrationVerificationInput as m, RegistrationVerificationResult as n, AuthenticationVerificationInput as o, AuthenticationVerificationResult as p, AuthUser as q, CeremonyProvider as r, LocalWebAuthnDurations as s, LocalWebAuthnEvent as t, NewSession as u };
+export type { AuthenticationOptionsInput as A, ChallengeRecord as C, EnrollmentGrantRecord as E, LocalWebAuthnStore as L, NewCredential as N, RevokedSession as R, SessionIdentity as S, UserProvider as U, LocalWebAuthnDpopStore as a, EnrollmentSession as b, ChallengeKind as c, ConsumedChallenge as d, Credential as e, CompleteRegistrationInput as f, CompleteAuthenticationInput as g, RevokeCredentialResult as h, CleanupResult as i, LocalWebAuthnOptions as j, EnrollmentIssue as k, EnrollmentExchange as l, RegistrationOptionsInput as m, RegistrationOptionsResult as n, RegistrationVerificationInput as o, RegistrationVerificationResult as p, AuthenticationOptionsResult as q, AuthenticationVerificationInput as r, AuthenticationVerificationResult as s, AuthUser as t, CeremonyProvider as u, CredentialKindPolicy as v, CredentialProvenance as w, LocalWebAuthnDurations as x, LocalWebAuthnEvent as y, NewSession as z };

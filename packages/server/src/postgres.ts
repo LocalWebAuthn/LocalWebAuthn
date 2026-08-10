@@ -8,6 +8,7 @@ import type {
   Credential,
   EnrollmentGrantRecord,
   EnrollmentSession,
+  LocalWebAuthnDpopStore,
   LocalWebAuthnStore,
   NewSession,
   RevokeCredentialResult,
@@ -26,7 +27,11 @@ import {
   type SessionRow,
   sessionFromRow,
 } from './rows.js';
-import { LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL, LOCALWEBAUTHN_SCHEMA_VERSION } from './schema.js';
+import {
+  LOCALWEBAUTHN_SCHEMA_VERSION,
+  localWebAuthnMigrationsTableStatement,
+  localWebAuthnUpgradeStatements,
+} from './schema.js';
 
 /** The shared statements with `?` rewritten to PostgreSQL's `$1`, `$2`, … form. */
 const PG: { [Name in keyof typeof SQL]: string } = Object.fromEntries(
@@ -87,7 +92,13 @@ export async function migratePostgres(pool: PostgresPool, now = Date.now()): Pro
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query(LOCALWEBAUTHN_POSTGRES_SCHEMA_SQL);
+    // The version table has to exist before its own version can be read.
+    await client.query(localWebAuthnMigrationsTableStatement('postgres'));
+    const stored = await client.query<{ version: number | string | null }>(PG.selectSchemaVersion);
+    const from = Number(stored.rows[0]?.version ?? 0);
+    for (const statement of localWebAuthnUpgradeStatements(from, 'postgres')) {
+      await client.query(statement);
+    }
     await client.query(PG.insertMigration, [LOCALWEBAUTHN_SCHEMA_VERSION, now]);
     await client.query('COMMIT');
   } catch (error) {
@@ -105,7 +116,7 @@ export async function migratePostgres(pool: PostgresPool, now = Date.now()): Pro
  * inside a real transaction, so partial writes cannot be observed or left
  * behind.
  */
-export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
+export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAuthnDpopStore {
   readonly #pool;
 
   constructor(pool: PostgresPool) {
@@ -114,9 +125,12 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
 
   async replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]> {
     return this.#transaction(async (tx) => {
+      // Kind-scoped: replacing a person's pending link must not cancel a pending
+      // deployment-key grant, or vice versa.
       const revoked = await tx.query<{ id: string }>(PG.revokePendingGrants, [
         record.createdAt,
         record.userId,
+        record.credentialKind,
       ]);
       await tx.query(PG.insertEnrollmentGrant, [
         record.id,
@@ -124,10 +138,24 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
         record.tokenHash,
         record.expiresAt,
         record.approvedByUserId,
+        record.credentialKind,
         record.createdAt,
       ]);
       return revoked.rows.map((row) => row.id);
     });
+  }
+
+  async revokePendingEnrollmentGrants(
+    userId: string,
+    now: number,
+    credentialKind: string | null,
+  ): Promise<string[]> {
+    const result = await this.#pool.query<{ id: string }>(PG.revokePendingGrants, [
+      now,
+      userId,
+      credentialKind,
+    ]);
+    return result.rows.map((row) => row.id);
   }
 
   async exchangeEnrollment(
@@ -167,6 +195,9 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
       record.userId,
       record.grantId,
       record.authorizationSessionHash,
+      record.credentialKind,
+      record.allowedCredentialKinds === null ? null : JSON.stringify(record.allowedCredentialKinds),
+      record.registrationGeneration,
       record.expiresAt,
       record.createdAt,
     ]);
@@ -202,6 +233,22 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
     return row ? credentialFromRow(row) : null;
   }
 
+  async credentialAncestry(userId: string, credentialId: string): Promise<Credential[]> {
+    const result = await this.#pool.query<CredentialRow>(PG.selectCredentialAncestry, [
+      credentialId,
+      userId,
+    ]);
+    return result.rows.map(credentialFromRow);
+  }
+
+  async credentialDescendants(userId: string, credentialId: string): Promise<Credential[]> {
+    const result = await this.#pool.query<CredentialRow>(PG.selectCredentialDescendants, [
+      credentialId,
+      userId,
+    ]);
+    return result.rows.map(credentialFromRow);
+  }
+
   async completeRegistration(input: CompleteRegistrationInput): Promise<boolean> {
     try {
       return await this.#transaction(async (tx) => {
@@ -219,6 +266,11 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
           credential.deviceType,
           credential.backedUp,
           credential.label,
+          credential.kind,
+          credential.createdVia,
+          credential.parentCredentialId,
+          credential.grantId,
+          credential.approvedByUserId,
           credential.createdAt,
         ]);
 
@@ -376,12 +428,60 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
       const sessions = await tx.query(PG.deleteExpiredSessions, [now]);
       const enrollmentGrants = await tx.query(PG.deleteFinishedGrants, [now]);
       const challenges = await tx.query(PG.deleteFinishedChallenges, [now]);
+      const dpopProofs = await tx.query(PG.deleteExpiredDpopProofs, [now]);
+      const dpopNonces = await tx.query(PG.deleteExpiredDpopNonces, [now]);
       return {
         sessions: sessions.rowCount ?? 0,
         enrollmentGrants: enrollmentGrants.rowCount ?? 0,
         challenges: challenges.rowCount ?? 0,
+        dpopProofs: dpopProofs.rowCount ?? 0,
+        dpopNonces: dpopNonces.rowCount ?? 0,
       };
     });
+  }
+
+  async revokeLiveCredentialSessions(
+    credentialId: string,
+    now: number,
+    idleExpiresBefore: number,
+    exceptSessionHash?: Uint8Array,
+  ): Promise<number> {
+    const result = exceptSessionHash
+      ? await this.#pool.query(PG.revokeLiveCredentialSessionsExcept, [
+          now,
+          credentialId,
+          now,
+          idleExpiresBefore,
+          exceptSessionHash,
+        ])
+      : await this.#pool.query(PG.revokeLiveCredentialSessions, [
+          now,
+          credentialId,
+          now,
+          idleExpiresBefore,
+        ]);
+    return result.rowCount ?? 0;
+  }
+
+  async claimDpopProof(jtiHash: Uint8Array, expiresAt: number): Promise<boolean> {
+    const result = await this.#pool.query(PG.claimDpopProof, [jtiHash, expiresAt]);
+    return result.rowCount === 1;
+  }
+
+  async claimDpopNonce(slot: number, candidate: string, expiresAt: number): Promise<string> {
+    return this.#transaction(async (tx) => {
+      await tx.query(PG.insertDpopNonce, [slot, candidate, expiresAt]);
+      const result = await tx.query<{ nonce: string }>(PG.selectDpopNonce, [slot]);
+      return result.rows[0]?.nonce ?? candidate;
+    });
+  }
+
+  async dpopNonces(currentSlot: number, previousSlot: number): Promise<string[]> {
+    const result = await this.#pool.query<{ nonce: string }>(PG.selectDpopNonces, [
+      currentSlot,
+      previousSlot,
+    ]);
+    return result.rows.map((row) => row.nonce);
   }
 
   /** Re-check the authorizing grant or session at commit time. */
@@ -389,6 +489,16 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
     tx: PostgresQueryable,
     input: CompleteRegistrationInput,
   ): Promise<boolean> {
+    // The registration fence. Unlike SQLite, reading it is not enough here: under
+    // READ COMMITTED a concurrent revoke's `UPDATE ... WHERE revoked_at IS NULL`
+    // would scan past a credential this transaction has not committed yet — a
+    // phantom. Taking `FOR UPDATE` on the one fence row both paths touch is what
+    // makes them conflict: either the revoke waits and then sees this credential,
+    // or this transaction waits and then fails the generation check below.
+    if (!(await this.#fenceHolds(tx, input))) {
+      return false;
+    }
+
     if (input.challenge.grantId && input.enrollmentSessionHash) {
       const result = await tx.query(PG.authorizeRegistrationByGrant, [
         input.challenge.grantId,
@@ -408,6 +518,41 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore {
       return result.rows.length > 0;
     }
     return false;
+  }
+
+  /** Whether the challenge's recorded generation is still current, under a row lock. */
+  async #fenceHolds(tx: PostgresQueryable, input: CompleteRegistrationInput): Promise<boolean> {
+    const expected = input.challenge.registrationGeneration;
+    if (expected === null) {
+      // A challenge issued before this column existed. Nothing to compare.
+      return true;
+    }
+    const locked = await tx.query<{ generation: number | string }>(PG_ONLY.lockRegistrationFence, [
+      input.credential.userId,
+    ]);
+    // No row means the user has never had a fence, which reads as generation 0.
+    if (locked.rows.length === 0) {
+      return expected === 0;
+    }
+    // BIGINT arrives as a string from node-postgres.
+    return Number(locked.rows[0].generation) === expected;
+  }
+
+  async registrationGeneration(userId: string, now: number): Promise<number> {
+    await this.#pool.query(PG.ensureRegistrationFence, [userId, now]);
+    const result = await this.#pool.query<{ generation: number | string }>(
+      PG.selectRegistrationFence,
+      [userId],
+    );
+    return Number(result.rows[0]?.generation ?? 0);
+  }
+
+  async bumpRegistrationGeneration(userId: string, now: number): Promise<number> {
+    const result = await this.#pool.query<{ generation: number | string }>(
+      PG.bumpRegistrationFence,
+      [userId, now],
+    );
+    return Number(result.rows[0]?.generation ?? 0);
   }
 
   async #insertSession(tx: PostgresQueryable, session: NewSession): Promise<void> {

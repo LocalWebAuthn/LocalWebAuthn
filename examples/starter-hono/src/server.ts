@@ -106,7 +106,7 @@ app.post('/api/invite', requireSession(auth, config), async (c) => {
   }
   const id = randomUUID();
   ensureUser(database, { id, email, displayName });
-  const enrollment = await auth.issueEnrollment(id, c.get('user').id);
+  const enrollment = await auth.issueEnrollment(id, { approvedByUserId: c.get('user').id });
   setPendingEnrollment(database, id, true);
   const phase = signupPhase({
     hasActiveCredential: false,

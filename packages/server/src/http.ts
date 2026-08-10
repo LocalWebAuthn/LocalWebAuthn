@@ -114,6 +114,94 @@ export function cookieAttributes(options: CookieAttributesOptions): CookieAttrib
 }
 
 /**
+ * Response headers for a page that displays credential material once — the
+ * "here is your API key, copy it now" page.
+ *
+ * This is the same hardening every service with a show-once token page needs, and
+ * it is deliberately a function for the same reason {@link cookieAttributes} is: a
+ * checklist in prose gets three of six items right. What it sets, and why each one
+ * is on the list:
+ *
+ * - `Content-Security-Policy` — `default-src 'self'` with no `unsafe-inline`, so a
+ *   single injected or third-party script cannot read the key out of the DOM. This
+ *   is the one that matters most; everything else is depth.
+ * - `frame-ancestors 'none'` (and `X-Frame-Options: DENY` for older agents) — the
+ *   page cannot be framed, so it cannot be clickjacked into revealing anything.
+ * - `Cache-Control: no-store` plus `Pragma`/`Expires` — no shared cache, no disk
+ *   cache, and no back-button redisplay of a secret.
+ * - `Referrer-Policy: no-referrer` — nothing about this URL travels onward.
+ * - `Permissions-Policy` — the page needs no camera, microphone or geolocation, so
+ *   it asks for none.
+ * - `Cross-Origin-Opener-Policy`/`-Embedder-Policy`/`-Resource-Policy` — isolate the
+ *   browsing context so another origin cannot get a handle to this window.
+ * - `X-Content-Type-Options: nosniff`.
+ *
+ * **Headers are necessary, not sufficient.** They cannot help if the page loads
+ * third-party JavaScript, registers a service worker, or the value reaches a
+ * clipboard, a download, an SSR payload or an error reporter — all of which outlive
+ * the page. See the "provisioning pages" guidance in README-DETAIL.org, and prefer
+ * generating a script's key *on the machine that will use it*, which removes this
+ * page from the design entirely.
+ *
+ * @param options.scriptNonce - Per-response nonce for a `<script nonce>` tag, when
+ *   the page cannot use only external scripts. Omit for a fully external bundle.
+ * @param options.connectSelf - Origins the page may call, beyond `'self'`.
+ */
+export function provisioningPageHeaders(
+  options: { scriptNonce?: string; connectSrc?: string[] } = {},
+): Record<string, string> {
+  const script = options.scriptNonce ? `'self' 'nonce-${options.scriptNonce}'` : `'self'`;
+  const connect = ["'self'", ...(options.connectSrc ?? [])].join(' ');
+  return {
+    'Content-Security-Policy': [
+      `default-src 'self'`,
+      `script-src ${script}`,
+      `style-src 'self'`,
+      `img-src 'self' data:`,
+      `connect-src ${connect}`,
+      `font-src 'self'`,
+      `object-src 'none'`,
+      `base-uri 'none'`,
+      `form-action 'none'`,
+      `frame-ancestors 'none'`,
+    ].join('; '),
+    'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+    Pragma: 'no-cache',
+    Expires: '0',
+    'Referrer-Policy': 'no-referrer',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()',
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Embedder-Policy': 'require-corp',
+    'Cross-Origin-Resource-Policy': 'same-origin',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+  };
+}
+
+/**
+ * Response headers that ask a DPoP client to retry with a server-issued nonce
+ * (RFC 9449 section 8).
+ *
+ * Send these with a `401` when `verifyDpop` throws `dpop_nonce_required`, passing
+ * the value of `auth.dpopNonce()`. Without a helper this is four things to get
+ * right in every host — catch the code, fetch a nonce, name both headers exactly
+ * — for one fixed protocol behaviour.
+ *
+ * The nonce is not a secret: the server hands the current one to any caller, and
+ * its only property is being unguessable *in advance*. So answering a request
+ * that failed authentication with one gives nothing away. `null` or `undefined`
+ * (nonces not configured) yields the challenge without the nonce header, which is
+ * a client-side bug worth surfacing rather than hiding.
+ */
+export function dpopChallenge(nonce?: string | null): Record<string, string> {
+  const headers: Record<string, string> = { 'WWW-Authenticate': 'DPoP error="use_dpop_nonce"' };
+  if (nonce) {
+    headers['DPoP-Nonce'] = nonce;
+  }
+  return headers;
+}
+
+/**
  * Exact-origin check for state-changing requests.
  *
  * Pass the `Origin` header value (or `null` if absent). Returns true only when

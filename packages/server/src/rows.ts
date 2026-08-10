@@ -22,6 +22,11 @@ export type CredentialRow = {
   device_type: 'singleDevice' | 'multiDevice';
   backed_up: BooleanColumn;
   label: string;
+  kind: string | null;
+  created_via: string | null;
+  parent_credential_id: string | null;
+  grant_id: string | null;
+  approved_by_user_id: string | null;
   created_at: NumericColumn;
   last_used_at: NumericColumn | null;
   revoked_at: NumericColumn | null;
@@ -33,6 +38,9 @@ export type ChallengeRow = {
   user_id: string | null;
   grant_id: string | null;
   authorization_session_hash: unknown;
+  credential_kind: string | null;
+  allowed_credential_kinds: string | null;
+  registration_generation: number | string | null;
 };
 
 export type EnrollmentSessionRow = {
@@ -40,6 +48,8 @@ export type EnrollmentSessionRow = {
   user_id: string;
   session_hash: unknown;
   session_expires_at: NumericColumn;
+  credential_kind: string | null;
+  approved_by_user_id: string | null;
 };
 
 export type SessionRow = {
@@ -48,6 +58,8 @@ export type SessionRow = {
   authenticated_at: NumericColumn;
   expires_at: NumericColumn;
   last_seen_at: NumericColumn;
+  /** From the joined credential, not the session row itself. */
+  kind: string | null;
 };
 
 /**
@@ -100,10 +112,38 @@ export function credentialFromRow(row: CredentialRow): Credential {
     deviceType: row.device_type,
     backedUp: row.backed_up === 1 || row.backed_up === true,
     label: row.label,
+    kind: row.kind,
+    createdVia:
+      row.created_via === 'enrollment' || row.created_via === 'credential' ? row.created_via : null,
+    parentCredentialId: row.parent_credential_id,
+    grantId: row.grant_id,
+    approvedByUserId: row.approved_by_user_id,
     createdAt: toNumber(row.created_at),
     lastUsedAt: toNullableNumber(row.last_used_at),
     revokedAt: toNullableNumber(row.revoked_at),
   };
+}
+
+/**
+ * Parse the JSON array of admissible credential kinds.
+ *
+ * `null` means "unconstrained". A stored value that does not parse to an array
+ * of strings-or-null is treated as an empty set, which admits nothing — failing
+ * closed, because this column gates which credentials may authenticate.
+ */
+function parseAllowedKinds(value: string | null): (string | null)[] | null {
+  if (value === null) {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return [];
+  }
+  const isKind = (kind: unknown): kind is string | null =>
+    typeof kind === 'string' || kind === null;
+  return Array.isArray(parsed) && parsed.every(isKind) ? parsed : [];
 }
 
 export function challengeFromRow(row: ChallengeRow): ConsumedChallenge {
@@ -114,6 +154,11 @@ export function challengeFromRow(row: ChallengeRow): ConsumedChallenge {
     grantId: row.grant_id,
     authorizationSessionHash:
       row.authorization_session_hash === null ? null : toBytes(row.authorization_session_hash),
+    credentialKind: row.credential_kind,
+    allowedCredentialKinds: parseAllowedKinds(row.allowed_credential_kinds),
+    // PostgreSQL returns BIGINT as a string; normalize like every other counter.
+    registrationGeneration:
+      row.registration_generation === null ? null : toNumber(row.registration_generation),
   };
 }
 
@@ -123,6 +168,8 @@ export function enrollmentSessionFromRow(row: EnrollmentSessionRow): EnrollmentS
     userId: row.user_id,
     sessionHash: toBytes(row.session_hash),
     sessionExpiresAt: toNumber(row.session_expires_at),
+    credentialKind: row.credential_kind,
+    approvedByUserId: row.approved_by_user_id,
   };
 }
 
@@ -133,5 +180,6 @@ export function sessionFromRow(row: SessionRow): SessionIdentity {
     authenticatedAt: toNumber(row.authenticated_at),
     expiresAt: toNumber(row.expires_at),
     lastSeenAt: toNumber(row.last_seen_at),
+    credentialKind: row.kind,
   };
 }

@@ -8,13 +8,29 @@ export {
   equalBytes,
   sha256,
 } from './crypto.js';
+export {
+  defaultKindPolicy,
+  kindPolicy,
+  type NormalizedConfig,
+  type NormalizedCredentialKind,
+} from './config.js';
+export {
+  coseToJwk,
+  type DpopVerification,
+  type DpopVerificationInput,
+  jwkThumbprint,
+  type PublicJwk,
+  verifyDpopProof,
+} from './dpop.js';
 export { isLocalWebAuthnError, LocalWebAuthnError, type LocalWebAuthnErrorCode } from './errors.js';
 export {
   authCookieNames,
   cookieAttributes,
+  dpopChallenge,
   isExactOrigin,
   isHttpsPublicOrigin,
   parseCookieHeader,
+  provisioningPageHeaders,
   serializeClearedCookie,
   serializeCookie,
   type AuthCookieKind,
@@ -34,6 +50,7 @@ export {
 export { LocalWebAuthn } from './service.js';
 export type {
   AuthenticationResponseJSON,
+  AuthenticationOptionsInput,
   AuthenticationOptionsResult,
   AuthenticationVerificationInput,
   AuthenticationVerificationResult,
@@ -46,16 +63,20 @@ export type {
   CompleteRegistrationInput,
   ConsumedChallenge,
   Credential,
+  CredentialKindPolicy,
+  CredentialProvenance,
   EnrollmentExchange,
   EnrollmentGrantRecord,
   EnrollmentIssue,
   EnrollmentSession,
+  LocalWebAuthnDpopStore,
   LocalWebAuthnDurations,
   LocalWebAuthnEvent,
   LocalWebAuthnOptions,
   LocalWebAuthnStore,
   NewCredential,
   NewSession,
+  RegistrationOptionsInput,
   RegistrationOptionsResult,
   RegistrationResponseJSON,
   RegistrationVerificationInput,

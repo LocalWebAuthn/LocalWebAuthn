@@ -8,6 +8,7 @@ import type {
   Credential,
   EnrollmentGrantRecord,
   EnrollmentSession,
+  LocalWebAuthnDpopStore,
   LocalWebAuthnStore,
   NewSession,
   RevokeCredentialResult,
@@ -26,7 +27,11 @@ import {
   type SessionRow,
   sessionFromRow,
 } from './rows.js';
-import { LOCALWEBAUTHN_SCHEMA_SQL, LOCALWEBAUTHN_SCHEMA_VERSION } from './schema.js';
+import {
+  LOCALWEBAUTHN_SCHEMA_VERSION,
+  localWebAuthnMigrationsTableStatement,
+  localWebAuthnUpgradeStatements,
+} from './schema.js';
 
 export type SqliteRunResult = {
   changes: number;
@@ -71,7 +76,14 @@ export function migrateSqlite(database: SqliteDatabase, now = Date.now()): void 
   database.exec('PRAGMA foreign_keys = ON');
   database
     .transaction(() => {
-      database.exec(LOCALWEBAUTHN_SCHEMA_SQL);
+      // The version table has to exist before its own version can be read.
+      database.exec(localWebAuthnMigrationsTableStatement('sqlite'));
+      const stored = database.prepare(SQL.selectSchemaVersion).get() as
+        { version: number | null } | undefined;
+      const from = stored?.version ?? 0;
+      for (const statement of localWebAuthnUpgradeStatements(from, 'sqlite')) {
+        database.exec(statement);
+      }
       database.prepare(SQL.insertMigration).run(LOCALWEBAUTHN_SCHEMA_VERSION, now);
     })
     .immediate();
@@ -85,7 +97,7 @@ export function migrateSqlite(database: SqliteDatabase, now = Date.now()): void 
  * partial writes cannot be observed or left behind. The constructor enables
  * foreign-key enforcement on the given connection.
  */
-export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
+export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAuthnDpopStore {
   readonly #database;
 
   constructor(database: SqliteDatabase) {
@@ -96,9 +108,11 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
   async replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]> {
     return this.#database
       .transaction(() => {
+        // Kind-scoped: replacing a person's pending link must not cancel a
+        // pending deployment-key grant, or vice versa.
         const revoked = this.#database
           .prepare(SQL.revokePendingGrants)
-          .all(record.createdAt, record.userId) as { id: string }[];
+          .all(record.createdAt, record.userId, record.credentialKind) as { id: string }[];
         this.#database
           .prepare(SQL.insertEnrollmentGrant)
           .run(
@@ -107,11 +121,23 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
             record.tokenHash,
             record.expiresAt,
             record.approvedByUserId,
+            record.credentialKind,
             record.createdAt,
           );
         return revoked.map((row) => row.id);
       })
       .immediate();
+  }
+
+  async revokePendingEnrollmentGrants(
+    userId: string,
+    now: number,
+    credentialKind: string | null,
+  ): Promise<string[]> {
+    const rows = this.#database
+      .prepare(SQL.revokePendingGrants)
+      .all(now, userId, credentialKind) as { id: string }[];
+    return rows.map((row) => row.id);
   }
 
   async exchangeEnrollment(
@@ -146,6 +172,11 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
           record.userId,
           record.grantId,
           record.authorizationSessionHash,
+          record.credentialKind,
+          record.allowedCredentialKinds === null
+            ? null
+            : JSON.stringify(record.allowedCredentialKinds),
+          record.registrationGeneration,
           record.expiresAt,
           record.createdAt,
         ).changes === 1
@@ -175,6 +206,20 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
     return row ? credentialFromRow(row) : null;
   }
 
+  async credentialAncestry(userId: string, credentialId: string): Promise<Credential[]> {
+    const rows = this.#database
+      .prepare(SQL.selectCredentialAncestry)
+      .all(credentialId, userId) as CredentialRow[];
+    return rows.map(credentialFromRow);
+  }
+
+  async credentialDescendants(userId: string, credentialId: string): Promise<Credential[]> {
+    const rows = this.#database
+      .prepare(SQL.selectCredentialDescendants)
+      .all(credentialId, userId) as CredentialRow[];
+    return rows.map(credentialFromRow);
+  }
+
   async completeRegistration(input: CompleteRegistrationInput): Promise<boolean> {
     try {
       return this.#database
@@ -195,6 +240,11 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
               credential.deviceType,
               credential.backedUp ? 1 : 0,
               credential.label,
+              credential.kind,
+              credential.createdVia,
+              credential.parentCredentialId,
+              credential.grantId,
+              credential.approvedByUserId,
               credential.createdAt,
             );
 
@@ -283,6 +333,21 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
       .run(now, userId, now, idleExpiresBefore).changes;
   }
 
+  async revokeLiveCredentialSessions(
+    credentialId: string,
+    now: number,
+    idleExpiresBefore: number,
+    exceptSessionHash?: Uint8Array,
+  ): Promise<number> {
+    return exceptSessionHash
+      ? this.#database
+          .prepare(SQL.revokeLiveCredentialSessionsExcept)
+          .run(now, credentialId, now, idleExpiresBefore, exceptSessionHash).changes
+      : this.#database
+          .prepare(SQL.revokeLiveCredentialSessions)
+          .run(now, credentialId, now, idleExpiresBefore).changes;
+  }
+
   async revokeCredential(
     userId: string,
     credentialId: string,
@@ -323,19 +388,55 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
       .immediate();
   }
 
+  async claimDpopProof(jtiHash: Uint8Array, expiresAt: number): Promise<boolean> {
+    return this.#database.prepare(SQL.claimDpopProof).run(jtiHash, expiresAt).changes === 1;
+  }
+
+  async claimDpopNonce(slot: number, candidate: string, expiresAt: number): Promise<string> {
+    return this.#database
+      .transaction(() => {
+        this.#database.prepare(SQL.insertDpopNonce).run(slot, candidate, expiresAt);
+        // Read back rather than returning `candidate`: on a lost insert the stored
+        // value is another server's, and both must agree.
+        const row = this.#database.prepare(SQL.selectDpopNonce).get(slot) as
+          { nonce: string } | undefined;
+        return row?.nonce ?? candidate;
+      })
+      .immediate();
+  }
+
+  async dpopNonces(currentSlot: number, previousSlot: number): Promise<string[]> {
+    const rows = this.#database.prepare(SQL.selectDpopNonces).all(currentSlot, previousSlot) as {
+      nonce: string;
+    }[];
+    return rows.map((row) => row.nonce);
+  }
+
   async cleanup(now: number): Promise<CleanupResult> {
     return this.#database
       .transaction(() => {
         const sessions = this.#database.prepare(SQL.deleteExpiredSessions).run(now).changes;
         const enrollmentGrants = this.#database.prepare(SQL.deleteFinishedGrants).run(now).changes;
         const challenges = this.#database.prepare(SQL.deleteFinishedChallenges).run(now).changes;
-        return { enrollmentGrants, challenges, sessions };
+        const dpopProofs = this.#database.prepare(SQL.deleteExpiredDpopProofs).run(now).changes;
+        const dpopNonces = this.#database.prepare(SQL.deleteExpiredDpopNonces).run(now).changes;
+        return { enrollmentGrants, challenges, sessions, dpopProofs, dpopNonces };
       })
       .immediate();
   }
 
   /** Re-check the authorizing grant or session at commit time. */
   #registrationIsAuthorized(input: CompleteRegistrationInput): boolean {
+    // The registration fence, checked inside the committing transaction. The
+    // challenge recorded the generation it was issued under; if a revocation has
+    // advanced it since, this registration was authorized by a world that no
+    // longer exists and must not commit. SQLite serializes writers, so reading it
+    // here (in an `immediate` transaction) is enough — PostgreSQL additionally
+    // locks the row, see its `#registrationIsAuthorized`.
+    if (!this.#fenceHolds(input)) {
+      return false;
+    }
+
     if (input.challenge.grantId && input.enrollmentSessionHash) {
       return Boolean(
         this.#database
@@ -357,6 +458,32 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore {
       );
     }
     return false;
+  }
+
+  /** Whether the challenge's recorded generation is still the current one. */
+  #fenceHolds(input: CompleteRegistrationInput): boolean {
+    const expected = input.challenge.registrationGeneration;
+    if (expected === null) {
+      // A challenge issued before this column existed. Nothing to compare.
+      return true;
+    }
+    const row = this.#database.prepare(SQL.selectRegistrationFence).get(input.credential.userId) as
+      { generation: number } | undefined;
+    return (row?.generation ?? 0) === expected;
+  }
+
+  async registrationGeneration(userId: string, now: number): Promise<number> {
+    this.#database.prepare(SQL.ensureRegistrationFence).run(userId, now);
+    const row = this.#database.prepare(SQL.selectRegistrationFence).get(userId) as
+      { generation: number } | undefined;
+    return row?.generation ?? 0;
+  }
+
+  async bumpRegistrationGeneration(userId: string, now: number): Promise<number> {
+    const row = this.#database.prepare(SQL.bumpRegistrationFence).get(userId, now) as {
+      generation: number;
+    };
+    return row.generation;
   }
 
   #insertSession(session: NewSession): void {

@@ -164,7 +164,7 @@ describe('LocalWebAuthn lifecycle', () => {
   });
 
   it('enrolls, authenticates, resolves, and revokes a passkey session', async () => {
-    const issue = await auth.issueEnrollment(user.id, 'admin-1');
+    const issue = await auth.issueEnrollment(user.id, { approvedByUserId: 'admin-1' });
     expect(issue.enrollmentUrl).toMatch(/^http:\/\/localhost:5173\/enroll#token=[a-z2-7]{52}$/u);
 
     const exchange = await auth.exchangeEnrollment(issue.enrollmentToken);

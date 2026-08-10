@@ -8,6 +8,7 @@ import type {
   Credential,
   EnrollmentGrantRecord,
   EnrollmentSession,
+  LocalWebAuthnDpopStore,
   LocalWebAuthnStore,
   NewCredential,
   NewSession,
@@ -27,7 +28,11 @@ import {
   type SessionRow,
   sessionFromRow,
 } from './rows.js';
-import { LOCALWEBAUTHN_SCHEMA_VERSION, localWebAuthnSchemaStatements } from './schema.js';
+import {
+  LOCALWEBAUTHN_SCHEMA_VERSION,
+  localWebAuthnMigrationsTableStatement,
+  localWebAuthnUpgradeStatements,
+} from './schema.js';
 
 export type D1ResultLike<Row = Record<string, unknown>> = {
   results: Row[];
@@ -51,14 +56,54 @@ export type D1DatabaseLike = {
 };
 
 /**
- * Create or update the `localwebauthn_*` tables. Idempotent — safe to call on
+ * Create or upgrade the `localwebauthn_*` tables. Idempotent — safe to call on
  * every deploy.
+ *
+ * Version-aware, exactly like {@link migrateSqlite} and {@link migratePostgres}:
+ * it reads the stored schema version and applies only what is missing. The
+ * previous implementation ran the current full schema blind, so on a released v1
+ * database the `CREATE TABLE IF NOT EXISTS` statements were no-ops, the v1→v2
+ * `ALTER TABLE`s never ran, and the first index over a v2-only column
+ * (`localwebauthn_credential_kind_idx`) failed against a column that did not
+ * exist — a v1 D1 deployment could not upgrade at all.
+ *
+ * A D1 `batch()` is one implicit transaction: a failing statement aborts and
+ * rolls back the whole sequence
+ * (https://developers.cloudflare.com/d1/worker-api/d1-database/). So the upgrade
+ * DDL and the version stamp that records it commit together or not at all — a
+ * half-applied schema is never observable.
  */
 export async function migrateD1(database: D1DatabaseLike, now = Date.now()): Promise<void> {
-  await database.batch([
-    ...localWebAuthnSchemaStatements().map((statement) => database.prepare(statement)),
-    database.prepare(SQL.insertMigration).bind(LOCALWEBAUTHN_SCHEMA_VERSION, now),
-  ]);
+  // The version table has to exist before its own version can be read. This one
+  // statement is idempotent and dialect-correct for D1's SQLite.
+  await database.prepare(localWebAuthnMigrationsTableStatement()).run();
+
+  const from = await installedD1Version(database);
+  // Throws when the database is at a *newer* version than this build understands.
+  const upgrade = localWebAuthnUpgradeStatements(from, 'sqlite');
+  if (upgrade.length === 0) {
+    return;
+  }
+  try {
+    await database.batch([
+      ...upgrade.map((statement) => database.prepare(statement)),
+      database.prepare(SQL.insertMigration).bind(LOCALWEBAUTHN_SCHEMA_VERSION, now),
+    ]);
+  } catch (error) {
+    // Two workers can begin the same upgrade at once; the loser's `ADD COLUMN`
+    // statements fail ("duplicate column name") and its batch rolls back. That is
+    // a won race, not corruption — provided the database is now at the target
+    // version. Re-read to distinguish the two.
+    if ((await installedD1Version(database)) >= LOCALWEBAUTHN_SCHEMA_VERSION) {
+      return;
+    }
+    throw error;
+  }
+}
+
+async function installedD1Version(database: D1DatabaseLike): Promise<number> {
+  const row = await database.prepare(SQL.selectSchemaVersion).first<{ version: number | null }>();
+  return row?.version ?? 0;
 }
 
 /**
@@ -87,15 +132,16 @@ async function returningRow<Row>(statement: D1PreparedStatementLike): Promise<Ro
 /**
  * {@link LocalWebAuthnStore} backed by Cloudflare D1.
  *
- * D1 has no transactions. Multi-statement operations run as a `batch()`, and
- * every step that must affect exactly one row is followed by a guard statement
- * that fails the batch otherwise. This stops an unauthorized write from
- * completing, but — unlike a transaction — it cannot roll back statements that
- * already committed. See the D1 section of `SECURITY.md`. Schedule
+ * Multi-statement operations run as a `batch()`, which D1 executes as one
+ * transaction: a failing statement aborts and rolls the whole sequence back
+ * (https://developers.cloudflare.com/d1/worker-api/d1-database/). Every step that
+ * must affect exactly one row is followed by a guard statement whose CHECK fails
+ * the batch otherwise, so an unauthorized write rolls the batch back rather than
+ * committing partially. See the D1 section of `SECURITY.md`. Schedule
  * {@link D1LocalWebAuthnStore.cleanup} to reap expired grants, challenges, and
  * sessions.
  */
-export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
+export class D1LocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAuthnDpopStore {
   readonly #database;
 
   constructor(database: D1DatabaseLike) {
@@ -103,9 +149,11 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
   }
 
   async replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]> {
+    // Kind-scoped: replacing a person's pending link must not cancel a pending
+    // deployment-key grant, or vice versa.
     const revoked = await this.#database
       .prepare(SQL.revokePendingGrants)
-      .bind(record.createdAt, record.userId)
+      .bind(record.createdAt, record.userId, record.credentialKind)
       .run<{ id: string }>();
 
     await this.#database
@@ -116,10 +164,23 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
         record.tokenHash,
         record.expiresAt,
         record.approvedByUserId,
+        record.credentialKind,
         record.createdAt,
       )
       .run();
     return revoked.results.map((row) => row.id);
+  }
+
+  async revokePendingEnrollmentGrants(
+    userId: string,
+    now: number,
+    credentialKind: string | null,
+  ): Promise<string[]> {
+    const result = await this.#database
+      .prepare(SQL.revokePendingGrants)
+      .bind(now, userId, credentialKind)
+      .all<{ id: string }>();
+    return result.results.map((row) => row.id);
   }
 
   async exchangeEnrollment(
@@ -157,6 +218,11 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
         record.userId,
         record.grantId,
         record.authorizationSessionHash,
+        record.credentialKind,
+        record.allowedCredentialKinds === null
+          ? null
+          : JSON.stringify(record.allowedCredentialKinds),
+        record.registrationGeneration,
         record.expiresAt,
         record.createdAt,
       )
@@ -191,6 +257,22 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
     return row ? credentialFromRow(row) : null;
   }
 
+  async credentialAncestry(userId: string, credentialId: string): Promise<Credential[]> {
+    const result = await this.#database
+      .prepare(SQL.selectCredentialAncestry)
+      .bind(credentialId, userId)
+      .all<CredentialRow>();
+    return result.results.map(credentialFromRow);
+  }
+
+  async credentialDescendants(userId: string, credentialId: string): Promise<Credential[]> {
+    const result = await this.#database
+      .prepare(SQL.selectCredentialDescendants)
+      .bind(credentialId, userId)
+      .all<CredentialRow>();
+    return result.results.map(credentialFromRow);
+  }
+
   async completeRegistration(input: CompleteRegistrationInput): Promise<boolean> {
     const { credential, challenge, enrollmentSessionHash, authenticatedSessionHash, session, now } =
       input;
@@ -222,7 +304,19 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
       return false;
     }
 
-    const statements = [credentialInsert, this.#guard()];
+    // The registration fence goes first: if a revoke has advanced the user's
+    // generation since this challenge was issued, the guard inserts 0, the CHECK
+    // fails, and the whole batch — credential included — rolls back.
+    const statements =
+      challenge.registrationGeneration === null
+        ? [credentialInsert, this.#guard()]
+        : [
+            this.#database
+              .prepare(D1_SQL.guardRegistrationFence)
+              .bind(credential.userId, challenge.registrationGeneration),
+            credentialInsert,
+            this.#guard(),
+          ];
 
     // A grant-based registration also closes the grant. The guard above has
     // already established that the credential insert affected one row.
@@ -358,15 +452,74 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
       this.#database.prepare(SQL.deleteExpiredSessions).bind(now),
       this.#database.prepare(SQL.deleteFinishedGrants).bind(now),
       this.#database.prepare(SQL.deleteFinishedChallenges).bind(now),
+      this.#database.prepare(SQL.deleteExpiredDpopProofs).bind(now),
+      this.#database.prepare(SQL.deleteExpiredDpopNonces).bind(now),
     ]);
     return {
       sessions: changes(results[0]),
       enrollmentGrants: changes(results[1]),
       challenges: changes(results[2]),
+      dpopProofs: changes(results[3]),
+      dpopNonces: changes(results[4]),
     };
   }
 
-  /** The nine `localwebauthn_credentials` column values, in schema order. */
+  async registrationGeneration(userId: string, now: number): Promise<number> {
+    await this.#database.prepare(SQL.ensureRegistrationFence).bind(userId, now).run();
+    const row = await this.#database
+      .prepare(SQL.selectRegistrationFence)
+      .bind(userId)
+      .first<{ generation: number }>();
+    return row?.generation ?? 0;
+  }
+
+  async bumpRegistrationGeneration(userId: string, now: number): Promise<number> {
+    const row = await this.#database
+      .prepare(SQL.bumpRegistrationFence)
+      .bind(userId, now)
+      .first<{ generation: number }>();
+    return row?.generation ?? 0;
+  }
+
+  async claimDpopProof(jtiHash: Uint8Array, expiresAt: number): Promise<boolean> {
+    const result = await this.#database.prepare(SQL.claimDpopProof).bind(jtiHash, expiresAt).run();
+    return changes(result) === 1;
+  }
+
+  async revokeLiveCredentialSessions(
+    credentialId: string,
+    now: number,
+    idleExpiresBefore: number,
+    exceptSessionHash?: Uint8Array,
+  ): Promise<number> {
+    const statement = exceptSessionHash
+      ? this.#database
+          .prepare(SQL.revokeLiveCredentialSessionsExcept)
+          .bind(now, credentialId, now, idleExpiresBefore, exceptSessionHash)
+      : this.#database
+          .prepare(SQL.revokeLiveCredentialSessions)
+          .bind(now, credentialId, now, idleExpiresBefore);
+    return changes(await statement.run());
+  }
+
+  async claimDpopNonce(slot: number, candidate: string, expiresAt: number): Promise<string> {
+    await this.#database.prepare(SQL.insertDpopNonce).bind(slot, candidate, expiresAt).run();
+    const row = await this.#database
+      .prepare(SQL.selectDpopNonce)
+      .bind(slot)
+      .first<{ nonce: string }>();
+    return row?.nonce ?? candidate;
+  }
+
+  async dpopNonces(currentSlot: number, previousSlot: number): Promise<string[]> {
+    const result = await this.#database
+      .prepare(SQL.selectDpopNonces)
+      .bind(currentSlot, previousSlot)
+      .all<{ nonce: string }>();
+    return result.results.map((row) => row.nonce);
+  }
+
+  /** The ten `localwebauthn_credentials` column values, in schema order. */
   #credentialValues(credential: NewCredential): unknown[] {
     return [
       credential.id,
@@ -377,6 +530,11 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore {
       credential.deviceType,
       credential.backedUp ? 1 : 0,
       credential.label,
+      credential.kind,
+      credential.createdVia,
+      credential.parentCredentialId,
+      credential.grantId,
+      credential.approvedByUserId,
       credential.createdAt,
     ];
   }

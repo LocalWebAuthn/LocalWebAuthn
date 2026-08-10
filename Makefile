@@ -20,7 +20,7 @@ SHELL := /bin/bash
 
 .PHONY: help all install build typecheck lint fmt fmt-check
 .PHONY: test test-unit test-channels test-demo test-demo-install test-all test-postgres
-.PHONY: ensure-postgres coverage check release-check
+.PHONY: ensure-postgres coverage check release-check docs-export docs-strip
 .PHONY: demo demo-reset demo-test starter-hono clean
 
 all: check
@@ -118,6 +118,22 @@ check: ensure-postgres
 release-check:
 	npm run release:check
 	$(MAKE) test-channels
+
+# --- documentation -----------------------------------------------------------
+
+# Regenerate the tracked derivatives of docs/API-AUTH.org (PDF + plain text) and
+# strip the trailing whitespace org's ASCII table export pads its columns with.
+# Post-processing lives here rather than in a hand edit, so regenerating cannot
+# silently reintroduce whitespace that `git diff --check` then rejects.
+docs-export:
+	cd docs && emacs --batch --load ~/.emacs.d/init.el --visit API-AUTH.org --eval '(progn (setq org-confirm-babel-evaluate nil) (org-latex-export-to-pdf) (org-ascii-export-to-ascii))'
+	$(MAKE) docs-strip
+	git diff --check -- docs/api-auth.txt
+
+# Whitespace hygiene for generated text, independent of the exporter.
+docs-strip:
+	@perl -i -pe 's/[ \t]+$$//' docs/api-auth.txt
+	@printf 'Stripped trailing whitespace from docs/api-auth.txt\n'
 
 # --- examples ----------------------------------------------------------------
 
