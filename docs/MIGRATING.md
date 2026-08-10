@@ -1,5 +1,49 @@
 # Migrating LocalWebAuthn
 
+## 3.0.0 → unreleased (why a refused enrollment link was refused)
+
+**No schema change, and nothing you must do.** Both additions are opt-in.
+
+### Custom stores: `enrollmentGrantState` is optional
+
+The store contract gains one method, and it is optional. A store that does not
+implement it keeps today's behaviour exactly — one `invalid_enrollment` with no state
+attached. Implement it to let hosts distinguish a spent link from an unknown one:
+
+```ts
+async enrollmentGrantState(
+  tokenHash: Uint8Array,
+  now: number,
+): Promise<EnrollmentGrantRejection> {
+  // Read-only. Called only after exchangeEnrollment has already refused.
+  // Return { state: 'unknown', userId: null } when no grant carries the token.
+}
+```
+
+Precedence matters more than the lookup: a row can be several things at once, and
+`'used'` must win over `'superseded'` and `'expired'`, because it is the only state
+that can mean somebody else reached the link first. `enrollmentGrantStateFromRow` in
+the official adapters is the reference ordering.
+
+### Hosts: two things worth wiring
+
+`LocalWebAuthnError` now carries `enrollmentState` on an `invalid_enrollment` from
+`exchangeEnrollment`. Forward it to the browser and choose the message from it — only
+`'used'` deserves a warning, because `'superseded'` is what re-sending an invitation
+produces and alarming on that cries wolf.
+
+`enrollment.rejected` fires on every refused token, carrying the state and the
+grant's `userId`. That is the hook for notifying every channel bound to the person.
+The `userId` is on the event and not on the error, on purpose: hosts serialize errors
+into responses, and this one answers an unauthenticated caller.
+
+### Cleanup retains grants slightly longer
+
+`cleanup()` no longer deletes a grant the moment it is completed or revoked; a grant
+now lives out its original `expires_at`. This is what makes the diagnosis above
+useful more than a few minutes after a link is used. Retained rows are unusable and
+block no new invitation, and they hold a token hash rather than a token.
+
 ## 2.2.0 → 3.0.0 (credential kinds and machine credentials)
 
 ### Schema version 2

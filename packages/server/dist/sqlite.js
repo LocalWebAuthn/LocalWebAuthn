@@ -2,9 +2,10 @@ import {
   SQL,
   challengeFromRow,
   credentialFromRow,
+  enrollmentGrantStateFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-SUHXT3LG.js";
+} from "./chunk-OVMYNLID.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnMigrationsTableStatement,
@@ -54,6 +55,10 @@ var SqliteLocalWebAuthnStore = class {
   async exchangeEnrollment(tokenHash, sessionHash, sessionExpiresAt, now) {
     const row = this.#database.prepare(SQL.exchangeEnrollment).get(now, sessionHash, sessionExpiresAt, tokenHash, now);
     return row ? enrollmentSessionFromRow(row) : null;
+  }
+  async enrollmentGrantState(tokenHash, now) {
+    const row = this.#database.prepare(SQL.selectEnrollmentGrantState).get(tokenHash);
+    return row ? enrollmentGrantStateFromRow(row, now) : { state: "unknown", userId: null };
   }
   async resolveEnrollmentSession(sessionHash, now) {
     const row = this.#database.prepare(SQL.selectEnrollmentSession).get(sessionHash, now);

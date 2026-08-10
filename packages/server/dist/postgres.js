@@ -3,10 +3,11 @@ import {
   SQL,
   challengeFromRow,
   credentialFromRow,
+  enrollmentGrantStateFromRow,
   enrollmentSessionFromRow,
   sessionFromRow,
   toPositionalPlaceholders
-} from "./chunk-SUHXT3LG.js";
+} from "./chunk-OVMYNLID.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnMigrationsTableStatement,
@@ -83,6 +84,13 @@ var PostgresLocalWebAuthnStore = class {
     ]);
     const row = result.rows.at(0);
     return row ? enrollmentSessionFromRow(row) : null;
+  }
+  async enrollmentGrantState(tokenHash, now) {
+    const result = await this.#pool.query(PG.selectEnrollmentGrantState, [
+      tokenHash
+    ]);
+    const row = result.rows.at(0);
+    return row ? enrollmentGrantStateFromRow(row, now) : { state: "unknown", userId: null };
   }
   async resolveEnrollmentSession(sessionHash, now) {
     const result = await this.#pool.query(PG.selectEnrollmentSession, [

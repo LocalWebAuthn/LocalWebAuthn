@@ -1,4 +1,4 @@
-import { L as LocalWebAuthnStore, a as LocalWebAuthnDpopStore, E as EnrollmentGrantRecord, b as EnrollmentSession, C as ChallengeRecord, c as ChallengeKind, d as ConsumedChallenge, e as Credential, f as CompleteRegistrationInput, g as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, h as RevokeCredentialResult, i as CleanupResult } from './types-DKx5wADO.js';
+import { L as LocalWebAuthnStore, a as LocalWebAuthnDpopStore, E as EnrollmentGrantRecord, b as EnrollmentSession, c as EnrollmentGrantRejection, C as ChallengeRecord, d as ChallengeKind, e as ConsumedChallenge, f as Credential, g as CompleteRegistrationInput, h as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, i as RevokeCredentialResult, j as CleanupResult } from './types-B4vQbaQI.js';
 import '@simplewebauthn/server';
 
 type SqliteRunResult = {
@@ -40,6 +40,7 @@ declare class SqliteLocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAu
     replaceEnrollmentGrant(record: EnrollmentGrantRecord): Promise<string[]>;
     revokePendingEnrollmentGrants(userId: string, now: number, credentialKind: string | null): Promise<string[]>;
     exchangeEnrollment(tokenHash: Uint8Array, sessionHash: Uint8Array, sessionExpiresAt: number, now: number): Promise<EnrollmentSession | null>;
+    enrollmentGrantState(tokenHash: Uint8Array, now: number): Promise<EnrollmentGrantRejection>;
     resolveEnrollmentSession(sessionHash: Uint8Array, now: number): Promise<EnrollmentSession | null>;
     createChallenge(record: ChallengeRecord): Promise<boolean>;
     consumeChallenge(idHash: Uint8Array, kind: ChallengeKind, now: number): Promise<ConsumedChallenge | null>;

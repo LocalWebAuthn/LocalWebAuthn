@@ -86,9 +86,13 @@ test('self-serve signup: channel proofs cooperate, then the claimed link enrolls
   await phonePage.getByRole('button', { name: 'Create passkey', exact: true }).click();
   await expect(phonePage.getByRole('heading', { name: 'Your access' })).toBeVisible();
 
-  // The enrollment is single-use: the other page's claim fails loudly.
+  // The enrollment is single-use, and the page that loses the race is told exactly
+  // that — not a vague "invalid or expired". This is the copy that matters: the
+  // person is the only one who knows whether they were the one who used it, so the
+  // message has to name the possibility and give them somewhere to go.
   await emailPage.getByRole('button', { name: 'Create my passkey here' }).click();
-  await expect(emailPage.getByText(/already used/u)).toBeVisible();
+  await expect(emailPage.getByText(/already been used/u)).toBeVisible();
+  await expect(emailPage.getByText(/contact your administrator/u)).toBeVisible();
   await emailPage.close();
 
   // --- Recovery is not signup -----------------------------------------------

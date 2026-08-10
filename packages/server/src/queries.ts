@@ -60,6 +60,21 @@ export const SQL = {
     RETURNING id, user_id, session_hash, session_expires_at, credential_kind,
               approved_by_user_id`,
 
+  /**
+   * The three timestamps that explain a refused exchange, plus the user the grant
+   * belongs to so a host can notify their channels.
+   *
+   * Read-only, and run only after {@link exchangeEnrollment} has already answered
+   * `null`. `expires_at` comes back raw rather than compared here, so the adapter
+   * decides expiry against the same `now` the exchange used.
+   *
+   * Binds: token hash.
+   */
+  selectEnrollmentGrantState: `
+    SELECT user_id, token_consumed_at, completed_at, revoked_at, expires_at
+    FROM localwebauthn_enrollment_grants
+    WHERE token_hash = ?`,
+
   selectEnrollmentSession: `
     SELECT id, user_id, session_hash, session_expires_at, credential_kind,
            approved_by_user_id
@@ -424,9 +439,25 @@ export const SQL = {
     DELETE FROM localwebauthn_sessions
     WHERE expires_at <= ? OR revoked_at IS NOT NULL`,
 
+  /**
+   * Reap grants whose window has closed.
+   *
+   * Expiry alone, deliberately. This used to also delete on `completed_at` or
+   * `revoked_at`, which removed a spent grant within minutes of its use and left
+   * `enrollmentGrantState` unable to answer anything but `unknown` — so the person
+   * who came back to ask "did I already use this?" was told the link never existed.
+   * A grant now lives out its original `expires_at` whatever happens to it, which
+   * is exactly as long as the answer is worth giving.
+   *
+   * Retaining them cannot resurrect authority: `exchangeEnrollment` requires
+   * `token_consumed_at IS NULL AND completed_at IS NULL AND revoked_at IS NULL`, so
+   * a retained row is unusable, and the partial unique index over pending grants
+   * excludes completed and revoked rows, so a retained row blocks no new invitation.
+   * What persists is a token *hash*, never a token.
+   */
   deleteFinishedGrants: `
     DELETE FROM localwebauthn_enrollment_grants
-    WHERE (expires_at <= ? OR completed_at IS NOT NULL OR revoked_at IS NOT NULL)
+    WHERE expires_at <= ?
       AND id NOT IN (
         SELECT grant_id FROM localwebauthn_challenges WHERE grant_id IS NOT NULL
       )`,

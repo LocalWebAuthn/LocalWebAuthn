@@ -3,13 +3,25 @@ import { startAuthentication, startRegistration } from "@simplewebauthn/browser"
 var LocalWebAuthnBrowserError = class extends Error {
   code;
   status;
-  constructor(code, message, status) {
+  /**
+   * Present when the server explained a refused enrollment token. Absent on every
+   * other failure, and absent when the host does not forward it.
+   */
+  enrollmentState;
+  constructor(code, message, status, enrollmentState) {
     super(message);
     this.name = "LocalWebAuthnBrowserError";
     this.code = code;
     this.status = status;
+    if (enrollmentState) {
+      this.enrollmentState = enrollmentState;
+    }
   }
 };
+var ENROLLMENT_REFUSALS = /* @__PURE__ */ new Set(["used", "superseded", "expired", "unknown"]);
+function enrollmentRefusal(value) {
+  return typeof value === "string" && ENROLLMENT_REFUSALS.has(value) ? value : void 0;
+}
 var defaultEndpoints = {
   exchangeEnrollment: "/enrollment/exchange",
   registrationOptions: "/register/options",
@@ -90,7 +102,8 @@ var LocalWebAuthnBrowser = class {
       throw new LocalWebAuthnBrowserError(
         error.error ?? "authentication_failed",
         error.message ?? "Authentication failed.",
-        response.status
+        response.status,
+        enrollmentRefusal(error.enrollmentState)
       );
     }
     return payload;

@@ -94,10 +94,15 @@ Four consequences an operator should know, all of them still open in
 - **Two clocks, not one.** The signup row's `expires_at` bounds the _claim_.
   `enrollmentGrantMs` (30 minutes by default) bounds the _exchange_ by whoever
   holds the token. Shortening one does not shorten the other.
-- **A second claim is silent.** A grant is spent at exchange, not at claim, and the
-  demo re-serves the stored token to every valid OTP. So an attacker's claim leaves
-  no trace, and it is the legitimate person who meets `invalid_enrollment` — at the
-  moment they try to create a passkey, where it reads as a broken link.
+- **A second claim is still silent; a second _exchange_ is not.** A grant is spent at
+  exchange, not at claim, and the demo re-serves the stored token to every valid OTP,
+  so the extra claim itself leaves no trace. What has changed is the outcome for
+  whoever loses the race: `exchangeEnrollment` now reports `enrollmentState: 'used'`
+  rather than a generic "invalid or expired", so the person is told the link was
+  already spent and what to do if it was not them. The server also emits
+  `enrollment.rejected` carrying the `userId`, which is the hook for notifying every
+  bound channel. The remaining gap is at claim time: nothing counts claims, so a host
+  still cannot see the extra claim before the exchange fails.
 - **The token sits at rest.** Re-serving one token means storing it:
   `demo_signups.enrollment_token` holds a live capability until the row is reaped.
   Minting a fresh grant per claim would avoid that, and `supersededGrantIds` would
