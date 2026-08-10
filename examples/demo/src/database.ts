@@ -256,6 +256,26 @@ export function storeSignupClaim(
     .run(input.clientId, input.enrollmentToken, id);
 }
 
+/**
+ * Delete signup rows whose window has closed.
+ *
+ * Nothing reaped these before, so they accumulated for the life of the database —
+ * each one holding an email address, a phone number, two OTP hashes and an
+ * enrollment token, indefinitely. None of it is reachable once `expires_at` passes,
+ * because `verifySignupProof` checks expiry before anything else, so keeping the
+ * rows bought nothing and kept personal data forever.
+ *
+ * Safe at exactly expiry, with no grace period: an expired row can neither be
+ * proved nor claimed. Somebody still holding the enrollment token can go on
+ * exchanging it against `@localwebauthn/server` until the *grant* expires, which is
+ * a separate clock and unaffected by this.
+ *
+ * @returns The number of rows removed, for the caller to log.
+ */
+export function reapSignups(database: DemoDatabase, now: number): number {
+  return database.prepare(`DELETE FROM demo_signups WHERE expires_at <= ?`).run(now).changes;
+}
+
 export function completeSignup(
   database: DemoDatabase,
   id: string,

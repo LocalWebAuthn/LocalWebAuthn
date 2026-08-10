@@ -6,7 +6,7 @@ import { createOpaqueToken, createUserHandle, sha256 } from '@localwebauthn/serv
 import { randomUUID } from 'node:crypto';
 
 import { createDemoApplication, ensureBootstrapAdministrator } from '../src/application';
-import { cancelActiveRecoveries, openDemoDatabase } from '../src/database';
+import { cancelActiveRecoveries, openDemoDatabase, reapSignups } from '../src/database';
 
 const publicOrigin = 'http://localhost:4173';
 const databases: DemoDatabase[] = [];
@@ -357,6 +357,110 @@ describe('LocalWebAuthn demo application', () => {
       body: JSON.stringify({ token: secondPayload.enrollmentToken }),
     });
     expect(exchanged.status).toBe(200);
+  });
+
+  /**
+   * A plain signup whose escrowed token has gone missing must refuse, not improvise.
+   *
+   * `claimEnrollment` serves both signup and recovery, because `verifySignupProof`
+   * reports `'completed'` for both. It used to tell them apart only by whether a
+   * token happened to be stored, so an empty column sent a *plain signup* claim into
+   * the recovery branch — which revokes every credential the account has. A person
+   * re-opening their own link after enrolling would have had their passkey revoked
+   * and been handed a new invitation, silently.
+   *
+   * The kind is now checked explicitly. This test is the guard: it empties the column
+   * and requires a refusal *and* an intact credential.
+   */
+  it('refuses a plain-signup claim with no stored token instead of revoking', async () => {
+    const { app, database } = setup();
+    const headers = { Origin: publicOrigin, 'Content-Type': 'application/json' };
+
+    const { signupId, otps } = await startSignup(app, {
+      displayName: 'Grace Signup',
+      email: 'grace@example.test',
+      phone: '+15551230009',
+    });
+    const prove = (channel: string, otp: string) =>
+      app.request('/api/signup/prove', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ signupId, channel, otp }),
+      });
+
+    await prove('email', otps.email);
+    const completed = await prove('phone', otps.phone);
+    const { enrollmentToken } = (await completed.json()) as { enrollmentToken: string };
+
+    // Enrol for real, so there is a credential the recovery branch could destroy.
+    const exchanged = await app.request('/api/auth/enrollment/exchange', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ token: enrollmentToken }),
+    });
+    expect(exchanged.status).toBe(200);
+    const clientId = (
+      database.prepare(`SELECT client_id FROM demo_signups WHERE id = ?`).get(signupId) as
+        { client_id: string } | undefined
+    )?.client_id;
+    expect(clientId).toBeTruthy();
+    database
+      .prepare(
+        `INSERT INTO localwebauthn_credentials(
+           id, user_id, public_key, counter, transports_json, device_type,
+           backed_up, label, created_at
+         ) VALUES (?, ?, X'00', 0, '[]', 'multiDevice', 1, 'Enrolled passkey', ?)`,
+      )
+      .run(`credential-${signupId}`, clientId, Date.now());
+
+    // Now lose the escrow, which is exactly what the withdrawn "clear it once
+    // spent" change would have done.
+    database.prepare(`UPDATE demo_signups SET enrollment_token = NULL WHERE id = ?`).run(signupId);
+
+    const grantCount = (): number =>
+      (
+        database
+          .prepare(`SELECT COUNT(*) AS n FROM localwebauthn_enrollment_grants WHERE user_id = ?`)
+          .get(clientId) as { n: number }
+      ).n;
+    const before = grantCount();
+
+    const reopened = await prove('email', otps.email);
+    expect(reopened.status).toBe(409);
+    await expect(reopened.json()).resolves.toMatchObject({ error: 'signup_incomplete' });
+
+    // The credential survived — this is the assertion the old code would fail, since
+    // it would have revoked every credential this account has.
+    const live = database
+      .prepare(
+        `SELECT COUNT(*) AS n FROM localwebauthn_credentials
+         WHERE user_id = ? AND revoked_at IS NULL`,
+      )
+      .get(clientId) as { n: number };
+    expect(live.n).toBe(1);
+    // And the refusal minted nothing: no fresh invitation was handed to whoever
+    // presented that OTP.
+    expect(grantCount()).toBe(before);
+  });
+
+  it('reaps signup rows once their window closes, and spares live ones', () => {
+    const { database } = setup();
+    const insert = (id: string, expiresAt: number): void => {
+      database
+        .prepare(
+          `INSERT INTO demo_signups(
+             id, email, phone, display_name, otp_email_hash, otp_phone_hash,
+             expires_at, created_at
+           ) VALUES (?, ?, '+15551230000', 'Someone', X'00', X'01', ?, ?)`,
+        )
+        .run(id, `${id}@example.test`, expiresAt, Date.now());
+    };
+    insert('past', 1_000);
+    insert('future', Date.now() + 60_000);
+
+    expect(reapSignups(database, Date.now())).toBe(1);
+    const remaining = database.prepare(`SELECT id FROM demo_signups`).all() as { id: string }[];
+    expect(remaining.map((row) => row.id)).toEqual(['future']);
   });
 
   it('recovery waits out the delay, touches nothing meanwhile, and refuses administrators', async () => {

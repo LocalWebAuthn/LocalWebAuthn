@@ -124,6 +124,20 @@ app.post('/api/invite', requireSession(auth, config), async (c) => {
   );
 });
 
+// Expired grants, challenges, sessions and DPoP records do not remove themselves.
+// `cleanup()` is the reaper and it is the host's job to schedule it — every few
+// minutes is ample, since expiry is enforced in the queries and an unreaped row is
+// already unusable. Copy this into whatever your deployment uses for periodic work:
+// a cron job, a systemd timer, or a Cloudflare `scheduled` handler.
+const cleanupTimer = setInterval(() => {
+  void auth.cleanup().catch((error: unknown) => {
+    // A failed sweep must not take the server down; the next one retries.
+    console.error('cleanup failed:', error);
+  });
+}, 5 * 60_000);
+// `unref` so the timer never holds the process open by itself.
+cleanupTimer.unref();
+
 serve({ fetch: app.fetch, hostname: '127.0.0.1', port }, (info) => {
   console.log(`Hono starter listening on http://${info.address}:${String(info.port)}`);
   if (bootstrapUrl) {
