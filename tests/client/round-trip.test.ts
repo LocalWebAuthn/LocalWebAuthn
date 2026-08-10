@@ -1201,6 +1201,109 @@ describe('the two-line credential file', () => {
   it('refuses a payload version it does not understand', () => {
     expect(() => parseCredentialPayload(JSON.stringify({ v: 99 }))).toThrow(/Unsupported/u);
   });
+
+  /** A payload that validates, so each case below changes exactly one thing. */
+  function goodPayload(overrides: Record<string, unknown> = {}) {
+    return JSON.stringify({
+      v: 1,
+      baseUrl: 'https://app.example.com',
+      rpId: 'app.example.com',
+      origin: 'https://app.example.com',
+      credentialId: encodeBase64Url(new Uint8Array(32).fill(1)),
+      userHandle: encodeBase64Url(new Uint8Array(32).fill(2)),
+      alg: ES256,
+      ...overrides,
+    });
+  }
+
+  it('accepts a well-formed payload, including loopback for development', () => {
+    expect(parseCredentialPayload(goodPayload())).toMatchObject({ rpId: 'app.example.com' });
+    expect(
+      parseCredentialPayload(
+        goodPayload({
+          baseUrl: 'http://localhost:4173',
+          origin: 'http://localhost:4173',
+          rpId: 'localhost',
+        }),
+      ),
+    ).toMatchObject({ rpId: 'localhost' });
+  });
+
+  it.each([
+    ['plain HTTP off loopback', { baseUrl: 'http://app.example.com' }, /HTTPS/u],
+    ['a non-HTTP scheme', { baseUrl: 'ftp://app.example.com' }, /HTTPS/u],
+    [
+      'userinfo that hides the real host',
+      { baseUrl: 'https://evil.test@app.example.com' },
+      /userinfo/u,
+    ],
+    ['a path on the origin', { origin: 'https://app.example.com/api' }, /bare origin/u],
+    ['a query on the origin', { origin: 'https://app.example.com/?a=1' }, /bare origin/u],
+    [
+      'an origin outside the RP ID',
+      { origin: 'https://app.example.com.evil.test', baseUrl: 'https://app.example.com.evil.test' },
+      /not at or beneath/u,
+    ],
+    [
+      'a baseUrl host that is not the origin host',
+      { baseUrl: 'https://other.example.com' },
+      /does not match origin/u,
+    ],
+    ['a credentialId that is not base64url', { credentialId: 'not base64!' }, /base64url/u],
+    [
+      'a userHandle of the wrong length',
+      { userHandle: encodeBase64Url(new Uint8Array(8)) },
+      /32 bytes/u,
+    ],
+  ])('refuses %s', (_description, overrides, expected) => {
+    expect(() => parseCredentialPayload(goodPayload(overrides))).toThrow(expected);
+  });
+
+  it('quotes a keystore reference so a sourced file cannot execute it', () => {
+    // Inline base64 is shell-safe by accident; a keystore URI is caller-supplied and
+    // need not be. Every value is single-quoted, which suspends all expansion.
+    const hostile = 'keystore:file:/tmp/$(touch /tmp/pwned) key\'s "spot"';
+    const file = formatCredentialFile(
+      JSON.parse(goodPayload()) as Parameters<typeof formatCredentialFile>[0],
+      hostile,
+    );
+    const keyLine = file.split('\n').find((line) => line.startsWith('LWA_CREDENTIAL_KEY=')) ?? '';
+    expect(keyLine).toContain("LWA_CREDENTIAL_KEY='");
+    // The command substitution is inside quotes, and the apostrophe is escaped with
+    // the standard '\'' idiom rather than ending the quoted run.
+    expect(keyLine).toContain('$(touch /tmp/pwned)');
+    expect(keyLine).toContain(`key'\\''s`);
+
+    // Round-trips: the parser removes exactly the quoting the formatter added.
+    expect(parseCredentialFile(file)?.key).toBe(hostile.replaceAll("'", `'\\''`));
+  });
+
+  it('refuses control characters in the key', () => {
+    const payload = JSON.parse(goodPayload()) as Parameters<typeof formatCredentialFile>[0];
+    // A newline would end the assignment and leave the rest to the shell.
+    expect(() => formatCredentialFile(payload, 'AAAA\nrm -rf /')).toThrow(/control characters/u);
+    expect(() => parseCredentialFile("LWA_CREDENTIAL='{}'\nLWA_CREDENTIAL_KEY=a\u0000b")).toThrow(
+      /control characters/u,
+    );
+  });
+
+  it('refuses an unsupported keystore scheme', () => {
+    const file = "LWA_CREDENTIAL='{}'\nLWA_CREDENTIAL_KEY=keystore:ftp/somewhere\n";
+    expect(() => parseCredentialFile(file)).toThrow(/keystore scheme/u);
+    // A supported one parses.
+    expect(
+      parseCredentialFile("LWA_CREDENTIAL='{}'\nLWA_CREDENTIAL_KEY=keystore:keychain/lwa/nightly\n")
+        ?.key,
+    ).toBe('keystore:keychain/lwa/nightly');
+  });
+
+  it('refuses a duplicated assignment and an oversized file', () => {
+    // Two assignments: a shell takes the last, a reader the first. Refuse instead.
+    expect(() =>
+      parseCredentialFile("LWA_CREDENTIAL='{}'\nLWA_CREDENTIAL_KEY=a\nLWA_CREDENTIAL_KEY=b\n"),
+    ).toThrow(/more than once/u);
+    expect(() => parseCredentialFile(`# ${'x'.repeat(70_000)}\n`)).toThrow(/larger than/u);
+  });
 });
 
 describe('compromise revocation and the registration race', () => {

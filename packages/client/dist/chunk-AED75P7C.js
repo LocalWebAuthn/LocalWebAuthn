@@ -2,16 +2,23 @@
 var CREDENTIAL_PAYLOAD_VERSION = 1;
 var CREDENTIAL_VARIABLE = "LWA_CREDENTIAL";
 var CREDENTIAL_KEY_VARIABLE = "LWA_CREDENTIAL_KEY";
+var KEYSTORE_SCHEMES = ["file", "keychain", "dpapi", "keyring", "tpm", "kms", "agent"];
 function isKeystoreReference(value) {
   return value.startsWith("keystore:");
+}
+function shellQuote(value) {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 function formatCredentialFile(payload, key, comment) {
   const json = JSON.stringify(payload);
   if (json.includes("'")) {
     throw new Error("Credential payload fields must not contain an apostrophe.");
   }
+  if (/[\u0000-\u001f\u007f]/u.test(key)) {
+    throw new Error("The credential key must not contain control characters.");
+  }
   const lines = comment ? [`# ${comment.replaceAll(/[\r\n]+/gu, " ")}`] : [];
-  lines.push(`${CREDENTIAL_VARIABLE}='${json}'`, `${CREDENTIAL_KEY_VARIABLE}=${key}`);
+  lines.push(`${CREDENTIAL_VARIABLE}='${json}'`, `${CREDENTIAL_KEY_VARIABLE}=${shellQuote(key)}`);
   return `${lines.join("\n")}
 `;
 }
@@ -22,7 +29,11 @@ function unquote(value) {
   }
   return trimmed;
 }
+var MAX_FILE_BYTES = 64 * 1024;
 function parseCredentialFile(text) {
+  if (text.length > MAX_FILE_BYTES) {
+    throw new Error(`The credential file is larger than ${String(MAX_FILE_BYTES)} bytes.`);
+  }
   let payload;
   let key;
   for (const line of text.split(/\r?\n/u)) {
@@ -37,9 +48,27 @@ function parseCredentialFile(text) {
     const name = trimmed.slice(0, separator).trim().replace(/^export\s+/u, "");
     const value = unquote(trimmed.slice(separator + 1));
     if (name === CREDENTIAL_VARIABLE) {
+      if (payload !== void 0) {
+        throw new Error(`${CREDENTIAL_VARIABLE} is assigned more than once.`);
+      }
       payload = value;
     } else if (name === CREDENTIAL_KEY_VARIABLE) {
+      if (key !== void 0) {
+        throw new Error(`${CREDENTIAL_KEY_VARIABLE} is assigned more than once.`);
+      }
       key = value;
+    }
+  }
+  if (key !== void 0 && /[\u0000-\u001f\u007f]/u.test(key)) {
+    throw new Error("The credential key must not contain control characters.");
+  }
+  if (key !== void 0 && isKeystoreReference(key)) {
+    const matched = /^keystore:(?<scheme>[a-z0-9+.-]+)/iu.exec(key);
+    const scheme = matched?.groups?.scheme.toLowerCase();
+    if (scheme === void 0 || !KEYSTORE_SCHEMES.includes(scheme)) {
+      throw new Error(
+        `Unsupported keystore scheme in ${CREDENTIAL_KEY_VARIABLE}; expected one of ${KEYSTORE_SCHEMES.join(", ")}.`
+      );
     }
   }
   return payload !== void 0 && key !== void 0 ? { payload, key } : null;
@@ -65,7 +94,55 @@ function parseCredentialPayload(json) {
   if (candidate.alg !== -7 && candidate.alg !== -8) {
     throw new Error(`Unsupported LWA_CREDENTIAL alg ${String(candidate.alg)}.`);
   }
-  return candidate;
+  const payload = candidate;
+  const baseUrl = requireHttpsOrigin(payload.baseUrl, "baseUrl");
+  const origin = requireHttpsOrigin(payload.origin, "origin");
+  if (origin.hostname !== payload.rpId && !origin.hostname.endsWith(`.${payload.rpId}`)) {
+    throw new Error(
+      `LWA_CREDENTIAL origin ${origin.origin} is not at or beneath rpId ${payload.rpId}.`
+    );
+  }
+  if (baseUrl.hostname !== origin.hostname) {
+    throw new Error(
+      `LWA_CREDENTIAL baseUrl host ${baseUrl.hostname} does not match origin host ${origin.hostname}.`
+    );
+  }
+  requireBase64Url(payload.credentialId, "credentialId");
+  requireBase64Url(payload.userHandle, "userHandle");
+  if (decodedLength(payload.userHandle) !== 32) {
+    throw new Error("LWA_CREDENTIAL userHandle must be 32 bytes.");
+  }
+  return payload;
+}
+function requireHttpsOrigin(value, field) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`LWA_CREDENTIAL ${field} is not a URL: ${value}`);
+  }
+  const loopback = url.hostname === "localhost" || url.hostname.endsWith(".localhost") || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+    throw new Error(
+      `LWA_CREDENTIAL ${field} must be HTTPS (or loopback HTTP for development): ${value}`
+    );
+  }
+  if (url.username || url.password) {
+    throw new Error(`LWA_CREDENTIAL ${field} must not contain userinfo: ${value}`);
+  }
+  if (url.search || url.hash || url.pathname !== "/" && url.pathname !== "") {
+    throw new Error(`LWA_CREDENTIAL ${field} must be a bare origin: ${value}`);
+  }
+  return url;
+}
+function requireBase64Url(value, field) {
+  if (!/^[A-Za-z0-9_-]+$/u.test(value)) {
+    throw new Error(`LWA_CREDENTIAL ${field} is not unpadded base64url.`);
+  }
+}
+function decodedLength(base64Url) {
+  const remainder = base64Url.length % 4;
+  return Math.floor(base64Url.length / 4) * 3 + (remainder === 0 ? 0 : remainder - 1);
 }
 
 // src/bytes.ts

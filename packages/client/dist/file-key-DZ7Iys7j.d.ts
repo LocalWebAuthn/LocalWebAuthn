@@ -98,7 +98,13 @@ declare function isKeystoreReference(value: string): boolean;
  * @param comment - Free text for the leading comment; newlines are stripped.
  */
 declare function formatCredentialFile(payload: CredentialPayload, key: string, comment?: string): string;
-/** Read the two variables out of `.env` text, ignoring comments and other keys. */
+/**
+ * Read the two variables out of `.env` text, ignoring comments and other keys.
+ *
+ * Refuses a file larger than {@link MAX_FILE_BYTES}, and refuses either variable
+ * appearing twice: with two assignments a shell would take the last and a careless
+ * reader the first, so "which key is this?" would have two answers.
+ */
 declare function parseCredentialFile(text: string): {
     payload: string;
     key: string;

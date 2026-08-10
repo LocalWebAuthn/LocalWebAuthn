@@ -78,6 +78,23 @@ export class MachineClient {
   #nonce: string | undefined;
 
   constructor(options: MachineClientOptions) {
+    // `parseCredentialPayload` checks this when the payload comes from a file, but a
+    // payload can also be built by hand. A machine credential authenticates over the
+    // network, and its assertions and DPoP proofs are only as private as the
+    // transport, so refuse plain HTTP anywhere except loopback.
+    const baseUrl = new URL(options.payload.baseUrl);
+    const loopback =
+      baseUrl.hostname === 'localhost' ||
+      baseUrl.hostname.endsWith('.localhost') ||
+      baseUrl.hostname === '127.0.0.1' ||
+      baseUrl.hostname === '[::1]';
+    if (baseUrl.protocol !== 'https:' && !(baseUrl.protocol === 'http:' && loopback)) {
+      throw new MachineClientError(
+        'insecure_base_url',
+        `baseUrl must be HTTPS (or loopback HTTP for development): ${options.payload.baseUrl}`,
+        0,
+      );
+    }
     this.#payload = options.payload;
     this.#keyStore = options.keyStore;
     this.#endpoints = { ...DEFAULT_ENDPOINTS, ...options.endpoints };

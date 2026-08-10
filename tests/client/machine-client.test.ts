@@ -140,6 +140,26 @@ describe('MachineClient', () => {
     ({ keyStore } = await generateKeyStore(ES256));
   });
 
+  it('refuses a plain-HTTP endpoint that is not loopback', async () => {
+    // Defence in depth: parseCredentialPayload checks this for a file, but a payload
+    // can be built by hand, and a proof sent in the clear protects nothing.
+    expect(
+      () =>
+        new MachineClient({
+          payload: { ...payloadFor(), baseUrl: 'http://api.example.test' },
+          keyStore,
+        }),
+    ).toThrow(/HTTPS/u);
+    // Loopback stays usable, because that is where the demo runs.
+    expect(
+      () =>
+        new MachineClient({
+          payload: { ...payloadFor(), baseUrl: 'http://localhost:4173' },
+          keyStore,
+        }),
+    ).not.toThrow();
+  });
+
   it('runs the ceremony once and reuses the session', async () => {
     const server = stubServer();
     const client = new MachineClient({

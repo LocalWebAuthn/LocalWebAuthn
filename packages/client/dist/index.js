@@ -13,7 +13,7 @@ import {
   rawSignatureToDer,
   sha256,
   utf8
-} from "./chunk-UF6GTW5H.js";
+} from "./chunk-AED75P7C.js";
 
 // src/authenticator.ts
 var FLAG_UP = 1;
@@ -152,6 +152,15 @@ var MachineClient = class {
   /** Latest `DPoP-Nonce`; the server may demand one at any point. */
   #nonce;
   constructor(options) {
+    const baseUrl = new URL(options.payload.baseUrl);
+    const loopback = baseUrl.hostname === "localhost" || baseUrl.hostname.endsWith(".localhost") || baseUrl.hostname === "127.0.0.1" || baseUrl.hostname === "[::1]";
+    if (baseUrl.protocol !== "https:" && !(baseUrl.protocol === "http:" && loopback)) {
+      throw new MachineClientError(
+        "insecure_base_url",
+        `baseUrl must be HTTPS (or loopback HTTP for development): ${options.payload.baseUrl}`,
+        0
+      );
+    }
     this.#payload = options.payload;
     this.#keyStore = options.keyStore;
     this.#endpoints = { ...DEFAULT_ENDPOINTS, ...options.endpoints };
