@@ -2,19 +2,26 @@
 
 ## Unreleased
 
+## 3.1.0 - 2026-08-12
+
+Observable credential issuance without changing credential-state semantics: signup lifecycle
+events, enrollment-refusal diagnosis, provenance-aware credential notices, scheduled cleanup,
+and failure-contained telemetry. No schema migration is required.
+
 ### Added
 
 - **`SignupEvent` and `SignupEventSink`** in `@localwebauthn/channels-core`, emitted by
   the demo at every applied transition: started, each judged proof (including the
   rejected ones), completed, the recovery delay opening, each claim, the veto, and each
-  row about to be reaped.
+  row actually reaped.
 
   None of this was observable, and it could not be: `@localwebauthn/server` has no
   concept of a signup, and its first sight of a self-serve flow is `enrollment.issued`
   at completion. Everything earlier is host state. Reaping expired rows made this
   urgent rather than merely untidy — keeping them forever was an accidental audit
-  trail, and deleting them leaves none unless one is emitted. `signup.reaped` therefore
-  fires _before_ each delete, so the trail outlives the data.
+  trail, and deleting them leaves none unless one is emitted. The reaper deletes and
+  returns each expired row atomically, then emits `signup.reaped` for the rows actually
+  removed. Deletion still succeeds when the observational sink fails.
 
   `signup.proof` carries the outcome rather than splitting into per-outcome types, so
   an `invalid` is as visible as a `proved`: a run of them against one signup is
@@ -115,6 +122,11 @@
 
 ### Fixed
 
+- **Copyable examples no longer install known-vulnerable runtime dependencies.** The demo
+  and Hono starter use Hono 4.13.1; the Node delivery example uses Nodemailer 9.0.5.
+  Nodemailer's stricter TLS validation is compatible with the example and preserves the
+  intended fail-closed transport behavior.
+
 - **Signup telemetry cannot change credential-workflow outcomes.** Synchronous throws
   and asynchronous rejections are awaited, logged, and contained after state commits.
   Reaping deletes with `RETURNING` and reports only rows actually removed.
@@ -166,8 +178,8 @@
 
 - `examples/channels/README.md` regains the integration map and the signup/recovery
   sequence diagrams, and states plainly what claim-on-reopen costs — the claim
-  window, the two independent clocks, what is still silent at claim time, and the
-  token held at rest. See #10.
+  window, the two independent clocks, the event emitted at claim time, and the token
+  held at rest. See #10.
 
 ## 3.0.0 - 2026-08-09
 

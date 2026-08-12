@@ -43,12 +43,8 @@ This package is that key holder: the ceremony construction, the two-line credent
 ## The script side, in full
 
 ```ts
-import {
-  importKeyStore,
-  MachineClient,
-  parseCredentialFile,
-  parseCredentialPayload,
-} from '@localwebauthn/client';
+import { MachineClient, parseCredentialPayload } from '@localwebauthn/client';
+import { importKeyStore, parseCredentialFile } from '@localwebauthn/client/file-key';
 import { readFile } from 'node:fs/promises';
 
 const file = parseCredentialFile(await readFile('.env', 'utf8'));
@@ -87,7 +83,9 @@ platform store rather than the file.
 
 ## Lower-level pieces
 
-Use these when building the mint page, or when debugging a rejected assertion:
+Use these when building the mint page, or when debugging a rejected assertion. Raw-key and
+credential-file helpers are exported by `@localwebauthn/client/file-key`; the ceremony and
+DPoP helpers are exported by `@localwebauthn/client`.
 
 | Export                                         | Purpose                                       |
 | ---------------------------------------------- | --------------------------------------------- |
