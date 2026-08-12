@@ -71,17 +71,6 @@ function createOpaqueToken(randomBytes = defaultRandomBytes) {
 var LocalWebAuthnError = class extends Error {
   code;
   status;
-  /**
-   * Why an enrollment token was refused, on an `invalid_enrollment` thrown by
-   * `exchangeEnrollment`. Absent everywhere else, and absent when the store does
-   * not implement `enrollmentGrantState`.
-   *
-   * The `code` stays `invalid_enrollment` whatever this says, so a host that
-   * ignores it behaves exactly as before. Read it to choose the message: only
-   * `'used'` is worth telling somebody about, because an enrollment link is
-   * single-use and they may not be the one who used it.
-   */
-  enrollmentState;
   constructor(code, message, status, details = {}) {
     super(message);
     this.name = "LocalWebAuthnError";
@@ -755,11 +744,13 @@ var LocalWebAuthn = class {
    *
    * Emits `enrollment.rejected` so a host can act without touching the error at
    * all — notify every bound channel, raise a support signal, rate-limit a source.
-   * A store with no `enrollmentGrantState` yields state `unknown` and still emits,
-   * because "a token was refused" is worth recording even undiagnosed.
+   * A store with no `enrollmentGrantState` still emits state `unknown`, because "a
+   * token was refused" is worth recording even undiagnosed. The thrown error keeps
+   * its pre-diagnostics shape and has no `enrollmentState` in that case.
    */
   async #refusedEnrollment(tokenHash, now) {
-    const rejection = await this.#store.enrollmentGrantState?.(tokenHash, now) ?? {
+    const diagnosed = this.#store.enrollmentGrantState ? await this.#store.enrollmentGrantState(tokenHash, now) : null;
+    const rejection = diagnosed ?? {
       state: "unknown",
       userId: null
     };
@@ -773,7 +764,7 @@ var LocalWebAuthn = class {
       "invalid_enrollment",
       rejection.state === "used" ? "This enrollment link has already been used." : "The enrollment link is invalid or expired.",
       403,
-      { enrollmentState: rejection.state }
+      diagnosed ? { enrollmentState: diagnosed.state } : {}
     );
   }
   /**
@@ -913,6 +904,7 @@ var LocalWebAuthn = class {
     const { credential, credentialBackedUp, credentialDeviceType } = verification.registrationInfo;
     const sessionToken = createOpaqueToken(this.#randomBytes);
     const expiresAt = now + kindPolicy(this.config, challenge.credentialKind).sessionAbsoluteMs;
+    const createdVia = authorization.grantId === null ? "credential" : "enrollment";
     const completed = await this.#store.completeRegistration({
       challenge,
       enrollmentSessionHash: authorization.enrollmentSessionHash,
@@ -933,7 +925,7 @@ var LocalWebAuthn = class {
         // rows that carry it — the consumed challenge, the completed grant, the
         // authorizing session — are all reaped within minutes, so this is the only
         // durable record of where the credential came from.
-        createdVia: authorization.grantId === null ? "credential" : "enrollment",
+        createdVia,
         parentCredentialId: authorization.parentCredentialId,
         grantId: authorization.grantId,
         approvedByUserId: authorization.approvedByUserId,
@@ -969,7 +961,8 @@ var LocalWebAuthn = class {
       at: now,
       userId: user.id,
       credentialId: credential.id,
-      credentialKind: challenge.credentialKind
+      credentialKind: challenge.credentialKind,
+      createdVia
     });
     await this.#emit({
       type: "session.created",

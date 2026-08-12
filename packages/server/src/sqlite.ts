@@ -428,8 +428,8 @@ export class SqliteLocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAut
     return this.#database
       .transaction(() => {
         const sessions = this.#database.prepare(SQL.deleteExpiredSessions).run(now).changes;
-        const enrollmentGrants = this.#database.prepare(SQL.deleteFinishedGrants).run(now).changes;
         const challenges = this.#database.prepare(SQL.deleteFinishedChallenges).run(now).changes;
+        const enrollmentGrants = this.#database.prepare(SQL.deleteFinishedGrants).run(now).changes;
         const dpopProofs = this.#database.prepare(SQL.deleteExpiredDpopProofs).run(now).changes;
         const dpopNonces = this.#database.prepare(SQL.deleteExpiredDpopNonces).run(now).changes;
         return { enrollmentGrants, challenges, sessions, dpopProofs, dpopNonces };

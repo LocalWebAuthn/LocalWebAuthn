@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   assertE164,
   assertEmailAddress,
+  bestEffortSignupEventSink,
   enrollmentEmail,
   enrollmentSms,
   inviteAndDeliver,
@@ -39,20 +40,23 @@ describe('templates', () => {
     const params = {
       appName: 'Example <App>',
       label: 'Work laptop',
+      createdVia: 'enrollment' as const,
       supportContact: 'security@example.com',
     };
     const email = passkeyCreatedEmail(params);
-    expect(email.subject).toBe('A passkey was created for your Example <App> account');
+    expect(email.subject).toBe('A credential was added to your Example <App> account');
     expect(email.text).toContain('Work laptop');
     expect(email.html).toContain('Example &lt;App&gt;');
 
-    // Lock the account, then re-secure the channels, then re-enroll.
+    // Lock and revoke first, then investigate the authority actually used.
     const lock = email.text.indexOf('lock the account');
-    const resecure = email.text.indexOf('Re-secure your email and phone');
-    const reenroll = email.text.indexOf('new enrollment invitation');
+    const investigate = email.text.indexOf('investigate how this one was exposed');
+    const resecure = email.text.indexOf('Re-secure email or phone');
     expect(lock).toBeGreaterThan(-1);
-    expect(lock).toBeLessThan(resecure);
-    expect(resecure).toBeLessThan(reenroll);
+    expect(lock).toBeLessThan(investigate);
+    expect(investigate).toBeLessThan(resecure);
+    expect(email.text).toContain('enrollment invitation');
+    expect(email.text).not.toContain('may control your email or your phone');
 
     // It has to state the benign reading too, or a routine enrollment reads as an
     // incident every time.
@@ -61,6 +65,53 @@ describe('templates', () => {
     const sms = passkeyCreatedSms(params);
     expect(sms).toContain('Work laptop');
     expect(sms).toContain('security@example.com');
+    expect(sms).toContain('enrollment invitation');
+  });
+
+  it('names a signed-in session for a session-authorized credential', () => {
+    const params = {
+      appName: 'Example',
+      label: 'Security key',
+      createdVia: 'credential' as const,
+      supportContact: 'security@example.com',
+    };
+    const email = passkeyCreatedEmail(params);
+    expect(email.text).toContain('added from a signed-in session');
+    expect(email.text).toContain('revoke the credential that was just added');
+    expect(email.text).toContain('every live session');
+    expect(email.text).not.toContain('enrollment invitation');
+
+    const sms = passkeyCreatedSms(params);
+    expect(sms).toContain('a signed-in session');
+    expect(sms).not.toContain('enrollment invitation');
+  });
+});
+
+describe('signup event delivery', () => {
+  it('awaits asynchronous sinks and contains sink and failure-reporter errors', async () => {
+    const calls: string[] = [];
+    const sink = bestEffortSignupEventSink(
+      async () => {
+        await Promise.resolve();
+        calls.push('sink');
+        throw new Error('telemetry unavailable');
+      },
+      async () => {
+        calls.push('failure');
+        throw new Error('logger unavailable');
+      },
+    );
+
+    await expect(
+      sink({
+        type: 'signup.started',
+        at: 1,
+        signupId: 'signup-1',
+        kind: 'signup',
+        channels: ['email', 'phone'],
+      }),
+    ).resolves.toBeUndefined();
+    expect(calls).toEqual(['sink', 'failure']);
   });
 });
 

@@ -7,7 +7,7 @@ import {
   enrollmentGrantStateFromRow,
   enrollmentSessionFromRow,
   sessionFromRow
-} from "./chunk-OVMYNLID.js";
+} from "./chunk-5D5CWGJG.js";
 import {
   LOCALWEBAUTHN_SCHEMA_VERSION,
   localWebAuthnMigrationsTableStatement,
@@ -252,15 +252,15 @@ var D1LocalWebAuthnStore = class {
   async cleanup(now) {
     const results = await this.#database.batch([
       this.#database.prepare(SQL.deleteExpiredSessions).bind(now),
-      this.#database.prepare(SQL.deleteFinishedGrants).bind(now),
       this.#database.prepare(SQL.deleteFinishedChallenges).bind(now),
+      this.#database.prepare(SQL.deleteFinishedGrants).bind(now),
       this.#database.prepare(SQL.deleteExpiredDpopProofs).bind(now),
       this.#database.prepare(SQL.deleteExpiredDpopNonces).bind(now)
     ]);
     return {
       sessions: changes(results[0]),
-      enrollmentGrants: changes(results[1]),
-      challenges: changes(results[2]),
+      enrollmentGrants: changes(results[2]),
+      challenges: changes(results[1]),
       dpopProofs: changes(results[3]),
       dpopNonces: changes(results[4])
     };

@@ -664,7 +664,17 @@ export type LocalWebAuthnEvent =
       grantId: string;
     }
   | {
-      type: 'credential.registered' | 'credential.authenticated' | 'credential.revoked';
+      type: 'credential.registered';
+      at: number;
+      userId: string;
+      credentialId: string;
+      /** {@link Credential.kind}, so an audit trail can tell a person from a program. */
+      credentialKind?: string | null;
+      /** The authority that committed this registration. */
+      createdVia: CredentialProvenance;
+    }
+  | {
+      type: 'credential.authenticated' | 'credential.revoked';
       at: number;
       userId: string;
       credentialId: string;

@@ -257,11 +257,13 @@ export type SignupEvent =
       type: 'signup.canceled';
       at: number;
       signupId: string;
+      /** The authority which applied the veto. */
+      cause: 'channel_proof' | 'credential_authenticated';
     }
   | {
       /**
-       * The row is about to be deleted. Last chance to record what it held, which is
-       * the point: the trail has to outlive the data.
+       * The expired row was deleted. The event retains its non-secret lifecycle
+       * summary after the personal data is gone.
        */
       type: 'signup.reaped';
       at: number;
@@ -271,8 +273,44 @@ export type SignupEvent =
       completed: boolean;
     };
 
-/** Where a host sends {@link SignupEvent}s. Never throws into the caller. */
-export type SignupEventSink = (event: SignupEvent) => void;
+/**
+ * Where a host sends {@link SignupEvent}s.
+ *
+ * The return is deliberately `unknown`: ordinary callbacks such as
+ * `(event) => events.push(event)` remain assignable, while a returned promise is
+ * still awaited by {@link bestEffortSignupEventSink}.
+ */
+export type SignupEventSink = (event: SignupEvent) => unknown;
+
+/** A contained failure from a {@link SignupEventSink}. */
+export type SignupEventFailureSink = (error: unknown, event: SignupEvent) => unknown;
+
+/**
+ * Turn a possibly failing signup event sink into best-effort observation.
+ *
+ * Signup state is committed before its applied-transition event is delivered, so
+ * throwing into the caller would make a successful transition look rolled back.
+ * This wrapper awaits asynchronous sinks to preserve event order, contains their
+ * failures, and also contains failures from the optional failure reporter. Hosts
+ * that require guaranteed delivery need a transactional outbox rather than an
+ * in-process callback.
+ */
+export function bestEffortSignupEventSink(
+  sink: SignupEventSink,
+  onFailure?: SignupEventFailureSink,
+): SignupEventSink {
+  return async (event) => {
+    try {
+      await sink(event);
+    } catch (error) {
+      try {
+        await onFailure?.(error, event);
+      } catch {
+        // The observational failure path is observational too.
+      }
+    }
+  };
+}
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   let difference = left.length === right.length ? 0 : 1;

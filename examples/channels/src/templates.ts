@@ -128,6 +128,8 @@ export type PasskeyCreatedParams = {
   appName: string;
   /** How the person should describe the credential, e.g. its label. */
   label: string;
+  /** The authority that committed this credential registration. */
+  createdVia: 'enrollment' | 'credential';
   /** Where to go if they did not do this. */
   supportContact: string;
 };
@@ -148,33 +150,50 @@ export type PasskeyCreatedParams = {
  * reads it and acts. Only the second one needed to be reached, and there is no way
  * to know in advance which they are.
  *
- * The remedy is spelled out in order, because the order matters: cancel the
- * authorization first, then re-secure the channels, then re-enroll. Re-enrolling
- * into a still-compromised mailbox just repeats the problem.
+ * The remedy names the authority the service actually used. An enrollment-derived
+ * credential points to an invitation; a credential-derived one points to a signed-in
+ * session. Neither path guesses how that authority was obtained.
  */
 export function passkeyCreatedEmail(params: PasskeyCreatedParams): EmailContent {
-  const subject = `A passkey was created for your ${params.appName} account`;
+  const subject = `A credential was added to your ${params.appName} account`;
+  const unexpected =
+    params.createdVia === 'enrollment'
+      ? [
+          'If it was NOT you, someone used an enrollment invitation for your account.',
+          'The service cannot tell how they obtained it. Act in this order:',
+        ]
+      : [
+          'If it was NOT you, it was added from a signed-in session for your account.',
+          'Treat that session and any other live sessions as compromised. Act in this order:',
+        ];
   const text = [
-    `A passkey ("${params.label}") was just created for your ${params.appName} account.`,
+    `A credential ("${params.label}") was just added to your ${params.appName} account.`,
     '',
     'If that was you, nothing more is needed — you can sign in with it from now on.',
     '',
-    'If it was NOT you, someone else has used your enrollment link, which means they',
-    'may control your email or your phone. Act in this order:',
+    ...unexpected,
     '',
     `  1. Contact ${params.supportContact} and ask them to lock the account and`,
-    '     cancel the passkey that was just created.',
-    '  2. Re-secure your email and phone before anything else.',
-    '  3. Ask for a new enrollment invitation once both are back under your control.',
+    '     revoke the credential that was just added and every live session.',
+    params.createdVia === 'enrollment'
+      ? '  2. Cancel other pending invitations and investigate how this one was exposed.'
+      : '  2. Investigate how the signed-in session was obtained and secure that device.',
+    '  3. Re-secure email or phone if the investigation shows either channel was exposed.',
   ].join('\n');
+  const authorization =
+    params.createdVia === 'enrollment'
+      ? 'someone used an enrollment invitation for your account. The service cannot tell how they obtained it'
+      : 'it was added from a signed-in session for your account. Treat that session and any other live sessions as compromised';
   const html = [
-    `<p>A passkey (<strong>${escapeHtml(params.label)}</strong>) was just created for your <strong>${escapeHtml(params.appName)}</strong> account.</p>`,
+    `<p>A credential (<strong>${escapeHtml(params.label)}</strong>) was just added to your <strong>${escapeHtml(params.appName)}</strong> account.</p>`,
     `<p>If that was you, nothing more is needed — you can sign in with it from now on.</p>`,
-    `<p>If it was <strong>not</strong> you, someone else has used your enrollment link, which means they may control your email or your phone. Act in this order:</p>`,
+    `<p>If it was <strong>not</strong> you, ${authorization}. Act in this order:</p>`,
     '<ol>',
-    `<li>Contact ${escapeHtml(params.supportContact)} and ask them to lock the account and cancel the passkey that was just created.</li>`,
-    '<li>Re-secure your email and phone before anything else.</li>',
-    '<li>Ask for a new enrollment invitation once both are back under your control.</li>',
+    `<li>Contact ${escapeHtml(params.supportContact)} and ask them to lock the account, revoke the credential that was just added, and revoke every live session.</li>`,
+    params.createdVia === 'enrollment'
+      ? '<li>Cancel other pending invitations and investigate how this one was exposed.</li>'
+      : '<li>Investigate how the signed-in session was obtained and secure that device.</li>',
+    '<li>Re-secure email or phone if the investigation shows either channel was exposed.</li>',
     '</ol>',
   ].join('\n');
   return { subject, text, html };
@@ -182,5 +201,7 @@ export function passkeyCreatedEmail(params: PasskeyCreatedParams): EmailContent 
 
 /** SMS form of {@link passkeyCreatedEmail}. */
 export function passkeyCreatedSms(params: PasskeyCreatedParams): string {
-  return `${params.appName}: a passkey ("${params.label}") was just created for your account. Not you? Contact ${params.supportContact} to lock it, then re-secure your email and phone.`;
+  const authority =
+    params.createdVia === 'enrollment' ? 'an enrollment invitation' : 'a signed-in session';
+  return `${params.appName}: a credential ("${params.label}") was added using ${authority}. Not you? Contact ${params.supportContact} to lock the account and revoke the credential and live sessions.`;
 }

@@ -24,6 +24,13 @@
   phone number — these go to logs, so the `signupId` is the correlator and a host that
   wants the destination reads the row while it lives. A test asserts the absence.
 
+  `bestEffortSignupEventSink` awaits asynchronous sinks to keep event order, contains
+  sink and failure-reporter errors, and makes explicit that an in-process callback is
+  observational rather than transactional. The demo routes and reaper use it, so a
+  telemetry outage cannot turn a committed transition into a failed request or stop
+  expired personal data from being deleted. `signup.canceled` also names whether the
+  applied veto came from channel proof or credential authentication.
+
 - **A claim counter on the demo's signups.** The first claim is the person finishing; a
   second is claim-on-reopen, which is either the same person on another device or
   somebody else holding one of their channels. Until now only the _outcome_ of an extra
@@ -55,10 +62,11 @@
   state anyone would actually want to know about.
 
   It fires for legitimate enrollments too, which is the design rather than a cost:
-  whoever just made a passkey reads it and moves on, and whoever did not reads it and
-  acts. The copy states the benign reading first, then the remedy in order — lock the
-  account, re-secure the channels, _then_ re-enroll, because re-enrolling into a
-  mailbox that is still compromised only repeats the problem.
+  whoever just made a credential reads it and moves on, and whoever did not reads it
+  and acts. `credential.registered` carries the committed `createdVia` provenance, so
+  the notice names either an enrollment invitation or a signed-in session without
+  guessing how that authority was obtained. Both paths first recommend locking the
+  account and revoking the unexpected credential and live sessions.
 
 - **A refused enrollment link now says why.** `exchangeEnrollment` answered one
   `invalid_enrollment` for five different situations, so a host could not tell "this
@@ -100,7 +108,24 @@
   retained row is unusable and blocks no new invitation. What persists is a token
   hash, never a token.
 
+- **Cleanup removes finished challenges before expired grants.** A challenge that is
+  still live continues to retain its referenced grant, while a consumed or expired
+  challenge and its already-expired grant are now both removed and counted in one
+  sweep.
+
 ### Fixed
+
+- **Signup telemetry cannot change credential-workflow outcomes.** Synchronous throws
+  and asynchronous rejections are awaited, logged, and contained after state commits.
+  Reaping deletes with `RETURNING` and reports only rows actually removed.
+
+- **Cancellation telemetry now matches committed vetoes.** Conditional no-ops emit
+  nothing; credential-authentication cancellation returns the affected signup IDs and
+  emits one correlated event for each. API idempotency remains unchanged.
+
+- **Custom stores without `enrollmentGrantState` keep the compatibility contract.**
+  Refusals still emit best-effort `enrollment.rejected` with `state: 'unknown'`, while
+  the thrown error has no `enrollmentState` field unless the store diagnosed it.
 
 - **Revocation is no longer reachable by accident.** The demo's claim handler serves
   both plain signup and recovery, because `verifySignupProof` reports `'completed'` for

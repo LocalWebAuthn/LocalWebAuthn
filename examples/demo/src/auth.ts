@@ -18,7 +18,12 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 
 import type { DemoDatabase } from './database';
 
-import { passkeyCreatedEmail, passkeyCreatedSms } from '@localwebauthn/channels-core';
+import {
+  bestEffortSignupEventSink,
+  passkeyCreatedEmail,
+  passkeyCreatedSms,
+  type SignupEventSink,
+} from '@localwebauthn/channels-core';
 
 import { cancelActiveRecoveries, clientById } from './database';
 
@@ -47,6 +52,7 @@ const cookiesFor = (publicOrigin: string) => authCookieNames(publicOrigin, 'lwa_
 export function createDemoAuthentication(
   database: DemoDatabase,
   config: DemoAuthConfig,
+  onSignupEvent?: SignupEventSink,
 ): DemoAuthentication {
   return new LocalWebAuthn({
     rpName: config.rpName,
@@ -108,9 +114,14 @@ export function createDemoAuthentication(
     // nobody (including a channel-compromising attacker) needs re-enrollment.
     // Events are best-effort observability; this is defense in depth on top
     // of the cancel buttons and the recovery delay, not the only control.
-    onEvent: (event) => {
+    onEvent: async (event) => {
       if (event.type === 'credential.authenticated') {
-        cancelActiveRecoveries(database, event.userId, Date.now());
+        await cancelRecoveriesAfterCredentialAuthentication(
+          database,
+          event.userId,
+          Date.now(),
+          onSignupEvent,
+        );
       }
       // A spent enrollment link was presented again. Either the holder is
       // repeating themselves — bookmark, back button, second device — or somebody
@@ -147,10 +158,47 @@ export function createDemoAuthentication(
       // whoever just made a passkey reads it and moves on, and whoever did not reads
       // it and acts. There is no way to know in advance which one is reading.
       if (event.type === 'credential.registered') {
-        notifyPasskeyCreated(database, config, event.userId, event.credentialKind ?? null);
+        notifyPasskeyCreated(
+          database,
+          config,
+          event.userId,
+          event.credentialKind ?? null,
+          event.createdVia,
+        );
       }
     },
   });
+}
+
+/**
+ * Apply the passkey-sign-in veto and report only the recovery rows that changed.
+ *
+ * The update returns its row identities, so retries and sign-ins with no active
+ * recovery emit nothing. Delivery is best-effort because authentication and every
+ * cancellation have already committed by the time the core calls this handler.
+ */
+export async function cancelRecoveriesAfterCredentialAuthentication(
+  database: DemoDatabase,
+  userId: string,
+  canceledAt: number,
+  emit?: SignupEventSink,
+): Promise<string[]> {
+  const signupIds = cancelActiveRecoveries(database, userId, canceledAt);
+  if (!emit) {
+    return signupIds;
+  }
+  const bestEffortEmit = bestEffortSignupEventSink(emit, (error, event) => {
+    console.warn('Signup event handler failed.', { event: event.type, error });
+  });
+  for (const signupId of signupIds) {
+    await bestEffortEmit({
+      type: 'signup.canceled',
+      at: canceledAt,
+      signupId,
+      cause: 'credential_authenticated',
+    });
+  }
+  return signupIds;
 }
 
 /**
@@ -166,6 +214,7 @@ function notifyPasskeyCreated(
   config: DemoAuthConfig,
   userId: string,
   credentialKind: string | null,
+  createdVia: 'enrollment' | 'credential',
 ): void {
   const client = clientById(database, userId);
   if (!client) {
@@ -177,6 +226,7 @@ function notifyPasskeyCreated(
     // page they were already signed into, so "passkey" would read as a sign-in
     // credential when it is not one.
     label: credentialKind === null ? 'passkey' : `${credentialKind} credential`,
+    createdVia,
     supportContact: 'your administrator',
   };
   const email = passkeyCreatedEmail(params);

@@ -2,7 +2,11 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import type { SignupEventSink, SignupKind } from '@localwebauthn/channels-core';
+import {
+  bestEffortSignupEventSink,
+  type SignupEventSink,
+  type SignupKind,
+} from '@localwebauthn/channels-core';
 
 import { migrateSqlite } from '@localwebauthn/server/sqlite';
 
@@ -226,14 +230,16 @@ export function markSignupPending(
     .run(input.now, input.claimableAt, input.expiresAt, id);
 }
 
-/** Terminal veto. Idempotent; a no-op once the enrollment token was issued. */
-export function cancelSignup(database: DemoDatabase, id: string, now: number): void {
-  database
-    .prepare(
-      `UPDATE demo_signups SET canceled_at = ?
+/** Terminal veto. Returns whether this call applied it. */
+export function cancelSignup(database: DemoDatabase, id: string, now: number): boolean {
+  return (
+    database
+      .prepare(
+        `UPDATE demo_signups SET canceled_at = ?
        WHERE id = ? AND canceled_at IS NULL AND enrollment_token IS NULL`,
-    )
-    .run(now, id);
+      )
+      .run(now, id).changes === 1
+  );
 }
 
 /**
@@ -245,14 +251,17 @@ export function cancelActiveRecoveries(
   database: DemoDatabase,
   clientId: string,
   now: number,
-): number {
-  return database
+): string[] {
+  const rows = database
     .prepare(
       `UPDATE demo_signups SET canceled_at = ?
        WHERE kind = 'recovery' AND canceled_at IS NULL AND enrollment_token IS NULL
-         AND email = (SELECT email FROM demo_clients WHERE id = ?)`,
+         AND expires_at > ?
+         AND email = (SELECT email FROM demo_clients WHERE id = ?)
+       RETURNING id`,
     )
-    .run(now, clientId).changes;
+    .all(now, now, clientId) as { id: string }[];
+  return rows.map((row) => row.id);
 }
 
 /** Store the claimed enrollment for a matured recovery (consumed_at already set). */
@@ -302,29 +311,37 @@ export function countSignupClaim(database: DemoDatabase, id: string): number {
  * exchanging it against `@localwebauthn/server` until the *grant* expires, which is
  * a separate clock and unaffected by this.
  *
- * Emits `signup.reaped` for each row *before* deleting it, which is the whole reason
- * the sink is here: the audit trail has to outlive the data it describes. Reaping
- * without reporting would replace "personal data kept forever" with "no record that
- * the signup ever existed".
+ * Deletes with `RETURNING`, then emits `signup.reaped` for each row actually removed.
+ * A failing sink is contained: telemetry cannot retain personal data or make the
+ * completed sweep look rolled back. Guaranteed audit delivery requires an outbox in
+ * the deletion transaction; an in-process callback cannot provide it.
  *
  * @returns The number of rows removed, for the caller to log.
  */
-export function reapSignups(database: DemoDatabase, now: number, emit?: SignupEventSink): number {
+export async function reapSignups(
+  database: DemoDatabase,
+  now: number,
+  emit?: SignupEventSink,
+): Promise<number> {
+  const reaped = database
+    .prepare(
+      `DELETE FROM demo_signups
+       WHERE expires_at <= ?
+       RETURNING id, kind, email_proved_at, phone_proved_at, consumed_at`,
+    )
+    .all(now) as {
+    id: string;
+    kind: SignupKind;
+    email_proved_at: number | null;
+    phone_proved_at: number | null;
+    consumed_at: number | null;
+  }[];
   if (emit) {
-    const doomed = database
-      .prepare(
-        `SELECT id, kind, email_proved_at, phone_proved_at, consumed_at
-         FROM demo_signups WHERE expires_at <= ?`,
-      )
-      .all(now) as {
-      id: string;
-      kind: SignupKind;
-      email_proved_at: number | null;
-      phone_proved_at: number | null;
-      consumed_at: number | null;
-    }[];
-    for (const row of doomed) {
-      emit({
+    const bestEffortEmit = bestEffortSignupEventSink(emit, (error, event) => {
+      console.warn('Signup event handler failed.', { event: event.type, error });
+    });
+    for (const row of reaped) {
+      await bestEffortEmit({
         type: 'signup.reaped',
         at: now,
         signupId: row.id,
@@ -337,7 +354,7 @@ export function reapSignups(database: DemoDatabase, now: number, emit?: SignupEv
       });
     }
   }
-  return database.prepare(`DELETE FROM demo_signups WHERE expires_at <= ?`).run(now).changes;
+  return reaped.length;
 }
 
 export function completeSignup(

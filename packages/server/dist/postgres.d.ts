@@ -1,4 +1,4 @@
-import { L as LocalWebAuthnStore, a as LocalWebAuthnDpopStore, E as EnrollmentGrantRecord, b as EnrollmentSession, c as EnrollmentGrantRejection, C as ChallengeRecord, d as ChallengeKind, e as ConsumedChallenge, f as Credential, g as CompleteRegistrationInput, h as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, i as RevokeCredentialResult, j as CleanupResult } from './types-B4vQbaQI.js';
+import { L as LocalWebAuthnStore, a as LocalWebAuthnDpopStore, E as EnrollmentGrantRecord, b as EnrollmentSession, c as EnrollmentGrantRejection, C as ChallengeRecord, d as ChallengeKind, e as ConsumedChallenge, f as Credential, g as CompleteRegistrationInput, h as CompleteAuthenticationInput, S as SessionIdentity, R as RevokedSession, i as RevokeCredentialResult, j as CleanupResult } from './types-BaFWjS4B.js';
 import '@simplewebauthn/server';
 
 type PostgresQueryResult<Row> = {

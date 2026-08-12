@@ -211,6 +211,10 @@ describe('LocalWebAuthn lifecycle', () => {
       'session.created',
       'session.revoked',
     ]);
+    expect(events.find((event) => event.type === 'credential.registered')).toMatchObject({
+      type: 'credential.registered',
+      createdVia: 'enrollment',
+    });
     database.close();
   });
 
@@ -312,11 +316,14 @@ describe('LocalWebAuthn lifecycle', () => {
       .exchangeEnrollment(issue.enrollmentToken)
       .catch((cause: unknown) => cause);
     expect(error).toEqual(
-      expect.objectContaining<Partial<LocalWebAuthnError>>({
-        code: 'invalid_enrollment',
-        enrollmentState: 'unknown',
-      }),
+      expect.objectContaining<Partial<LocalWebAuthnError>>({ code: 'invalid_enrollment' }),
     );
+    expect(error).not.toHaveProperty('enrollmentState');
+    expect(events.at(-1)).toMatchObject({
+      type: 'enrollment.rejected',
+      state: 'unknown',
+      userId: null,
+    });
     database.close();
   });
 
@@ -694,6 +701,10 @@ describe('LocalWebAuthn lifecycle', () => {
     expect(second.verified).toBe(true);
     await expect(auth.listCredentials(user.id)).resolves.toHaveLength(2);
     expect(events.map(({ type }) => type)).toEqual(['credential.registered', 'session.created']);
+    expect(events[0]).toMatchObject({
+      type: 'credential.registered',
+      createdVia: 'credential',
+    });
     expect(events.some((event) => event.type === 'enrollment.completed')).toBe(false);
     database.close();
   });

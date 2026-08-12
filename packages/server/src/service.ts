@@ -276,11 +276,15 @@ export class LocalWebAuthn {
    *
    * Emits `enrollment.rejected` so a host can act without touching the error at
    * all — notify every bound channel, raise a support signal, rate-limit a source.
-   * A store with no `enrollmentGrantState` yields state `unknown` and still emits,
-   * because "a token was refused" is worth recording even undiagnosed.
+   * A store with no `enrollmentGrantState` still emits state `unknown`, because "a
+   * token was refused" is worth recording even undiagnosed. The thrown error keeps
+   * its pre-diagnostics shape and has no `enrollmentState` in that case.
    */
   async #refusedEnrollment(tokenHash: Uint8Array, now: number): Promise<LocalWebAuthnError> {
-    const rejection = (await this.#store.enrollmentGrantState?.(tokenHash, now)) ?? {
+    const diagnosed = this.#store.enrollmentGrantState
+      ? await this.#store.enrollmentGrantState(tokenHash, now)
+      : null;
+    const rejection = diagnosed ?? {
       state: 'unknown' as const,
       userId: null,
     };
@@ -296,7 +300,7 @@ export class LocalWebAuthn {
         ? 'This enrollment link has already been used.'
         : 'The enrollment link is invalid or expired.',
       403,
-      { enrollmentState: rejection.state },
+      diagnosed ? { enrollmentState: diagnosed.state } : {},
     );
   }
 
@@ -453,6 +457,7 @@ export class LocalWebAuthn {
     const { credential, credentialBackedUp, credentialDeviceType } = verification.registrationInfo;
     const sessionToken = createOpaqueToken(this.#randomBytes);
     const expiresAt = now + kindPolicy(this.config, challenge.credentialKind).sessionAbsoluteMs;
+    const createdVia = authorization.grantId === null ? 'credential' : 'enrollment';
     const completed = await this.#store.completeRegistration({
       challenge,
       enrollmentSessionHash: authorization.enrollmentSessionHash,
@@ -473,7 +478,7 @@ export class LocalWebAuthn {
         // rows that carry it — the consumed challenge, the completed grant, the
         // authorizing session — are all reaped within minutes, so this is the only
         // durable record of where the credential came from.
-        createdVia: authorization.grantId === null ? 'credential' : 'enrollment',
+        createdVia,
         parentCredentialId: authorization.parentCredentialId,
         grantId: authorization.grantId,
         approvedByUserId: authorization.approvedByUserId,
@@ -511,6 +516,7 @@ export class LocalWebAuthn {
       userId: user.id,
       credentialId: credential.id,
       credentialKind: challenge.credentialKind,
+      createdVia,
     });
     await this.#emit({
       type: 'session.created',
