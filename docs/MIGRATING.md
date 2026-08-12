@@ -1,8 +1,29 @@
 # Migrating LocalWebAuthn
 
-## 3.0.0 → unreleased (why a refused enrollment link was refused)
+## 3.0.0 → 3.1.0 (credential-issuance telemetry)
 
-**No schema change, and nothing you must do.** Both additions are opt-in.
+**No schema change, and nothing you must do.** The additions are opt-in or additive.
+
+### Event handlers remain observational
+
+`LocalWebAuthn` event handlers and the demo's signup-event sink run after the corresponding
+state change commits. Handler failures are awaited, logged and contained; they do not change
+the service result. `bestEffortSignupEventSink` provides the same boundary for host-owned
+signup events.
+
+The events describe applied state:
+
+- `credential.registered` adds `createdVia: 'enrollment' | 'credential'` so notification
+  copy and audit records can name the authority that actually created the credential.
+- `signup.canceled` adds its channel-proof or credential-authentication cause and is emitted
+  only when the conditional cancellation changed a row.
+- a successful passkey sign-in emits one correlated cancellation for every active recovery
+  it actually vetoed.
+- `signup.reaped` is emitted for rows returned by the delete, after their personal data is
+  removed.
+
+These callbacks are best-effort. If telemetry delivery must be lossless, write an outbox row
+in the same database transaction as the state change and deliver it asynchronously.
 
 ### Custom stores: `enrollmentGrantState` is optional
 
@@ -43,6 +64,10 @@ into responses, and this one answers an unauthenticated caller.
 now lives out its original `expires_at`. This is what makes the diagnosis above
 useful more than a few minutes after a link is used. Retained rows are unusable and
 block no new invitation, and they hold a token hash rather than a token.
+
+Cleanup now removes finished challenges before expired grants. A live challenge still keeps
+its referenced grant; a finished challenge and already-expired grant leave in one sweep and
+are counted in that sweep's `CleanupResult`.
 
 ## 2.2.0 → 3.0.0 (credential kinds and machine credentials)
 

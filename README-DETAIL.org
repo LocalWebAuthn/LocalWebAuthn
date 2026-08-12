@@ -6,10 +6,12 @@
 #+OPTIONS: ^:nil # Disable sub/superscripting with bare _; _{...} still works
 #+OPTIONS: toc:nil
 
-Companion to [[./README.org][README.org]], which builds one application up from nothing.
-This document is the reference: every option, in the order a deployment meets it.  Nothing
-here is required reading to ship the six routes --- but each section is something you will
-eventually want an answer for.
+Companion to [[./README.org][README.org]], which builds the six-route application.  This is
+the deployment reference: use the sections you need, in the order a deployment meets them.
+
+The invariant stays simple through every option: the server persists public keys and token
+digests, never password verifiers or credential private keys.  Client compromise is still
+possible, but a server-database read is not a credential breach.
 
 For the examples, see
 [[./README-DETAIL-EXAMPLES.org][README-DETAIL-EXAMPLES.org]].  For machine credentials in
@@ -36,11 +38,11 @@ The split is deliberate: authentication lifecycle is reusable, while identity pr
 business authorization are application policy.  [[./docs/RATIONALE.md][docs/RATIONALE.md]]
 argues it at length, including the non-goals.
 
-"Self-hosted" describes the relying-party application and its authentication data.  It does
-*not* mean zero dependencies: ceremony verification uses =@simplewebauthn/*= as library code
-in your process, HTTPS may be terminated by a proxy or CDN (that is transport, not identity),
-and a user may sync passkeys through their OS or password manager --- which is not an
-identity provider for your application, because it never gives LocalWebAuthn a private key.
+"Self-hosted" describes the relying-party application and its authentication data, not zero
+dependencies.  Ceremony verification uses =@simplewebauthn/*= in your process; HTTPS may
+terminate at a proxy or CDN; users may sync passkeys through an OS or password manager.
+None of those providers becomes your application's identity provider or gives the server a
+credential private key.
 
 * Storage adapters
 
@@ -87,8 +89,8 @@ await migrateD1(env.DB);
 // store: new D1LocalWebAuthnStore(env.DB)
 #+end_src
 
-D1 runs each multi-statement operation as one =batch()=, which D1 executes as a single
-transaction --- a failing statement rolls the whole sequence back
+D1 has no interactive transaction API.  The adapter runs each multi-statement operation as
+one =batch()=, which D1 executes as a transaction --- a failing statement rolls it back
 ([[https://developers.cloudflare.com/d1/worker-api/d1-database/][Cloudflare D1 Worker API]]).
 So a registration commits the credential, grant completion and initial session together or
 not at all, the same all-or-nothing the transactional adapters give.  =migrateD1= is
@@ -98,13 +100,16 @@ missing upgrades, in one batch.  See [[./SECURITY.md][SECURITY.md]] D1 Batch Tra
 ** Maintenance
 
 #+begin_src ts
-setInterval(() => void auth.cleanup(), 5 * 60_000);
+const timer = setInterval(() => {
+  void auth.cleanup().catch((error) => console.error('cleanup failed', error));
+}, 5 * 60_000);
+timer.unref?.();
 #+end_src
 
 =cleanup()= reaps expired enrollment grants, finished challenges, dead sessions and spent
-DPoP records, and returns the counts.  *It never touches credentials* --- those are durable
-authenticators, removed only by revocation.  (Releases 1.0.0 and 1.1.0 did delete idle
-credentials here; that is the bug that forced 2.0.0.)
+DPoP records, and returns the counts.  Expiry is enforced before cleanup, so a failed sweep
+can retry later.  *Cleanup never touches credentials*; only revocation does.  Releases 1.0.0
+and 1.1.0 violated that rule, which is why 2.0.0 was required.
 
 * The six routes
 
@@ -257,17 +262,15 @@ sparing a credential does not silently spare what that credential enrolled.
 
 * Designing recovery
 
-A user will lose their phone.  What you do next is the most important security decision in a
-passkey deployment, and the one this package refuses to make for you.
+A user will lose their phone.  Recovery is the most important policy LocalWebAuthn leaves to
+the host.
 
 ** Why the bar has to be high
 
-*Account security is the weaker of the passkey and the recovery path.*  A passkey is
-origin-bound, unphishable and useless to whoever steals your database.  An attacker looking
-at that will not attack it --- they will contact your support address and say they got a new
-phone.  Every hour of phishing resistance is refunded the moment recovery is easier than the
-front door.  Well-defended accounts are overwhelmingly lost to help-desk social engineering
-and SIM swaps, not to broken cryptography.
+*Account security is the weaker of sign-in and recovery.*  A passkey is origin-bound and a
+database read cannot reproduce it, so an attacker will choose an easier recovery path if one
+exists.  Email-only recovery, help-desk social engineering or a SIM swap can put a weak door
+beside a strong one.
 
 *Recovery must be at least as strong as enrollment.*  If a new employee gets their link only
 after a manager confirms them in person, then recovery that needs a matching email address is
@@ -378,9 +381,9 @@ const phase = signupPhase({
 const step = nextSignupStep(phase); // { action, reason }
 #+end_src
 
-=SELF_SERVE_SIGNUP_STEPS= is the checklist in order, including the two easy ones to get
-wrong: verify two independent channels *before* creating durable access, and deliver to a
-bound address rather than one supplied in the request.
+=SELF_SERVE_SIGNUP_STEPS= is the checklist in order.  The two easy rules are: verify two
+independent channels *before* creating durable access, and deliver to a bound destination,
+never one supplied by the recovery request.
 
 The worked implementation is
 [[./examples/channels/src/signup.ts][examples/channels/src/signup.ts]].  It gives you
@@ -428,7 +431,7 @@ Two limits to internalise:
 * Machine credentials and DPoP
 
 The full design is [[./docs/API-AUTH.org][docs/API-AUTH.org]]; [[./README.org][README.org]]
-"A Passkey for a script" is the working code.  What belongs here is the operational surface.
+"a credential for a script" is the working code.  What belongs here is the operational surface.
 
 *The client package has two entry points, and the split is the interesting part.*
 =@localwebauthn/client= works entirely through the =MachineKeyStore= interface: it asks
@@ -584,7 +587,7 @@ existing credential's session.  Four columns record which:
 
 | Column               | Meaning                                                 |
 |----------------------+---------------------------------------------------------|
-| =createdVia=         | ='enrollment'=, ='session'=, or =null= for pre-2.x rows |
+| =createdVia=         | ='enrollment'=, ='credential'=, or =null= for pre-3.0 rows |
 | =parentCredentialId= | the credential whose session authorized this one        |
 | =grantId=            | the enrollment grant it was redeemed from               |
 | =approvedByUserId=   | who approved that grant                                 |
@@ -600,20 +603,25 @@ foreign key only because credentials are never deleted.
 
 * Audit events
 
-=onEvent= receives every lifecycle event.  It is best-effort --- persist what matters rather
-than treating the callback as the record:
+=onEvent= receives the service lifecycle.  It runs after state commits; failures are logged
+and contained so telemetry cannot change authentication semantics.  Treat it as best-effort:
 
 #+begin_src ts
-onEvent: (event) => void auditLog.write(event),
+onEvent: async (event) => {
+  await auditLog.write(event);
+},
 #+end_src
+
+Return the sink's promise, as above, so LocalWebAuthn can await and contain a rejection.
 
 | Event                         | Emitted when                                      |
 |-------------------------------+---------------------------------------------------|
 | =enrollment.issued=           | a grant is created                                |
 | =enrollment.exchanged=        | a token is redeemed for an enrollment session     |
-| =enrollment.completed=        | a passkey is registered against that grant        |
+| =enrollment.completed=        | a credential is registered against that grant     |
 | =enrollment.revoked=          | a pending grant is superseded or revoked          |
-| =credential.registered=       | a passkey is created                              |
+| =enrollment.rejected=         | an exchange is refused, with its diagnosis        |
+| =credential.registered=       | a credential is created, with =createdVia=        |
 | =credential.authenticated=    | an assertion verifies                             |
 | =credential.revoked=          | a credential is revoked                           |
 | =session.created=             | a session begins                                  |
@@ -624,6 +632,12 @@ onEvent: (event) => void auditLog.write(event),
 Return values are the durable record where one exists: =issueEnrollment= returns
 =supersededGrantIds= precisely so a host can write the replacement down without depending on
 the event.
+
+Self-serve signup is host state, so its =SignupEvent= stream lives in
+=@localwebauthn/channels-core=.  Wrap a sink with =bestEffortSignupEventSink=; the demo does
+this once and shares it across routes, passkey-sign-in vetoes and reaping.  Applied-transition
+events are emitted only after the corresponding write changes a row.  If audit delivery must
+be lossless, use a transactional outbox; an in-process callback cannot provide that guarantee.
 
 * Errors
 
@@ -637,11 +651,13 @@ Every failure is a =LocalWebAuthnError= with a =code= and an HTTP =status=.  Map
 | =invalid_ceremony=           |         400 | challenge missing, expired or already used             |
 | =registration_failed=        |         400 | the attestation did not verify                         |
 | =authentication_failed=      |         401 | the assertion did not verify                           |
+| =unauthenticated=            |         401 | no valid API session                                   |
 | =registration_not_permitted= |         403 | this kind is =canRegister: false=                      |
 | =credential_not_found=       |         404 | no such credential for this user                       |
 | =last_credential=            |         409 | would remove the person's only credential of that kind |
 | =invalid_dpop_proof=         |         401 | absent, malformed, replayed, or wrong key              |
 | =dpop_nonce_required=        |         401 | answer with =dpopChallenge()= and let the client retry |
+| =revocation_not_converged=   |         409 | concurrent registrations prevented a quiet revoke     |
 
 Do not surface the =reason= detail attached to DPoP messages: it distinguishes "wrong key"
 from "replayed".
@@ -652,8 +668,8 @@ The service API, store contract and database schema follow SemVer; breaking chan
 only in a new major version with notes in [[./docs/MIGRATING.md][docs/MIGRATING.md]].
 
 Schema upgrades are versioned and applied in place: =migrateSqlite=, =migratePostgres= and
-=migrateD1= read the stored version and run only what is missing.  A database at version 1
---- the only version ever published --- upgrades on the next start.
+=migrateD1= read the stored version and run only what is missing.  Call the applicable
+migration during startup before serving requests.
 
 Two traps if you extend the schema yourself.  First, =LOCALWEBAUTHN_SCHEMA_SQL= must contain
 no =--= comments: the statement splitter collapses whitespace, so a comment would comment out

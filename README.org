@@ -14,21 +14,19 @@
 [[https://github.com/LocalWebAuthn/LocalWebAuthn/actions/workflows/ci.yml][https://img.shields.io/github/actions/workflow/status/LocalWebAuthn/LocalWebAuthn/ci.yml.png?label=CI]]
 [[./LICENSE][https://img.shields.io/github/license/LocalWebAuthn/LocalWebAuthn.png]]
 
-LocalWebAuthn is a self-hosted, invitation-first, passkey-only authentication lifecycle for
-TypeScript applications.  It supplies what is missing between a WebAuthn ceremony library
-and a logged-in user: enrollment, credentials, challenges, sessions, revocation, and
-SQLite, PostgreSQL or Cloudflare D1 persistence.
+LocalWebAuthn makes passkey-only authentication the simple choice for a self-hosted
+TypeScript application.  It supplies the lifecycle between WebAuthn ceremonies and a
+logged-in user: enrollment, credentials, challenges, sessions, revocation, and SQLite,
+PostgreSQL or Cloudflare D1 persistence.
 
-Your application keeps its users and its authorization rules.  It keeps no passwords, no
-password hashes, no reset tokens, no TOTP seeds and no recovery codes --- and, the point of
-the first section below, *no private key material of any kind*.  Hand an attacker a complete
-copy of everything LocalWebAuthn stores and they still cannot sign in.
+Your application keeps its users and authorization rules.  LocalWebAuthn keeps no
+passwords, password hashes, TOTP seeds or recovery codes, and the server never receives a
+credential private key.  A complete read of its database contains no reusable
+authentication credential.
 
-This page builds one application up in order: the security property that makes all of this
-worth doing, why passkeys differ from passwords in your code, what the running demo looks
-like, then the smallest server and browser code that authenticates a person, then a second
-passkey, then a Passkey for a script that has no browser and no human.  Each step adds one
-idea.  Deeper treatment of every option lives in the two detail documents:
+This page explains why that structural difference matters, runs the demo, and builds the
+smallest server and browser flow in five steps.  The last step applies the same public-key
+model to software running on a client's own machine.  Deeper options live in:
 
 - [[./README-DETAIL.org][README-DETAIL.org]] --- deployment and use options: adapters,
   cookies and origins, sessions, suspension, recovery design, self-serve signup, credential
@@ -36,31 +34,34 @@ idea.  Deeper treatment of every option lives in the two detail documents:
 - [[./README-DETAIL-EXAMPLES.org][README-DETAIL-EXAMPLES.org]] --- the five worked
   examples, what each one is for, and how to run it.
 
-* There is no secret to steal
+* Why passkeys should be the default
 
-*=@localwebauthn/server= never receives or stores credential private keys.*  Its durable state
-is public credential material and one-way token digests.  No flow gives the server a private
-key, so no bug in the server package can leak one.
+A password system must accept a reusable secret on every login and keep a verifier for every
+account.  Careful hashing, TLS, rate limits and breach detection reduce the chance and speed
+of compromise; they cannot remove the central stockpile.  One successful read of the
+verifier database exposes every account to offline guessing, and reused passwords carry the
+damage into other systems.
 
-That is not a claim about how carefully the code was written.  It is a property of where the
-keys live.  The authenticator generates the key pair and keeps the private half.  The relying
-party receives only a public key, and signatures over challenges it chose itself.
+A passkey reverses the custody model.  The client creates a key pair, keeps the private key,
+and sends only the public key to the application.  Sign-in sends a signature over a fresh,
+origin-bound challenge.  The server can verify the signature but cannot create one.
 
-Three custody questions are separate, and this document keeps them separate:
+For *credential theft*, that changes the scaling:
 
-- *Server persistence* --- none, as above.  This is the property a database breach tests.
-- *Transient possession* --- a human's passkey is never touched by our code at all
-  (=@localwebauthn/browser= hands the ceremony to the browser).  The *optional* pieces are
-  different: =@localwebauthn/client= imports a script's private key to sign with it, and the
-  demo's browser minting page generates and displays one.  Both handle exportable key material
-  in process for as long as they run.
-- *Client keystore* --- where a script's key comes to rest is the operator's choice: a
-  =chmod 0600= file, or a platform keystore holding it non-exportably.
+- *Passwords:* one server-side compromise --- roughly =O(1)= attacker effort --- can expose
+  verifier material for =N= users.
+- *Passkeys:* there is no server-side credential stockpile.  To steal =N= credentials, an
+  attacker generally has to compromise =N= clients, authenticators or live sessions ---
+  roughly =O(N)= effort, with each client compromise normally bounded to one user or device.
 
-So the honest one-line version is *the server has no private key to lose, and no human
-passkey ever reaches our code* --- not that the repository never touches a private key.  If
-you issue API credentials, [[./docs/API-AUTH.org][docs/API-AUTH.org]] covers custody options
-including keeping the key in a TPM or Secure Enclave so no file holds it.
+That is an operational model, not a mathematical guarantee.  Synced passkey providers can
+correlate several devices, and a compromised running server, authorization bug or weak
+recovery flow can still grant broad access.  The narrower conclusion is durable: *even an
+imperfect but reasonably designed passkey-only system starts with a structural advantage over
+excellent password storage against reusable-credential disclosure, because the server has no
+reusable credential secret to spill.*  Hardening still matters; it protects sessions,
+enrollment, recovery, authorization and server integrity rather than defending a password
+stockpile.
 
 ** What the server stores
 
@@ -68,9 +69,9 @@ Every table, and what it is worth to whoever reads it:
 
 | Table                             | Holds                                                         | Worth to a reader                                             |
 |-----------------------------------+---------------------------------------------------------------+---------------------------------------------------------------|
-| =localwebauthn_credentials=       | COSE *public* key, counter, label, kind, heritage, timestamps | nothing --- you cannot sign with a public key                 |
-| =localwebauthn_sessions=          | SHA-256 of the session token, user, credential, timestamps    | nothing --- a digest is not a bearer token                    |
-| =localwebauthn_enrollment_grants= | SHA-256 of the link token and of the enrollment session       | nothing --- the link cannot be reconstructed                  |
+| =localwebauthn_credentials=       | COSE *public* key, counter, label, kind, heritage, timestamps | no ability to sign                                            |
+| =localwebauthn_sessions=          | SHA-256 of the session token, user, credential, timestamps    | no bearer token                                               |
+| =localwebauthn_enrollment_grants= | SHA-256 of the link token and enrollment session              | no enrollment capability                                      |
 | =localwebauthn_challenges=        | SHA-256 of the challenge cookie, and the challenge itself     | the challenge is public by design; it was sent to the browser |
 | =localwebauthn_dpop_proofs=       | SHA-256 of spent =jti= values                                 | nothing --- it is a replay ledger                             |
 | =localwebauthn_dpop_nonces=       | the current nonce, in the clear                               | nothing --- the server hands it to any caller that asks       |
@@ -82,15 +83,15 @@ tokens, enrollment tokens, enrollment session tokens --- is 256 bits of random m
 which only a SHA-256 digest is kept.  A =jti= is chosen by the client, and only its digest is
 kept as well, in a ledger whose sole job is to refuse a second use.
 
-A full read of that database therefore yields *nothing that can be replayed*.  There is no
-offline attack to mount, because there is nothing to attack: a public key is already public,
-and a digest of a 256-bit random token has no shortcut.
+A full database read yields nothing that can authenticate or be replayed.  It can still
+disclose user identifiers, labels and operational metadata, so protect it as user data; it
+just is not a credential jackpot.
 
-** What lives on the client
+** What remains secret
 
 Private keys do exist, and they come to rest in two places:
 
-- *A person's passkey* is held by a WebAuthn authenticator --- a secure element, a TPM, a
+- *A person's passkey* is held by a WebAuthn authenticator --- a secure element, TPM,
   hardware key, or a password manager the user already trusts with everything else.  How well
   the key is protected is a property of *that* authenticator, not of this project.  WebAuthn
   permits hardware, software, platform, roaming and synced credentials.  A backup-eligible
@@ -99,7 +100,7 @@ Private keys do exist, and they come to rest in two places:
   provider is not an identity provider for your application, and it never hands LocalWebAuthn
   a key.  =@localwebauthn/browser= touches no key material at all, because the browser performs
   the ceremony.
-- *A script's Passkey* comes to rest wherever the operator put it: a =.env= file, or a
+- *A script's credential* comes to rest wherever its operator put it: a =.env= file, or a
   reference to a platform keystore that holds it non-exportably.  =@localwebauthn/client=
   reads it and keeps it in process memory to sign with; it writes it nowhere.  The mint page
   displays it once and the server keeps only the public half, so the operator's copy is the
@@ -108,75 +109,37 @@ Private keys do exist, and they come to rest in two places:
   cannot see or erase.  Browser minting is an exportable-key *compatibility* path; generating
   the key on the target machine avoids the transfer entirely.
 
-The user's side of the bargain is small and worth stating plainly: create human passkeys
-through the platform's own facility, and save a script's credential file where a secret
-belongs --- =chmod 0600=, beside the script, out of source control.  Do those two things and
-no private key ever exists anywhere else.
+The host process does receive short-lived bearer values: enrollment tokens, challenge tokens
+and session cookies.  Only their SHA-256 digests are persisted, but request logging, traces
+or crash capture can still expose a live raw token.  Exclude credentials, cookies,
+=Authorization= headers and enrollment request bodies from telemetry.  "No credential
+secret on the server" does not mean "nothing secret ever crosses the process".
 
-** What a full disclosure actually costs
+For software credentials, =@localwebauthn/client= runs on the client's machine and the
+server still receives only the public key and signatures.  A file-backed key should be
+=chmod 0600= and kept out of source control; a TPM, Secure Enclave or other opaque signer can
+keep it non-exportable.  [[./docs/API-AUTH.org][docs/API-AUTH.org]] covers the choices.
+
+** What compromise costs
 
 Honesty is more useful here than a slogan, so: which disclosures grant access, and which do
 not?
 
 | Disclosure                               | What the attacker gains                                                                     |
 |------------------------------------------+---------------------------------------------------------------------------------------------|
-| the whole server database, read-only     | *nothing usable* --- public keys, digests and metadata                                      |
-| a database backup from any point in time | nothing usable, then or ever --- public keys do not become interesting with age             |
-| server logs, traces, crash dumps         | nothing usable --- no reusable secret ever crosses the process                               |
+| the whole server database, read-only     | no authentication capability --- public keys, digests and metadata                          |
+| a database backup from any point in time | no authentication capability; public keys do not become useful with age                     |
+| a logged raw cookie, token or header     | that live capability until expiry or revocation                                             |
 | a live session cookie                    | that one session, until it expires or =revokeSession= / =revokeUserSessions= ends it          |
 | a live machine session token             | nothing on its own --- each request also needs a DPoP proof signed by the credential's key    |
 | an unredeemed enrollment link            | one passkey on that account.  A real bearer capability --- hence single-use, minutes long, and delivered on a channel you choose |
 | a script's credential file               | that one credential, until =revokeCredential=; heritage records what it created              |
-| *write* access to the database           | everything --- an attacker can insert their own public key.  Read disclosure and write compromise are different events, and only the first is bounded |
+| a compromised running server or database write access | potentially everything --- it can bypass checks, insert keys or hijack future sessions       |
 
-The two rows that grant anything are bounded in a way a password breach never is: a leaked
-credential is *one* credential, revocable in a single call, and the heritage columns say
-exactly what it was used to create.
-
-Passkeys do not remove application security.  A compromised server can still alter code and
-hijack future sessions, recovery remains a policy you must design, and the database still
-holds user data worth protecting.  The narrow claim is the durable one: *your server never
-receives or stores a reusable user authentication secret, so it cannot lose one.*
-
-* Why a young passkey system is safer than a hardened password one
-
-This project is new and lightly reviewed.  A mature password stack has had years of eyes on
-it.  The comparison still favours passkeys, and not narrowly, for reasons that have nothing
-to do with code quality.
-
-*A password system handles the real secret on every single login.*  The user's password
-crosses TLS termination, a proxy, a body parser, your framework, your logs if anyone is
-careless, process memory, an APM trace, a crash dump, and every dependency in the request
-path.  That is not a defect to review away --- it is what the protocol requires.  A passkey
-login carries a signature over a server-chosen challenge, so all those same places carry
-nothing worth stealing.  *Review reduces the chance of a leak; passkeys remove the thing that
-could leak.*
-
-*A verifier database is a permanent, transferable liability.*  Even Argon2 hashes are
-attackable offline, at the attacker's leisure, on hardware that keeps improving, against
-passwords people reuse elsewhere --- so the damage outlives your incident and escapes your
-system.  You also owe that database maintenance forever, raising parameters as hardware moves.
-A table of public keys is worth nothing on the day it leaks and nothing in ten years, and
-needs no upkeep.
-
-*Passwords drag in a large surface by construction.*  Reset flows, delivery channels,
-credential-stuffing defence, breach-list checks, TOTP, recovery codes --- each is code that
-can be wrong, and every one of them is a login path.  Review quality multiplies against
-surface area, and you cannot review your way to a smaller surface.  A system with fewer moving
-parts has fewer places to be wrong even when each part has had less scrutiny.
-
-*Phishing resistance here is a protocol property, not a training programme.*  The browser
-binds each credential to one origin and will not offer it to a look-alike domain.  No amount
-of review makes a password unphishable, and no amount of user education ever finishes the job.
-
-*And the honest limit.*  A bug in this lifecycle code can absolutely grant access --- a
-mishandled challenge, a leaked enrollment link, a session-fixation mistake.  Those risks are
-real, and this code is young.  But they are *bounded and revocable*: such a failure creates no
-persistent, transferable secret, and nothing an attacker can carry to another site.  The one
-place a passkey deployment can genuinely end up *worse* than a password one is recovery.
-Build "email me a link" recovery and you have rebuilt the password reset flow, put the mailbox
-back in front of the passkey, and inherited the whole problem you just removed.  That is why
-recovery has a section of its own --- it is where the remaining risk actually lives.
+The bounded rows are the point: stealing one client key or live session normally compromises
+one credential or session, and revocation ends it.  Credential heritage records what a
+stolen credential enrolled.  By contrast, a password-verifier breach creates portable work
+against every account at once.
 
 * Passkeys instead of passwords, in your code
 
@@ -271,7 +234,7 @@ does signing in with an existing passkey.
 
 [[./docs/images/demo-recovery-pending.png]]
 
-Finally, a person can mint a Passkey for a script.  The demo lists it apart from their own
+Finally, a person can mint a credential for a script.  The demo lists it apart from their own
 passkeys, and marks it =service=.  The server knows it is not a person:
 
 [[./docs/images/demo-api-credential.png]]
@@ -436,9 +399,10 @@ const { enrollmentUrl } = await auth.issueEnrollment(user.id);
 // https://app.example.com/enroll#token=...   (single use, 30 minutes by default)
 #+end_src
 
-The secret rides in the URL *fragment*, which browsers never send to a server and never put
-in a =Referer=.  The page reads it, exchanges it for an enrollment cookie, and then runs the
-same options/verify pair as sign-in --- =registrationOptions= instead of
+The secret rides in the URL *fragment*.  Browsers do not include fragments in automatic HTTP
+requests or =Referer= headers.  The enrollment page reads it, removes it from history, and
+explicitly sends it once to the exchange route; registration then uses the same
+options/verify pair as sign-in --- =registrationOptions= instead of
 =authenticationOptions=:
 
 #+begin_src ts
@@ -543,7 +507,7 @@ Recovery design --- why the bar has to be high, the administrator-initiated patt
 two-channel pattern, and the failure modes of each --- is in
 [[./README-DETAIL.org][README-DETAIL.org]].
 
-* Step 5: a Passkey for a script
+* Step 5: a credential for a script
 
 #+begin_quote
 *New in 3.0.0.*  Everything in this section --- =credentialKinds=, =verifyDpop=,
@@ -798,13 +762,11 @@ regulated identity assurance, high-volume abuse operations, permanent password o
 fallbacks, or recovery your team cannot safely operate.  Do not make passkey-only access
 mandatory for a population whose devices and accessibility needs you have not checked.
 
-*A stable API is not a production track record.* The current release is =3.0.0=, and LocalWebAuthn
-follows SemVer for the service API, store contract and schema --- but it is young software with a
-small user base sitting on the authentication path.  Why that is still the safer trade than a
-mature password stack is argued near the top, and it is an argument about structure rather than
-about how good this code is.  The code is also deliberately small enough to read --- about 6,000
-lines in the server package, 180 in the browser package, 1,000 in the optional client.  Read it,
-and read [[./SECURITY.md][SECURITY.md]], before depending on it.
+*A stable API is not a production track record.* The current release is =3.1.0=, and
+LocalWebAuthn follows SemVer for the service API, store contract and schema --- but it is
+young software with a small user base sitting on the authentication path.  The security
+argument above is structural, not a claim that bugs do not matter.  The code is deliberately
+small enough to review; read it and [[./SECURITY.md][SECURITY.md]] before depending on it.
 
 *If you are on 1.0.0 or 1.1.0, upgrade.*  Those two releases delete idle passkeys during
 routine =cleanup()=; see [[./docs/MIGRATING.md][the 2.0.0 notes]].  Every later release is

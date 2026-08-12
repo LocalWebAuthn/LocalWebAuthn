@@ -60,9 +60,9 @@ await migratePostgres(pool);
 `better-sqlite3` and `pg` are optional peer dependencies — install only the one you use.
 Pass a `pg.Pool` rather than a single client so transactions get their own connection.
 
-SQLite and PostgreSQL wrap multi-statement operations in real transactions. D1 cannot, and
-guards each step on the preceding row count instead; see the D1 section of the repository
-security policy.
+SQLite and PostgreSQL wrap multi-statement operations in interactive transactions. D1 uses a
+transactional batch whose row-count guard makes each dependent statement fail closed; see the
+D1 section of the repository security policy.
 
 Schedule periodic `cleanup()` on any adapter (every few minutes is fine). It reaps expired
 grants, finished challenges, and dead sessions. Credentials are not part of cleanup.
