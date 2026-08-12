@@ -13,6 +13,7 @@ export {
   type SignupProofParams,
 } from './templates.js';
 export {
+  bestEffortSignupEventSink,
   canCancelSignup,
   createSignupChallenge,
   parseSignupFragment,
@@ -24,6 +25,7 @@ export {
   type SignupChallenge,
   type SignupChannel,
   type SignupEvent,
+  type SignupEventFailureSink,
   type SignupEventSink,
   type SignupKind,
   type SignupProofState,

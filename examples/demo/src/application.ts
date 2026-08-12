@@ -16,6 +16,7 @@ import type { DemoClient, DemoDatabase, DemoSignup } from './database';
 
 import {
   assertE164,
+  bestEffortSignupEventSink,
   canCancelSignup,
   createSignupChallenge,
   signupMissing,
@@ -71,8 +72,9 @@ export type DemoApplicationOptions = {
    * proving a channel, presenting a wrong OTP and vetoing are all invisible, and
    * since expired rows are now reaped there is afterwards no record they happened.
    *
-   * Defaults to `console.log`, so the demo shows the trail in the same terminal as
-   * the simulated messages.
+   * May be synchronous or asynchronous. The demo awaits it to preserve ordering and
+   * contains failures after logging them, so observation cannot change a request's
+   * state-machine result. Defaults to `console.log`.
    */
   onSignupEvent?: SignupEventSink;
 };
@@ -212,7 +214,7 @@ function mountSignupRoutes(
     if (signup.enrollmentToken) {
       // Counting here, not at completion: this is the branch every reopen takes, so
       // it is the only place an extra claim can be seen.
-      emit({
+      await emit({
         type: 'signup.claimed',
         at: Date.now(),
         signupId: signup.id,
@@ -255,7 +257,7 @@ function mountSignupRoutes(
       clientId: existing.id,
       enrollmentToken: enrollment.enrollmentToken,
     });
-    emit({
+    await emit({
       type: 'signup.claimed',
       at: Date.now(),
       signupId: signup.id,
@@ -312,7 +314,7 @@ function mountSignupRoutes(
       expiresAt: challenge.expiresAt,
     });
 
-    emit({
+    await emit({
       type: 'signup.started',
       at: Date.now(),
       signupId: challenge.signupId,
@@ -380,10 +382,15 @@ function mountSignupRoutes(
     const now = Date.now();
     const state = signupProofState(signup);
     const outcome = await verifySignupProof(state, { channel, otp }, now);
-    // Reported before any branch below, so a rejected proof is as visible as an
-    // accepted one. A run of `invalid` against one signup is somebody guessing, and
-    // that is the single most useful thing in this stream.
-    emit({ type: 'signup.proof', at: now, signupId: signup.id, channel, outcome });
+    if (outcome === 'proved') {
+      // Commit the only state-changing proof outcome before reporting it. The other
+      // outcomes are observations and intentionally have no write to precede them.
+      markSignupProved(database, signup.id, channel, now);
+      state.provedAt[channel] = now;
+    }
+    // A rejected proof remains visible: a run of `invalid` against one signup is
+    // somebody guessing, and that is the single most useful thing in this stream.
+    await emit({ type: 'signup.proof', at: now, signupId: signup.id, channel, outcome });
     const identity = { name: signup.email, displayName: signup.displayName };
 
     if (outcome === 'invalid') {
@@ -439,11 +446,6 @@ function mountSignupRoutes(
       return context.json({ complete: true, enrollmentToken: claimed, user: identity });
     }
 
-    if (outcome === 'proved') {
-      markSignupProved(database, signup.id, channel, now);
-      state.provedAt[channel] = now;
-    }
-
     if (!signupSatisfied(SIGNUP_CHANNELS, state)) {
       return context.json({
         complete: false,
@@ -464,14 +466,14 @@ function mountSignupRoutes(
         expiresAt: claimableAt + delays.recoveryClaimWindowMs,
         now,
       });
-      emit({
+      await emit({
         type: 'signup.completed',
         at: now,
         signupId: signup.id,
         kind: signup.kind,
         userId: null,
       });
-      emit({ type: 'signup.pending', at: now, signupId: signup.id, claimableAt });
+      await emit({ type: 'signup.pending', at: now, signupId: signup.id, claimableAt });
       return context.json({ complete: false, pending: true, claimableAt, kind: signup.kind });
     }
 
@@ -491,7 +493,7 @@ function mountSignupRoutes(
       enrollmentToken: enrollment.enrollmentToken,
       now,
     });
-    emit({
+    await emit({
       type: 'signup.completed',
       at: now,
       signupId: signup.id,
@@ -501,7 +503,7 @@ function mountSignupRoutes(
     // The completing browser is handed the token directly, so this is a claim too —
     // the first one. Counting it here keeps `claimCount` honest: a later reopen
     // reports 2, which is what makes an extra claim distinguishable.
-    emit({
+    await emit({
       type: 'signup.claimed',
       at: now,
       signupId: signup.id,
@@ -542,15 +544,27 @@ function mountSignupRoutes(
       );
     }
     const canceledAt = Date.now();
-    cancelSignup(database, signup.id, canceledAt);
-    emit({ type: 'signup.canceled', at: canceledAt, signupId: signup.id });
+    if (cancelSignup(database, signup.id, canceledAt)) {
+      await emit({
+        type: 'signup.canceled',
+        at: canceledAt,
+        signupId: signup.id,
+        cause: 'channel_proof',
+      });
+    }
     return context.json({ canceled: true });
   });
 }
 
 export function createDemoApplication(database: DemoDatabase, options: DemoApplicationOptions) {
   const app = new Hono<DemoEnvironment>();
-  const authentication = createDemoAuthentication(database, options.auth);
+  const signupEvents = bestEffortSignupEventSink(
+    options.onSignupEvent ?? defaultSignupEventSink,
+    (error, event) => {
+      console.warn('Signup event handler failed.', { event: event.type, error });
+    },
+  );
+  const authentication = createDemoAuthentication(database, options.auth, signupEvents);
 
   // `/api/machine/*` routes authenticate from the `Authorization` header and read
   // no cookie, so CSRF cannot reach them and the origin check has nothing to
@@ -569,7 +583,7 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
       recoveryDelayMs: options.recoveryDelayMs ?? 10_000,
       recoveryClaimWindowMs: options.recoveryClaimWindowMs ?? 15 * 60_000,
     },
-    options.onSignupEvent ?? defaultSignupEventSink,
+    signupEvents,
   );
 
   const authenticated = requireAuthentication(authentication, options.auth);
@@ -858,5 +872,5 @@ export function createDemoApplication(database: DemoDatabase, options: DemoAppli
     );
   });
 
-  return { app, authentication };
+  return { app, authentication, signupEvents };
 }

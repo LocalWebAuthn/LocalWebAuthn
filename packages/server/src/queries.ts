@@ -454,6 +454,10 @@ export const SQL = {
    * a retained row is unusable, and the partial unique index over pending grants
    * excludes completed and revoked rows, so a retained row blocks no new invitation.
    * What persists is a token *hash*, never a token.
+   *
+   * Cleanup must run `deleteFinishedChallenges` before this statement. A live
+   * challenge keeps its grant through the subquery; a consumed or expired challenge
+   * is removed first so an already-expired grant can leave in the same sweep.
    */
   deleteFinishedGrants: `
     DELETE FROM localwebauthn_enrollment_grants

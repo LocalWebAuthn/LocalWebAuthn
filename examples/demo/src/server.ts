@@ -7,7 +7,7 @@ const publicOrigin = process.env.DEMO_PUBLIC_ORIGIN ?? 'http://localhost:4173';
 const origin = new URL(publicOrigin);
 const port = Number(process.env.DEMO_PORT ?? (origin.port || '4173'));
 const database = openDemoDatabase();
-const { app, authentication } = createDemoApplication(database, {
+const { app, authentication, signupEvents } = createDemoApplication(database, {
   auth: {
     publicOrigin: origin.origin,
     rpId: origin.hostname,
@@ -57,12 +57,10 @@ const CLEANUP_INTERVAL_MS = 5 * 60_000;
 async function reapExpiredRows(): Promise<void> {
   try {
     const reaped = await authentication.cleanup();
-    // The sink runs before each row is deleted, so the trail outlives the data. A
-    // signup that expired without finishing is worth a line: repeated ones for the
-    // same destination are somebody probing, and nothing else would record them.
-    const signups = reapSignups(database, Date.now(), (event) => {
-      console.log(`[signup] ${JSON.stringify(event)}`);
-    });
+    // The reaper returns and reports exactly the rows it deleted. A signup that
+    // expired without finishing is worth a line: repeated ones for the same
+    // destination are somebody probing, and nothing else would record them.
+    const signups = await reapSignups(database, Date.now(), signupEvents);
     const total =
       reaped.enrollmentGrants +
       reaped.challenges +

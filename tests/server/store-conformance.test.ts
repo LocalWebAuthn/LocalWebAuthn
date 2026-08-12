@@ -511,6 +511,70 @@ function storeConformance(
       }
     });
 
+    it('reaps a finished challenge and its expired grant in one sweep', async () => {
+      const fixture = await createFixture();
+      try {
+        await fixture.store.replaceEnrollmentGrant({
+          id: 'grant-cleanup-order',
+          userId: 'user-1',
+          tokenHash: bytes(21),
+          expiresAt: now + 1_000,
+          approvedByUserId: null,
+          credentialKind: null,
+          createdAt: now,
+        });
+        await fixture.store.createChallenge({
+          ...enrollmentChallenge('grant-cleanup-order'),
+          idHash: bytes(22),
+          challenge: 'cleanup-order',
+          expiresAt: now + 1_000,
+        });
+        await expect(
+          fixture.store.consumeChallenge(bytes(22), 'registration', now + 1),
+        ).resolves.toMatchObject({ grantId: 'grant-cleanup-order' });
+
+        const result = await fixture.store.cleanup(now + 2_000);
+        expect(result).toMatchObject({ challenges: 1, enrollmentGrants: 1 });
+        await expect(fixture.store.enrollmentGrantState?.(bytes(21), now + 2_000)).resolves.toEqual(
+          { state: 'unknown', userId: null },
+        );
+      } finally {
+        await fixture.close();
+      }
+    });
+
+    it('retains an expired grant while a live challenge still references it', async () => {
+      const fixture = await createFixture();
+      try {
+        await fixture.store.replaceEnrollmentGrant({
+          id: 'grant-live-challenge',
+          userId: 'user-1',
+          tokenHash: bytes(23),
+          expiresAt: now + 1_000,
+          approvedByUserId: null,
+          credentialKind: null,
+          createdAt: now,
+        });
+        await fixture.store.createChallenge({
+          ...enrollmentChallenge('grant-live-challenge'),
+          idHash: bytes(24),
+          challenge: 'live-challenge',
+          expiresAt: now + 5_000,
+        });
+
+        const first = await fixture.store.cleanup(now + 2_000);
+        expect(first).toMatchObject({ challenges: 0, enrollmentGrants: 0 });
+        await expect(fixture.store.enrollmentGrantState?.(bytes(23), now + 2_000)).resolves.toEqual(
+          { state: 'expired', userId: 'user-1' },
+        );
+
+        const second = await fixture.store.cleanup(now + 6_000);
+        expect(second).toMatchObject({ challenges: 1, enrollmentGrants: 1 });
+      } finally {
+        await fixture.close();
+      }
+    });
+
     it('reports a duplicate challenge id instead of overwriting one', async () => {
       const fixture = await createFixture();
       try {

@@ -89,7 +89,9 @@ to allow, so a short post-completion window breaks the feature it is meant to pr
 What closes it is making the outcome visible: `passkeyCreatedEmail` and
 `passkeyCreatedSms` go to every bound channel the moment a credential exists, whoever
 created it. A person who did not create it finds out without having to come back and
-discover a failure.
+discover a failure. The `credential.registered` event supplies `createdVia`, so the
+notice can say whether an enrollment invitation or a signed-in session authorized the
+credential without inventing a channel compromise.
 
 Consequences an operator should still know, tracked in
 [issue #10](https://github.com/LocalWebAuthn/LocalWebAuthn/issues/10):
@@ -102,12 +104,12 @@ Consequences an operator should still know, tracked in
 - **Two clocks, not one.** The signup row's `expires_at` bounds the _claim_.
   `enrollmentGrantMs` (30 minutes by default) bounds the _exchange_ by whoever
   holds the token. Shortening one does not shorten the other.
-- **A second claim is still silent; a second _exchange_ is not.** A grant is spent at
-  exchange, not at claim, and the demo re-serves the stored token to every valid OTP,
-  so the extra claim itself leaves no trace. What has changed is the outcome for
-  whoever loses the race: `exchangeEnrollment` now reports `enrollmentState: 'used'`
-  rather than a generic "invalid or expired", so the person is told the link was
-  already spent and what to do if it was not them. The server also emits
+- **A second claim is reported; a second _exchange_ is refused.** A grant is spent at
+  exchange, not at claim, and the demo re-serves the stored token to every valid OTP.
+  `signup.claimed` records each claim and its count. The outcome for whoever loses the
+  race is explicit: `exchangeEnrollment` reports `enrollmentState: 'used'` rather than
+  a generic "invalid or expired", so the person is told the link was already spent and
+  what to do if it was not them. The server also emits
   `enrollment.rejected` carrying the `userId`, which is the hook for notifying every
   bound channel. The remaining gap is at claim time: nothing counts claims, so a host
   still cannot see the extra claim before the exchange fails.

@@ -47,7 +47,7 @@ export class LocalWebAuthnError extends Error {
    * `'used'` is worth telling somebody about, because an enrollment link is
    * single-use and they may not be the one who used it.
    */
-  readonly enrollmentState?: EnrollmentGrantState;
+  declare readonly enrollmentState?: EnrollmentGrantState;
 
   constructor(
     code: LocalWebAuthnErrorCode,

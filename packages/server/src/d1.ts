@@ -514,15 +514,15 @@ export class D1LocalWebAuthnStore implements LocalWebAuthnStore, LocalWebAuthnDp
   async cleanup(now: number): Promise<CleanupResult> {
     const results = await this.#database.batch([
       this.#database.prepare(SQL.deleteExpiredSessions).bind(now),
-      this.#database.prepare(SQL.deleteFinishedGrants).bind(now),
       this.#database.prepare(SQL.deleteFinishedChallenges).bind(now),
+      this.#database.prepare(SQL.deleteFinishedGrants).bind(now),
       this.#database.prepare(SQL.deleteExpiredDpopProofs).bind(now),
       this.#database.prepare(SQL.deleteExpiredDpopNonces).bind(now),
     ]);
     return {
       sessions: changes(results[0]),
-      enrollmentGrants: changes(results[1]),
-      challenges: changes(results[2]),
+      enrollmentGrants: changes(results[2]),
+      challenges: changes(results[1]),
       dpopProofs: changes(results[3]),
       dpopNonces: changes(results[4]),
     };

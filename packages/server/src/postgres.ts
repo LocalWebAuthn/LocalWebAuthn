@@ -440,8 +440,8 @@ export class PostgresLocalWebAuthnStore implements LocalWebAuthnStore, LocalWebA
   async cleanup(now: number): Promise<CleanupResult> {
     return this.#transaction(async (tx) => {
       const sessions = await tx.query(PG.deleteExpiredSessions, [now]);
-      const enrollmentGrants = await tx.query(PG.deleteFinishedGrants, [now]);
       const challenges = await tx.query(PG.deleteFinishedChallenges, [now]);
+      const enrollmentGrants = await tx.query(PG.deleteFinishedGrants, [now]);
       const dpopProofs = await tx.query(PG.deleteExpiredDpopProofs, [now]);
       const dpopNonces = await tx.query(PG.deleteExpiredDpopNonces, [now]);
       return {

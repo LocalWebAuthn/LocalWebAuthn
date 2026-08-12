@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { SignupEvent } from '@localwebauthn/channels-core';
+import type { SignupEvent, SignupEventSink } from '@localwebauthn/channels-core';
 
 import type { DemoDatabase, DemoRole } from '../src/database';
 
@@ -8,7 +8,8 @@ import { createOpaqueToken, createUserHandle, sha256 } from '@localwebauthn/serv
 import { randomUUID } from 'node:crypto';
 
 import { createDemoApplication, ensureBootstrapAdministrator } from '../src/application';
-import { cancelActiveRecoveries, openDemoDatabase, reapSignups } from '../src/database';
+import { cancelRecoveriesAfterCredentialAuthentication } from '../src/auth';
+import { openDemoDatabase, reapSignups } from '../src/database';
 
 const publicOrigin = 'http://localhost:4173';
 const databases: DemoDatabase[] = [];
@@ -17,7 +18,7 @@ function setup(
   options: {
     recoveryDelayMs?: number;
     recoveryClaimWindowMs?: number;
-    onSignupEvent?: (event: SignupEvent) => void;
+    onSignupEvent?: SignupEventSink;
   } = {},
 ) {
   const database = openDemoDatabase(':memory:');
@@ -114,6 +115,7 @@ async function startSignup(
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const database of databases.splice(0)) {
     database.close();
   }
@@ -515,7 +517,92 @@ describe('LocalWebAuthn demo application', () => {
     expect(serialized).not.toMatch(/[a-z2-7]{52}/u);
   });
 
-  it('reports each signup it reaps, before the row is gone', () => {
+  it('contains synchronous and asynchronous signup telemetry failures after state commits', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const attempts: string[] = [];
+    const { app, database } = setup({
+      onSignupEvent: async (event) => {
+        await Promise.resolve();
+        attempts.push(event.type);
+        throw new Error('telemetry unavailable');
+      },
+    });
+    const headers = { Origin: publicOrigin, 'Content-Type': 'application/json' };
+    const started = await startSignup(app, {
+      displayName: 'State Wins',
+      email: 'state-wins@example.test',
+      phone: '+15551230012',
+    });
+    const prove = (channel: string) =>
+      app.request('/api/signup/prove', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          signupId: started.signupId,
+          channel,
+          otp: started.otps[channel],
+        }),
+      });
+
+    expect((await prove('email')).status).toBe(200);
+    const completed = await prove('phone');
+    expect(completed.status).toBe(200);
+    await expect(completed.json()).resolves.toMatchObject({ complete: true });
+    const row = database
+      .prepare(`SELECT consumed_at, enrollment_token FROM demo_signups WHERE id = ?`)
+      .get(started.signupId) as { consumed_at: number | null; enrollment_token: string | null };
+    expect(row.consumed_at).not.toBeNull();
+    expect(row.enrollment_token).not.toBeNull();
+    expect(attempts).toContain('signup.completed');
+    expect(attempts).toContain('signup.claimed');
+    expect(warning).toHaveBeenCalled();
+  });
+
+  it('does not report a cancellation when an issued signup token makes the veto a no-op', async () => {
+    const events: SignupEvent[] = [];
+    const { app, database } = setup({
+      onSignupEvent: (event) => {
+        events.push(event);
+      },
+    });
+    const headers = { Origin: publicOrigin, 'Content-Type': 'application/json' };
+    const started = await startSignup(app, {
+      displayName: 'Already Complete',
+      email: 'already-complete@example.test',
+      phone: '+15551230013',
+    });
+    const prove = (channel: string) =>
+      app.request('/api/signup/prove', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          signupId: started.signupId,
+          channel,
+          otp: started.otps[channel],
+        }),
+      });
+    await prove('email');
+    await prove('phone');
+
+    const canceled = await app.request('/api/signup/cancel', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        signupId: started.signupId,
+        channel: 'email',
+        otp: started.otps.email,
+      }),
+    });
+    await expect(canceled.json()).resolves.toEqual({ canceled: true });
+    const row = database
+      .prepare(`SELECT canceled_at, enrollment_token FROM demo_signups WHERE id = ?`)
+      .get(started.signupId) as { canceled_at: number | null; enrollment_token: string | null };
+    expect(row.canceled_at).toBeNull();
+    expect(row.enrollment_token).not.toBeNull();
+    expect(events.some((event) => event.type === 'signup.canceled')).toBe(false);
+  });
+
+  it('reports each signup it actually reaps', async () => {
     const { database } = setup();
     const events: SignupEvent[] = [];
     database
@@ -528,7 +615,7 @@ describe('LocalWebAuthn demo application', () => {
       )
       .run();
 
-    expect(reapSignups(database, 2_000, (event) => events.push(event))).toBe(1);
+    await expect(reapSignups(database, 2_000, (event) => events.push(event))).resolves.toBe(1);
     expect(events).toEqual([
       {
         type: 'signup.reaped',
@@ -543,7 +630,7 @@ describe('LocalWebAuthn demo application', () => {
     expect(database.prepare(`SELECT COUNT(*) AS n FROM demo_signups`).get()).toEqual({ n: 0 });
   });
 
-  it('reaps signup rows once their window closes, and spares live ones', () => {
+  it('reaps signup rows once their window closes, and spares live ones', async () => {
     const { database } = setup();
     const insert = (id: string, expiresAt: number): void => {
       database
@@ -558,9 +645,31 @@ describe('LocalWebAuthn demo application', () => {
     insert('past', 1_000);
     insert('future', Date.now() + 60_000);
 
-    expect(reapSignups(database, Date.now())).toBe(1);
+    await expect(reapSignups(database, Date.now())).resolves.toBe(1);
     const remaining = database.prepare(`SELECT id FROM demo_signups`).all() as { id: string }[];
     expect(remaining.map((row) => row.id)).toEqual(['future']);
+  });
+
+  it('finishes reaping when its telemetry sink fails', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { database } = setup();
+    database
+      .prepare(
+        `INSERT INTO demo_signups(
+           id, email, phone, display_name, otp_email_hash, otp_phone_hash,
+           expires_at, created_at
+         ) VALUES ('doomed', 'doomed@example.test', '+15551230000', 'Doomed',
+                   X'00', X'01', 1000, 400)`,
+      )
+      .run();
+
+    await expect(
+      reapSignups(database, 2_000, async () => {
+        await Promise.resolve();
+        throw new Error('telemetry unavailable');
+      }),
+    ).resolves.toBe(1);
+    expect(database.prepare(`SELECT COUNT(*) AS n FROM demo_signups`).get()).toEqual({ n: 0 });
   });
 
   it('recovery waits out the delay, touches nothing meanwhile, and refuses administrators', async () => {
@@ -627,7 +736,13 @@ describe('LocalWebAuthn demo application', () => {
   });
 
   it('any valid channel OTP vetoes a recovery, and a passkey sign-in vetoes it too', async () => {
-    const { app, database } = setup({ recoveryDelayMs: 60_000 });
+    const events: SignupEvent[] = [];
+    const { app, database, signupEvents } = setup({
+      recoveryDelayMs: 60_000,
+      onSignupEvent: (event) => {
+        events.push(event);
+      },
+    });
     const subject = await authenticatedClient(database, 'client');
     const headers = { Origin: publicOrigin, 'Content-Type': 'application/json' };
     const email = `client-${subject.id}@example.test`;
@@ -655,10 +770,27 @@ describe('LocalWebAuthn demo application', () => {
       }),
     });
     await expect(cancel.json()).resolves.toEqual({ canceled: true });
+    await expect(
+      app.request('/api/signup/cancel', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          signupId: first.signupId,
+          channel: 'email',
+          otp: first.otps.email,
+        }),
+      }),
+    ).resolves.toHaveProperty('status', 200);
     await expect((await prove(first.signupId, first.otps, 'phone')).json()).resolves.toMatchObject({
       canceled: true,
       complete: false,
     });
+    expect(events.filter((event) => event.type === 'signup.canceled')).toEqual([
+      expect.objectContaining({
+        signupId: first.signupId,
+        cause: 'channel_proof',
+      }),
+    ]);
     // The account never changed.
     expect(
       (
@@ -672,11 +804,38 @@ describe('LocalWebAuthn demo application', () => {
     // (The hook fires on the credential.authenticated event; the e2e drives a
     // real sign-in — here we exercise the same helper the hook calls.)
     const second = await startSignup(app, { displayName: 'X', email, phone: '+15551230003' });
+    const third = await startSignup(app, { displayName: 'X', email, phone: '+15551230004' });
+    const expired = await startSignup(app, { displayName: 'X', email, phone: '+15551230005' });
+    database
+      .prepare(`UPDATE demo_signups SET expires_at = ? WHERE id = ?`)
+      .run(Date.now() - 1, expired.signupId);
     await prove(second.signupId, second.otps, 'email');
-    expect(cancelActiveRecoveries(database, subject.id, Date.now())).toBe(1);
+    const activityCanceled = await cancelRecoveriesAfterCredentialAuthentication(
+      database,
+      subject.id,
+      Date.now(),
+      signupEvents,
+    );
+    expect(new Set(activityCanceled)).toEqual(new Set([second.signupId, third.signupId]));
     await expect(
       (await prove(second.signupId, second.otps, 'phone')).json(),
     ).resolves.toMatchObject({ canceled: true, complete: false });
+    const cancellationEvents = events.filter((event) => event.type === 'signup.canceled');
+    expect(cancellationEvents).toHaveLength(3);
+    expect(cancellationEvents).toContainEqual(
+      expect.objectContaining({ signupId: first.signupId, cause: 'channel_proof' }),
+    );
+    for (const signupId of [second.signupId, third.signupId]) {
+      expect(cancellationEvents).toContainEqual(
+        expect.objectContaining({ signupId, cause: 'credential_authenticated' }),
+      );
+    }
+    expect(
+      database.prepare(`SELECT canceled_at FROM demo_signups WHERE id = ?`).get(expired.signupId),
+    ).toEqual({ canceled_at: null });
+    await expect(
+      cancelRecoveriesAfterCredentialAuthentication(database, subject.id, Date.now(), signupEvents),
+    ).resolves.toEqual([]);
   });
 
   it('re-enrolls by revoking then issuing a recovery link', async () => {
