@@ -259,6 +259,18 @@ export type SignupEvent =
       signupId: string;
       /** The authority which applied the veto. */
       cause: 'channel_proof' | 'credential_authenticated';
+      /**
+       * Whether the veto revoked credentials, not merely closed the signup.
+       *
+       * A veto before completion only marks the row: no grant, credential or session
+       * exists yet. A veto after completion has an account to undo, and this
+       * distinguishes the two — which matters, because the second one took working
+       * access away from somebody and the first took nothing.
+       *
+       * `false` also covers a veto that *tried* and could not finish, so an operator
+       * reading this stream never mistakes an attempt for a result.
+       */
+      revokedAccess: boolean;
     }
   | {
       /**
