@@ -40,6 +40,21 @@ function expiryLine(expiresAt?: number): string {
   return `The link can be used once and expires ${new Date(expiresAt).toISOString()}.`;
 }
 
+/**
+ * The signup deadline, stated as the two things it actually bounds.
+ *
+ * A proof link's expiry ends the ability to use it *and* the ability to cancel with it,
+ * because the veto and the claim share one clock. Saying only "this expires at X" tells
+ * somebody when they lose the setup; it does not tell them they are also losing the only
+ * self-serve way to stop a setup they did not start.
+ */
+function signupWindowLine(expiresAt?: number): string {
+  const deadline = expiresAt
+    ? ` You have until ${new Date(expiresAt).toISOString()}.`
+    : ' The link expires shortly.';
+  return `If this was not you, open the link and choose Cancel — that stops the signup and revokes any passkey it has already created.${deadline}`;
+}
+
 /** Email carrying a one-time passkey enrollment link. */
 export function enrollmentEmail(params: EnrollmentParams): EmailContent {
   const subject = `Create your ${params.appName} passkey`;
@@ -94,6 +109,15 @@ export type SignupProofParams = {
   appName: string;
   /** Proof link from `signupProofUrl` — confirms one channel, grants nothing. */
   url: string;
+  /**
+   * The signup's `expiresAt`, for the copy.
+   *
+   * Worth stating because it is **two** deadlines at once, not one. The same instant
+   * ends the ability to open this link *and* the ability to cancel with it — the veto
+   * lasts exactly as long as a claim does, by construction. Somebody who needs to stop
+   * a setup they did not start has to know how long they have.
+   */
+  expiresAt?: number;
 };
 
 /** Email carrying a signup channel-proof link (capability-free until completion). */
@@ -106,22 +130,25 @@ export function signupProofEmail(params: SignupProofParams): EmailContent {
     params.url,
     '',
     'Once every channel is confirmed, this same link opens your passkey setup —',
-    'use it on the device where you want to sign in. If this was not you, ignore',
-    'this message.',
+    'use it on the device where you want to sign in.',
+    '',
+    signupWindowLine(params.expiresAt),
   ].join('\n');
   const html = [
     `<p>Someone (hopefully you) is signing up for <strong>${escapeHtml(params.appName)}</strong> with this address.</p>`,
     `<p>Open this link to confirm you control it:</p>`,
     `<p><a href="${escapeHtml(params.url)}">${escapeHtml(params.url)}</a></p>`,
     `<p>Once every channel is confirmed, this same link opens your passkey setup —`,
-    ` use it on the device where you want to sign in. If this was not you, ignore this message.</p>`,
+    ` use it on the device where you want to sign in.</p>`,
+    `<p>${escapeHtml(signupWindowLine(params.expiresAt))}</p>`,
   ].join('\n');
   return { subject, text, html };
 }
 
 /** SMS carrying a signup channel-proof link (capability-free until completion). */
 export function signupProofSms(params: SignupProofParams): string {
-  return `${params.appName}: confirm this phone: ${params.url} - after all confirmations the same link sets up your passkey (ignore if not you)`;
+  const deadline = params.expiresAt ? ` until ${new Date(params.expiresAt).toISOString()}` : '';
+  return `${params.appName}: confirm this phone: ${params.url} - after all confirmations the same link sets up your passkey. Not you? Open it and Cancel${deadline} to stop the signup and revoke any passkey it created.`;
 }
 
 export type PasskeyCreatedParams = {
@@ -204,4 +231,67 @@ export function passkeyCreatedSms(params: PasskeyCreatedParams): string {
   const authority =
     params.createdVia === 'enrollment' ? 'an enrollment invitation' : 'a signed-in session';
   return `${params.appName}: a credential ("${params.label}") was added using ${authority}. Not you? Contact ${params.supportContact} to lock the account and revoke the credential and live sessions.`;
+}
+
+export type SignupCanceledParams = {
+  appName: string;
+  /** True when the veto also revoked credentials the signup had produced. */
+  revokedAccess: boolean;
+  supportContact: string;
+};
+
+/**
+ * Sent to **every** bound channel when a signup is vetoed.
+ *
+ * Any one channel can cancel, so whoever reads this may not be whoever used it. That
+ * cuts both ways, and the message has to serve both readers: somebody part-way through
+ * a setup needs to know why their link stopped working rather than concluding the
+ * service is broken, and somebody who did not cancel needs to know that a person who
+ * can reach one of their channels just took an action on their account.
+ *
+ * When the veto arrives after a credential already exists it revokes it, which changes
+ * what has to be said — a working credential just stopped working. The copy therefore
+ * splits on {@link SignupCanceledParams.revokedAccess} instead of hedging over both.
+ *
+ * The unexpected-cancel branch can be specific in a way most of these cannot:
+ * cancelling *requires* a channel OTP, so an unexplained cancel is direct evidence that
+ * somebody reaches email or phone. No other notice in this set can narrow it that far.
+ */
+export function signupCanceledEmail(params: SignupCanceledParams): EmailContent {
+  const subject = `Your ${params.appName} setup was cancelled`;
+  const lead = params.revokedAccess
+    ? `A setup for your ${params.appName} account was cancelled, and the credential it had created has been revoked. Nothing that setup produced can sign in.`
+    : `A setup for your ${params.appName} account was cancelled before it finished.`;
+  const text = [
+    lead,
+    '',
+    'If you cancelled it, nothing more is needed. Ask for a new invitation when you are',
+    'ready.',
+    '',
+    'If you did NOT cancel it, somebody else can reach your email or your phone —',
+    'cancelling requires one of them. Act in this order:',
+    '',
+    `  1. Contact ${params.supportContact} before asking for another invitation.`,
+    '  2. Re-secure your email and phone.',
+    '  3. Ask for a new invitation once both are back under your control.',
+  ].join('\n');
+  const html = [
+    `<p>${escapeHtml(lead)}</p>`,
+    '<p>If you cancelled it, nothing more is needed. Ask for a new invitation when you are ready.</p>',
+    '<p>If you did <strong>not</strong> cancel it, somebody else can reach your email or your phone — cancelling requires one of them. Act in this order:</p>',
+    '<ol>',
+    `<li>Contact ${escapeHtml(params.supportContact)} before asking for another invitation.</li>`,
+    '<li>Re-secure your email and phone.</li>',
+    '<li>Ask for a new invitation once both are back under your control.</li>',
+    '</ol>',
+  ].join('\n');
+  return { subject, text, html };
+}
+
+/** SMS form of {@link signupCanceledEmail}. */
+export function signupCanceledSms(params: SignupCanceledParams): string {
+  const what = params.revokedAccess
+    ? 'was cancelled and its credential revoked'
+    : 'was cancelled before it finished';
+  return `${params.appName}: your account setup ${what}. Not you? Cancelling needs your email or phone, so somebody can reach one - contact ${params.supportContact} and re-secure both.`;
 }

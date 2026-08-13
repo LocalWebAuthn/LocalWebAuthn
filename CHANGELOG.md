@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Fixed
+
+- **The signup veto now works after completion, which is when it is needed.**
+  `cancelSignup` was gated on `enrollment_token IS NULL`, so the veto became a no-op from
+  the moment there was something worth vetoing — the whole window between a link being
+  claimed and a passkey existing. `canCancelSignup` in channels-core has always admitted
+  `'completed'`; only the storage refused, and the policy lost to the implementation.
+
+  A veto after completion now revokes everything the signup produced, via the unscoped
+  `revokeUserAuthentication`: the registration generation moves so a ceremony in flight
+  cannot land afterwards, credentials are revoked to a fixed point so one registered
+  concurrently is caught, and sessions, pending grants and challenges go with them.
+  Revoking the pending grant is also what invalidates an enrollment session already
+  opened from the link.
+
+  **The window needs no clock of its own.** `verifySignupProof` refuses an expired signup
+  first, so the veto lasts exactly as long as a claim: for as long as anybody can claim
+  the link, its owner can cancel what the link produced. The proof messages now state
+  that deadline, and what cancelling does.
+
+  Every bound channel is told, because a veto that silently takes somebody's credential
+  away fails the visibility test the rest of this flow is built on. Unlike the other
+  notices, this one can be specific: cancelling _requires_ a channel OTP, so an
+  unexplained cancel is direct evidence somebody reaches email or phone.
+
+  The cost is accepted deliberately: anybody holding one channel can cancel a credential
+  the rightful person just created. That is denial of enrollment — bounded by the OTP
+  lifetime and noisy — and it follows the asymmetry this flow is built on, since
+  cancelling only ever destroys access and never grants it.
+
+  Only the channel-OTP veto gained this. The sign-in veto keeps its narrow guard: a
+  recovery that had already produced a credential, signed into with that credential,
+  would otherwise revoke the credential that just authenticated. See #10.
+
 ## 3.1.0 - 2026-08-12
 
 Observable credential issuance without changing credential-state semantics: signup lifecycle

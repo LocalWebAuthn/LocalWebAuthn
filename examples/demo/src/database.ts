@@ -230,13 +230,27 @@ export function markSignupPending(
     .run(input.now, input.claimableAt, input.expiresAt, id);
 }
 
-/** Terminal veto. Returns whether this call applied it. */
+/**
+ * Terminal veto. Returns whether this call applied it.
+ *
+ * Deliberately **not** gated on `enrollment_token IS NULL`. It used to be, which made
+ * the veto a no-op from the moment a token existed — that is, from the moment there
+ * was anything worth vetoing. `canCancelSignup` in channels-core has always admitted
+ * `'completed'`; only this statement refused, so the policy and the storage disagreed
+ * and the storage won.
+ *
+ * Whether the veto also has to revoke an account is the caller's business: this marks
+ * the row, and the route decides. See the cancel route in `application.ts`.
+ *
+ * Still gated on `canceled_at IS NULL`, so cancelling twice applies once and the
+ * caller can tell which call did it.
+ */
 export function cancelSignup(database: DemoDatabase, id: string, now: number): boolean {
   return (
     database
       .prepare(
         `UPDATE demo_signups SET canceled_at = ?
-       WHERE id = ? AND canceled_at IS NULL AND enrollment_token IS NULL`,
+       WHERE id = ? AND canceled_at IS NULL`,
       )
       .run(now, id).changes === 1
   );

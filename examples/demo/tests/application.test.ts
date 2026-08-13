@@ -558,9 +558,18 @@ describe('LocalWebAuthn demo application', () => {
     expect(warning).toHaveBeenCalled();
   });
 
-  it('does not report a cancellation when an issued signup token makes the veto a no-op', async () => {
+  /**
+   * The veto after completion — the case it exists for, and the case that used to do
+   * nothing. `cancelSignup` was gated on `enrollment_token IS NULL`, so the veto became
+   * a no-op the moment there was something worth vetoing. `canCancelSignup` in
+   * channels-core always admitted `'completed'`; only the storage refused.
+   *
+   * A previous version of this test asserted that no-op as if it were the
+   * specification. It was the bug, written down.
+   */
+  it('vetoes after completion, revoking everything the signup produced', async () => {
     const events: SignupEvent[] = [];
-    const { app, database } = setup({
+    const { app, database, authentication } = setup({
       onSignupEvent: (event) => {
         events.push(event);
       },
@@ -571,8 +580,8 @@ describe('LocalWebAuthn demo application', () => {
       email: 'already-complete@example.test',
       phone: '+15551230013',
     });
-    const prove = (channel: string) =>
-      app.request('/api/signup/prove', {
+    const post = (path: string, channel: string) =>
+      app.request(path, {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -581,25 +590,126 @@ describe('LocalWebAuthn demo application', () => {
           otp: started.otps[channel],
         }),
       });
-    await prove('email');
-    await prove('phone');
+    await post('/api/signup/prove', 'email');
+    const completed = await post('/api/signup/prove', 'phone');
+    const { enrollmentToken } = (await completed.json()) as { enrollmentToken: string };
 
-    const canceled = await app.request('/api/signup/cancel', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        signupId: started.signupId,
-        channel: 'email',
-        otp: started.otps.email,
-      }),
-    });
-    await expect(canceled.json()).resolves.toEqual({ canceled: true });
+    // Enrol for real, so the veto has a live grant, session and credential to undo.
+    expect(
+      (
+        await app.request('/api/auth/enrollment/exchange', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ token: enrollmentToken }),
+        })
+      ).status,
+    ).toBe(200);
+    const clientId = (
+      database.prepare(`SELECT client_id FROM demo_signups WHERE id = ?`).get(started.signupId) as {
+        client_id: string;
+      }
+    ).client_id;
+    database
+      .prepare(
+        `INSERT INTO localwebauthn_credentials(
+           id, user_id, public_key, counter, transports_json, device_type,
+           backed_up, label, created_at
+         ) VALUES (?, ?, X'00', 0, '[]', 'multiDevice', 1, 'Enrolled passkey', ?)`,
+      )
+      .run(`credential-${started.signupId}`, clientId, Date.now());
+    const generation = (): number =>
+      (
+        database
+          .prepare(`SELECT generation FROM localwebauthn_registration_fences WHERE user_id = ?`)
+          .get(clientId) as { generation: number } | undefined
+      )?.generation ?? 0;
+    const before = generation();
+
+    // The *other* channel vetoes — the compromise case this control is for.
+    const canceled = await post('/api/signup/cancel', 'email');
+    expect(canceled.status).toBe(200);
+    await expect(canceled.json()).resolves.toEqual({ canceled: true, revokedAccess: true });
+
     const row = database
-      .prepare(`SELECT canceled_at, enrollment_token FROM demo_signups WHERE id = ?`)
-      .get(started.signupId) as { canceled_at: number | null; enrollment_token: string | null };
-    expect(row.canceled_at).toBeNull();
-    expect(row.enrollment_token).not.toBeNull();
-    expect(events.some((event) => event.type === 'signup.canceled')).toBe(false);
+      .prepare(`SELECT canceled_at FROM demo_signups WHERE id = ?`)
+      .get(started.signupId) as { canceled_at: number | null };
+    expect(row.canceled_at).not.toBeNull();
+
+    // Nothing the signup produced can authenticate any more.
+    const credentials = await authentication.listCredentials(clientId, true);
+    expect(credentials).not.toHaveLength(0);
+    expect(credentials.every((credential) => credential.revokedAt !== null)).toBe(true);
+    // The registration fence moved, so a ceremony already in flight cannot land after
+    // the veto.
+    expect(generation()).toBeGreaterThan(before);
+    // No pending grant survives. This is the assertion that separates the unscoped
+    // revoke from a credential-tree walk: a walk bumps the fence as well, but leaves the
+    // grant, so the link could be exchanged again and an enrollment session already
+    // opened from it would stay valid.
+    expect(
+      database
+        .prepare(
+          `SELECT COUNT(*) AS n FROM localwebauthn_enrollment_grants
+           WHERE user_id = ? AND completed_at IS NULL AND revoked_at IS NULL`,
+        )
+        .get(clientId),
+    ).toEqual({ n: 0 });
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'signup.canceled',
+        cause: 'channel_proof',
+        revokedAccess: true,
+      }),
+    );
+
+    // Terminal and idempotent: a second veto succeeds and reports honestly that there
+    // was nothing left to revoke.
+    await expect((await post('/api/signup/cancel', 'phone')).json()).resolves.toEqual({
+      canceled: true,
+      revokedAccess: false,
+    });
+  });
+
+  it('vetoes before completion without revoking anything', async () => {
+    const events: SignupEvent[] = [];
+    const { app } = setup({
+      onSignupEvent: (event) => {
+        events.push(event);
+      },
+    });
+    const headers = { Origin: publicOrigin, 'Content-Type': 'application/json' };
+    const started = await startSignup(app, {
+      displayName: 'Early Veto',
+      email: 'early@example.test',
+      phone: '+15551230023',
+    });
+    const post = (path: string, channel: string) =>
+      app.request(path, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          signupId: started.signupId,
+          channel,
+          otp: started.otps[channel],
+        }),
+      });
+
+    // One channel proved, the other vetoes. No account exists yet, so marking the row
+    // is the whole of the veto and `revokedAccess` must say so.
+    await post('/api/signup/prove', 'email');
+    await expect((await post('/api/signup/cancel', 'phone')).json()).resolves.toEqual({
+      canceled: true,
+      revokedAccess: false,
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'signup.canceled', revokedAccess: false }),
+    );
+
+    // And the signup is dead: the remaining channel cannot complete it.
+    await expect((await post('/api/signup/prove', 'phone')).json()).resolves.toMatchObject({
+      canceled: true,
+    });
   });
 
   it('reports each signup it actually reaps', async () => {
@@ -769,7 +879,10 @@ describe('LocalWebAuthn demo application', () => {
         otp: first.otps.email,
       }),
     });
-    await expect(cancel.json()).resolves.toEqual({ canceled: true });
+    // Nothing to revoke: recovery's completion only opens the delay window, so no
+    // grant, credential or session exists until the first mature claim. That is the
+    // whole point of the waiting period, and `revokedAccess` records it.
+    await expect(cancel.json()).resolves.toEqual({ canceled: true, revokedAccess: false });
     await expect(
       app.request('/api/signup/cancel', {
         method: 'POST',

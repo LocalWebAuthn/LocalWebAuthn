@@ -9,6 +9,7 @@ import {
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import type { MiddlewareHandler } from 'hono';
+import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { randomUUID } from 'node:crypto';
 
 import type { DemoAuthConfig, DemoAuthentication, DemoEnvironment } from './auth';
@@ -20,6 +21,8 @@ import {
   canCancelSignup,
   createSignupChallenge,
   signupMissing,
+  signupCanceledEmail,
+  signupCanceledSms,
   signupProofEmail,
   signupProofSms,
   signupProofUrl,
@@ -89,6 +92,41 @@ export type DemoApplicationOptions = {
  */
 function defaultSignupEventSink(event: SignupEvent): void {
   console.log(`[signup] ${JSON.stringify(event)}`);
+}
+
+/**
+ * Tell every bound channel that a signup was vetoed.
+ *
+ * A veto that silently takes somebody's credential away fails the same test the rest of
+ * this flow is built on: it must be visible to the person it happened to. And unlike
+ * most notices here, the unexpected case can be specific — cancelling *requires* a
+ * channel OTP, so a cancel the owner did not perform is direct evidence that somebody
+ * reaches their email or phone.
+ *
+ * A real deployment sends these through `channels-node` or `channels-cf`; the demo
+ * simulates delivery, so it prints. Best-effort by construction: a notice that throws
+ * must not turn a completed veto into a failed request.
+ */
+function notifySignupCanceled(
+  database: DemoDatabase,
+  config: DemoAuthConfig,
+  clientId: string | null,
+  revokedAccess: boolean,
+): void {
+  try {
+    const client = clientId === null ? null : clientById(database, clientId);
+    const params = {
+      appName: config.rpName,
+      revokedAccess,
+      supportContact: 'your administrator',
+    };
+    const to = client?.email ?? 'the bound channels';
+    const email = signupCanceledEmail(params);
+    console.log(`[simulated notice] email to ${to}: ${email.subject}\n${email.text}`);
+    console.log(`[simulated notice] sms to ${to}: ${signupCanceledSms(params)}`);
+  } catch (error) {
+    console.error('cancel notice failed:', error);
+  }
 }
 
 type ClientPayload = DemoClient & {
@@ -350,13 +388,14 @@ function mountSignupRoutes(
           {
             channel: 'email',
             to: email,
-            subject: signupProofEmail({ appName, url: emailUrl }).subject,
-            body: signupProofEmail({ appName, url: emailUrl }).text,
+            subject: signupProofEmail({ appName, url: emailUrl, expiresAt: challenge.expiresAt })
+              .subject,
+            body: signupProofEmail({ appName, url: emailUrl, expiresAt: challenge.expiresAt }).text,
           },
           {
             channel: 'phone',
             to: phone,
-            body: signupProofSms({ appName, url: phoneUrl }),
+            body: signupProofSms({ appName, url: phoneUrl, expiresAt: challenge.expiresAt }),
           },
         ],
       },
@@ -517,10 +556,47 @@ function mountSignupRoutes(
   });
 
   /**
-   * The veto: any valid channel OTP cancels, terminally, from any state —
-   * before completion, during the recovery waiting period, even after a
-   * plain-signup completion (harmless once the token was claimed). A false
+   * The veto: any valid channel OTP cancels, terminally, from any state — before
+   * completion, during the recovery waiting period, and **after** completion. A false
    * cancel costs a restart; a false confirm could cost the account.
+   *
+   * The post-completion case is the one that matters, and it used to be the one that
+   * did nothing: `cancelSignup` was gated on `enrollment_token IS NULL`, so the veto
+   * became a no-op from the moment there was anything worth vetoing. An earlier comment
+   * here called that "harmless once the token was claimed", which was backwards.
+   *
+   * **The window needs no clock of its own.** `verifySignupProof` refuses an expired
+   * signup before anything else, and `canCancelSignup` admits `'completed'`, so the
+   * veto lasts exactly as long as a claim does: for as long as anybody can claim the
+   * link, its owner can cancel what the link produced.
+   *
+   * **What cancelling has to undo.** By the time a veto arrives, whoever held the link
+   * may have exchanged it, registered a credential, signed in with it, enrolled another
+   * from that session, or have a ceremony still in flight. The unscoped
+   * `revokeUserAuthentication` covers all of it: it bumps the registration generation
+   * so an in-flight ceremony cannot land afterwards, revokes credentials to a fixed
+   * point so one registered concurrently is caught rather than missed, and revokes
+   * sessions, pending grants and challenges. Revoking the pending grant is also what
+   * invalidates an already-exchanged enrollment session, since
+   * `resolveEnrollmentSession` requires the grant to be unrevoked.
+   *
+   * A credential-tree walk would be more code and weaker, though not for the reason it
+   * first appears: `revokeCredential` bumps the generation too, so the fence is covered
+   * either way. What a walk leaves behind is the **pending grant** — so the link can be
+   * exchanged again, and an enrollment session already opened from it stays valid — plus
+   * unconsumed challenges, and no fixed point, so a credential registered concurrently
+   * with the sweep survives it.
+   *
+   * Its scope is right without narrowing: a plain signup created this account, so
+   * everything on it descends from this signup, and a recovery already revoked the
+   * prior credentials when it was claimed.
+   *
+   * **The cost, accepted deliberately.** Anybody holding one channel can cancel a
+   * credential the rightful person just created. That is denial of enrollment — bounded
+   * by the OTP lifetime, and noisy, because every channel is told. It follows the
+   * asymmetry this flow is built on: cancelling only ever destroys access, never grants
+   * it, so the safe failure is to allow it. The alternative is what this replaced, where
+   * a real compromise could not be remediated by the person it happened to.
    */
   app.post('/api/signup/cancel', async (context) => {
     const body = await context.req
@@ -544,15 +620,48 @@ function mountSignupRoutes(
       );
     }
     const canceledAt = Date.now();
-    if (cancelSignup(database, signup.id, canceledAt)) {
-      await emit({
-        type: 'signup.canceled',
-        at: canceledAt,
-        signupId: signup.id,
-        cause: 'channel_proof',
-      });
+    if (!cancelSignup(database, signup.id, canceledAt)) {
+      // Already cancelled. Terminal and idempotent, so this is a success for the
+      // caller and there is nothing left to revoke.
+      return context.json({ canceled: true, revokedAccess: false });
     }
-    return context.json({ canceled: true });
+
+    // Only a signup that got as far as an account has anything to revoke. Before
+    // that, marking the row is the whole of the veto: no grant, no credential, no
+    // session exists yet.
+    const clientId = signup.clientId;
+    if (clientId !== null) {
+      try {
+        await authentication.revokeUserAuthentication(clientId);
+      } catch (error) {
+        // `revocation_not_converged` means credentials kept appearing as fast as they
+        // were revoked. The row is cancelled either way, so no further claim can
+        // happen — but access may remain, and saying "cancelled" would be a lie.
+        await emit({
+          type: 'signup.canceled',
+          at: canceledAt,
+          signupId: signup.id,
+          cause: 'channel_proof',
+          revokedAccess: false,
+        });
+        if (isLocalWebAuthnError(error)) {
+          return context.json(
+            { error: error.code, message: error.message, canceled: true, revokedAccess: false },
+            error.status as ContentfulStatusCode,
+          );
+        }
+        throw error;
+      }
+    }
+    await emit({
+      type: 'signup.canceled',
+      at: canceledAt,
+      signupId: signup.id,
+      cause: 'channel_proof',
+      revokedAccess: clientId !== null,
+    });
+    notifySignupCanceled(database, config, clientId, clientId !== null);
+    return context.json({ canceled: true, revokedAccess: clientId !== null });
   });
 }
 

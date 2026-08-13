@@ -5,11 +5,14 @@ export {
   otpSms,
   passkeyCreatedEmail,
   passkeyCreatedSms,
+  signupCanceledEmail,
+  signupCanceledSms,
   signupProofEmail,
   signupProofSms,
   type EnrollmentParams,
   type OtpParams,
   type PasskeyCreatedParams,
+  type SignupCanceledParams,
   type SignupProofParams,
 } from './templates.js';
 export {

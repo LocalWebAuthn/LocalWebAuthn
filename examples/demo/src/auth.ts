@@ -196,6 +196,13 @@ export async function cancelRecoveriesAfterCredentialAuthentication(
       at: canceledAt,
       signupId,
       cause: 'credential_authenticated',
+      // Always false, and it must stay that way. This veto fires on
+      // `credential.authenticated`, and `cancelActiveRecoveries` keeps its
+      // `enrollment_token IS NULL` guard for exactly that reason: a recovery that had
+      // already produced a credential, signed into with that credential, would
+      // otherwise revoke the credential that just authenticated. Only the channel-OTP
+      // veto revokes. A control that destroys whatever triggered it is not a control.
+      revokedAccess: false,
     });
   }
   return signupIds;
